@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Modal, Form, Select, Button, Divider, Tag, Space, message, Alert } from 'antd';
-import { CheckOutlined, AudioOutlined, SoundOutlined, ThunderboltOutlined, WarningOutlined } from '@ant-design/icons';
+import { CheckOutlined, AudioOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useAudioStore } from '../stores/audioStore';
 import type { AudioDeviceInfo } from '../lib/types';
-import * as tauri from '../lib/tauri';
 
 interface AudioSettingsProps {
   isOpen: boolean;
@@ -45,9 +44,9 @@ function DeviceOption({ device }: { device: AudioDeviceInfo }) {
 export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   const {
     devices, selectedDevice, selectedInputDevice,
-    sampleRate, bufferSize, status,
+    sampleRate, bufferSize,
     setOutputDevice, setInputDevice, setSampleRate, setBufferSize,
-    fetchDevices, fetchStatus,
+    toggleMonitoring, fetchDevices, fetchStatus,
   } = useAudioStore();
   const [form] = Form.useForm();
   const [selectedHostType, setSelectedHostType] = useState<string>('');
@@ -96,6 +95,10 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   const handleApply = async () => {
     try {
       const values = await form.validateFields();
+
+      // Stop the always-running stream before changing config, then restart it.
+      await toggleMonitoring(false);
+
       const tasks: Promise<void>[] = [];
 
       if (asioMode) {
@@ -113,7 +116,11 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       tasks.push(setBufferSize(parseInt(values.bufferSize)));
 
       await Promise.all(tasks);
-      message.success('Audio settings applied');
+
+      // Always restart the stream after config change.
+      await toggleMonitoring(true);
+      await fetchStatus();
+      message.success('Audio settings applied — stream restarted');
       onClose();
     } catch (error) {
       console.error('Failed to apply settings:', error);
@@ -263,54 +270,6 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
             <Select.Option value="2048">2048 samples (42.7 ms @ 48 kHz)</Select.Option>
           </Select>
         </Form.Item>
-
-        {/* Test Audio */}
-        <Divider orientationMargin={0} style={{ fontSize: 13 }}>Test Audio & MIDI</Divider>
-        <Space size="middle" wrap>
-          <Button
-            icon={<SoundOutlined />}
-            onClick={async () => {
-              try {
-                await tauri.playTestSound();
-                message.success('Playing test sound...');
-              } catch {
-                message.error('Failed to play test sound');
-              }
-            }}
-          >
-            Test Output
-          </Button>
-          <Button
-            type={status.is_monitoring ? 'primary' : 'default'}
-            icon={<AudioOutlined />}
-            onClick={async () => {
-              try {
-                const next = !status.is_monitoring;
-                await tauri.toggleMonitoring(next);
-                await fetchStatus();
-                message.info(next ? 'Input monitoring started' : 'Input monitoring stopped');
-              } catch {
-                message.error('Failed to toggle monitoring');
-              }
-            }}
-          >
-            {status.is_monitoring ? 'Monitoring...' : 'Hear Input'}
-          </Button>
-          <Button
-            danger
-            icon={<WarningOutlined />}
-            onClick={async () => {
-              try {
-                await tauri.midiPanic();
-                message.success('🚨 MIDI Panic sent to all plugins');
-              } catch (err) {
-                message.error(`Failed to send MIDI panic: ${err}`);
-              }
-            }}
-          >
-            🚨 MIDI Panic
-          </Button>
-        </Space>
 
       </Form>
     </Modal>

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::panic::AssertUnwindSafe;
 use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, PluginFormat};
 use crate::plugins::vst3_processor::Vst3Processor;
@@ -28,6 +28,11 @@ pub struct PluginInstance {
     builtin_processor: Mutex<Option<NoiseSuppressor>>,
     /// Track if GUI window is currently open (prevents multiple windows)
     gui_open:       Arc<AtomicBool>,
+    /// HWND (as isize) of the open GUI window; 0 when none.
+    /// Set by the GUI thread after CreateWindowExW, cleared on exit.
+    /// Lets Drop post WM_CLOSE so the GUI thread finishes before
+    /// Vst3Processor::drop calls terminate() — prevents STATUS_ACCESS_VIOLATION.
+    gui_hwnd:       Arc<AtomicIsize>,
     /// Crash protection state
     crash_protection: SharedCrashProtection,
 }
@@ -82,15 +87,32 @@ impl PluginInstance {
             None
         };
 
+        // Pre-populate parameters for built-in plugins.
+        let initial_params = if plugin_info.format == PluginFormat::Builtin {
+            vec![
+                PluginParameter {
+                    id:      0,
+                    name:    "Mix".to_string(),
+                    value:   1.0,
+                    min:     0.0,
+                    max:     1.0,
+                    default: 1.0,
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             instance_id,
             plugin_info,
             bypassed:          Arc::new(RwLock::new(false)),
-            parameters:        Arc::new(RwLock::new(Vec::new())),
+            parameters:        Arc::new(RwLock::new(initial_params)),
             vst3_processor:    Mutex::new(vst3_processor),
             vst2_processor:    Mutex::new(vst2_processor),
             builtin_processor: Mutex::new(builtin_processor),
             gui_open:          Arc::new(AtomicBool::new(false)),
+            gui_hwnd:          Arc::new(AtomicIsize::new(0)),
             crash_protection:  crash_protection::create_shared(),
         })
     }
@@ -255,6 +277,25 @@ impl PluginInstance {
                 proc.set_param_normalized(param_id, normalized);
             }
         }
+        // Forward to built-in processor (param 0 = Mix).
+        if let Some(mut guard) = self.builtin_processor.try_lock() {
+            if let Some(ref mut proc) = *guard {
+                if param_id == 0 {
+                    proc.set_mix(normalized as f32);
+                }
+            }
+        }
+    }
+
+    /// Return the last voice-activity probability from the built-in noise suppressor
+    /// (0.0 = silence / noise, 1.0 = clear speech).  Returns 0.0 for non-builtin plugins.
+    pub fn get_builtin_vad(&self) -> f32 {
+        if let Some(guard) = self.builtin_processor.try_lock() {
+            if let Some(ref proc) = *guard {
+                return proc.get_vad();
+            }
+        }
+        0.0
     }
 
     /// Open the plugin's native GUI editor using the existing VST3 processor.
@@ -280,9 +321,9 @@ impl PluginInstance {
             if let Some(ref proc) = *guard {
                 // Wrap GUI opening with crash protection
                 let plugin_name = self.plugin_info.name.clone();
-                
+                let gui_hwnd = self.gui_hwnd.clone();
                 let result = crash_protection::protected_call(|| {
-                    proc.open_gui(&plugin_name, gui_flag.clone())
+                    proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd)
                 });
                 
                 match result {
@@ -318,6 +359,35 @@ impl PluginInstance {
         self.crash_protection.lock().reset();
     }
     
+}
+
+impl Drop for PluginInstance {
+    fn drop(&mut self) {
+        // If a native GUI window is still open, post WM_CLOSE and wait for the
+        // GUI thread to exit *before* Vst3Processor drops and calls terminate().
+        // Without this, terminate() races with the GUI message loop and causes
+        // STATUS_ACCESS_VIOLATION (0xC0000005) on Windows.
+        let hwnd = self.gui_hwnd.load(Ordering::Acquire);
+        if hwnd != 0 {
+            #[cfg(target_os = "windows")]
+            unsafe {
+                use windows_sys::Win32::Foundation::HWND;
+                use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+                PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
+            }
+            // Spin-wait up to 2 s for the GUI thread to clear gui_open.
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(2);
+            while self.gui_open.load(Ordering::Acquire)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if self.gui_open.load(Ordering::Acquire) {
+                log::warn!("GUI thread did not exit within 2 s; proceeding with plugin teardown");
+            }
+        }
+    }
 }
 
 /// Manager for all plugin instances

@@ -15,7 +15,7 @@ pub mod win {
     use std::cell::Cell;
     use std::ffi::c_void;
     use std::ptr;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
     use std::sync::Arc;
     use vst3::{Class, ComPtr, ComWrapper};
     use vst3::Steinberg::{
@@ -99,6 +99,7 @@ pub mod win {
         controller: &ComPtr<IEditController>,
         plugin_name: &str,
         gui_flag: Arc<AtomicBool>,
+        gui_hwnd: Arc<AtomicIsize>,
     ) -> Result<()> {
         let controller_clone = controller.clone();
         let name_owned = plugin_name.to_string();
@@ -106,16 +107,19 @@ pub mod win {
         std::thread::Builder::new()
             .name(format!("vst3-gui-{}", plugin_name))
             .spawn(move || {
-                struct GuiFlagGuard(Arc<AtomicBool>);
+                struct GuiFlagGuard(Arc<AtomicBool>, Arc<AtomicIsize>);
                 impl Drop for GuiFlagGuard {
                     fn drop(&mut self) {
+                        // Clear HWND first so PluginInstance::drop's PostMessageW
+                        // is not duplicated if the window was already closed.
+                        self.1.store(0, Ordering::Release);
                         self.0.store(false, Ordering::Release);
                         log::debug!("GUI flag cleared");
                     }
                 }
-                let _guard = GuiFlagGuard(gui_flag);
+                let _guard = GuiFlagGuard(gui_flag, Arc::clone(&gui_hwnd));
 
-                if let Err(e) = run_gui_window_impl(&controller_clone, &name_owned) {
+                if let Err(e) = run_gui_window_impl(&controller_clone, &name_owned, &gui_hwnd) {
                     log::error!("VST3 GUI error for '{}': {}", name_owned, e);
                 }
             })
@@ -129,6 +133,7 @@ pub mod win {
     fn run_gui_window_impl(
         controller: &ComPtr<IEditController>,
         plugin_name: &str,
+        gui_hwnd_arc: &Arc<AtomicIsize>,
     ) -> Result<()> {
         use std::ffi::CString;
 
@@ -179,6 +184,9 @@ pub mod win {
 
         // 5. Create the host Win32 window
         let hwnd = create_host_window(plugin_name, width, height, window_style)?;
+        // Publish HWND so PluginInstance::drop can post WM_CLOSE before
+        // Vst3Processor::terminate() runs, preventing STATUS_ACCESS_VIOLATION.
+        gui_hwnd_arc.store(hwnd as isize, Ordering::Release);
 
         // 6. Publish HWND for IPlugFrame and install the onSize callback.
         // IPlugViewTrait requires SmartPtr (ComPtr), not raw *mut IPlugView,

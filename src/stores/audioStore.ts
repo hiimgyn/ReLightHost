@@ -10,16 +10,19 @@ interface AudioStore {
   selectedInputDevice: string | null;
   sampleRate: number;
   bufferSize: number;
+  isMuted: boolean;
   
   // Actions
   fetchStatus: () => Promise<void>;
   fetchDevices: () => Promise<void>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
+  toggleMonitoring: (enabled: boolean) => Promise<void>;
   setOutputDevice: (deviceId: string) => Promise<void>;
   setInputDevice: (deviceId: string | null) => Promise<void>;
   setSampleRate: (rate: number) => Promise<void>;
   setBufferSize: (size: number) => Promise<void>;
+  setMuted: (muted: boolean) => Promise<void>;
 }
 
 export const useAudioStore = create<AudioStore>((set, get) => ({
@@ -35,6 +38,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   selectedInputDevice: null,
   sampleRate: 48000,
   bufferSize: 1024,
+  isMuted: false,
 
   fetchStatus: async () => {
     try {
@@ -80,6 +84,16 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     }
   },
 
+  toggleMonitoring: async (enabled: boolean) => {
+    try {
+      await tauri.toggleMonitoring(enabled);
+      set(state => ({ status: { ...state.status, is_monitoring: enabled } }));
+    } catch (error) {
+      console.error('Failed to toggle monitoring:', error);
+      throw error;
+    }
+  },
+
   setOutputDevice: async (deviceId: string) => {
     set({ selectedDevice: deviceId });
     try {
@@ -116,6 +130,17 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       await tauri.setBufferSize(size);
     } catch (error) {
       console.error('Failed to set buffer size:', error);
+      throw error;
+    }
+  },
+
+  setMuted: async (muted: boolean) => {
+    set({ isMuted: muted });
+    try {
+      await tauri.setMuted(muted);
+    } catch (error) {
+      console.error('Failed to set mute:', error);
+      set({ isMuted: !muted }); // revert on error
       throw error;
     }
   },

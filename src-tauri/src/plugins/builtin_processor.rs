@@ -36,6 +36,15 @@ pub struct NoiseSuppressor {
     out_l: VecDeque<f32>,
     /// Denoised output ready to consume — right channel
     out_r: VecDeque<f32>,
+    /// Dry input saved for wet/dry blending — left channel
+    dry_l: VecDeque<f32>,
+    /// Dry input saved for wet/dry blending — right channel
+    dry_r: VecDeque<f32>,
+    /// Wet/dry mix: 0.0 = full dry (bypass), 1.0 = full denoised (default).
+    pub mix: f32,
+    /// Latest voice-activity probability averaged over L+R (0.0 – 1.0).
+    /// Updated every processed frame; read by the GUI without locking audio.
+    pub last_vad: f32,
 }
 
 impl NoiseSuppressor {
@@ -47,7 +56,21 @@ impl NoiseSuppressor {
             in_r:  VecDeque::new(),
             out_l: VecDeque::new(),
             out_r: VecDeque::new(),
+            dry_l: VecDeque::new(),
+            dry_r: VecDeque::new(),
+            mix:      1.0,
+            last_vad: 0.0,
         }
+    }
+
+    /// Set the wet/dry mix (0.0 = dry, 1.0 = fully denoised).
+    pub fn set_mix(&mut self, mix: f32) {
+        self.mix = mix.clamp(0.0, 1.0);
+    }
+
+    /// Return the last measured voice-activity probability (0.0 – 1.0).
+    pub fn get_vad(&self) -> f32 {
+        self.last_vad
     }
 
     /// Process a stereo buffer in-place.
@@ -58,14 +81,15 @@ impl NoiseSuppressor {
     /// silenced during start-up.
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len();
+        let mix = self.mix;
+
+        // Save dry copies for wet/dry blending.
+        for &s in left.iter()  { self.dry_l.push_back(s); }
+        for &s in right.iter() { self.dry_r.push_back(s); }
 
         // Accumulate input scaled to RNNoise amplitude range.
-        for &s in left.iter() {
-            self.in_l.push_back(s * SCALE);
-        }
-        for &s in right.iter() {
-            self.in_r.push_back(s * SCALE);
-        }
+        for &s in left.iter()  { self.in_l.push_back(s * SCALE); }
+        for &s in right.iter() { self.in_r.push_back(s * SCALE); }
 
         // Drain complete 480-sample frames through the denoiser.
         let mut frame_in_l  = [0.0f32; FRAME_SIZE];
@@ -81,24 +105,27 @@ impl NoiseSuppressor {
                 *s = self.in_r.pop_front().unwrap_or(0.0);
             }
 
-            self.state_l.process_frame(&mut frame_out_l[..], &frame_in_l[..]);
-            self.state_r.process_frame(&mut frame_out_r[..], &frame_in_r[..]);
+            let vad_l = self.state_l.process_frame(&mut frame_out_l[..], &frame_in_l[..]);
+            let vad_r = self.state_r.process_frame(&mut frame_out_r[..], &frame_in_r[..]);
+            self.last_vad = (vad_l + vad_r) * 0.5;
 
-            for &s in &frame_out_l {
-                self.out_l.push_back(s / SCALE);
-            }
-            for &s in &frame_out_r {
-                self.out_r.push_back(s / SCALE);
-            }
+            for &s in &frame_out_l { self.out_l.push_back(s / SCALE); }
+            for &s in &frame_out_r { self.out_r.push_back(s / SCALE); }
         }
 
-        // Write as many denoised samples as available; leave the rest unchanged
-        // (they are already in `left`/`right` from the caller).
+        // Write wet/dry blended output; pass through if denoised buffer not yet full.
         let avail = self.out_l.len().min(n);
         for i in 0..avail {
-            left[i]  = self.out_l.pop_front().unwrap();
-            right[i] = self.out_r.pop_front().unwrap();
+            let dry_l = self.dry_l.pop_front().unwrap_or(left[i]);
+            let dry_r = self.dry_r.pop_front().unwrap_or(right[i]);
+            let wet_l = self.out_l.pop_front().unwrap();
+            let wet_r = self.out_r.pop_front().unwrap();
+            left[i]  = dry_l + mix * (wet_l - dry_l);
+            right[i] = dry_r + mix * (wet_r - dry_r);
         }
+        // Trim leftover dry samples that had no denoised counterpart yet.
+        while self.dry_l.len() > FRAME_SIZE * 2 { self.dry_l.pop_front(); }
+        while self.dry_r.len() > FRAME_SIZE * 2 { self.dry_r.pop_front(); }
     }
 
     /// Unique identifier used as `path` in `PluginInfo` for the built-in registry.

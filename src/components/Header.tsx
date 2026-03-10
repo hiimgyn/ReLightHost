@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Space, Tooltip, Typography, theme } from 'antd';
+import { Button, Space, Tooltip, Typography, theme, Badge } from 'antd';
 
 const { Text } = Typography;
 import {
@@ -7,8 +7,12 @@ import {
   SettingOutlined,
   BulbOutlined,
   BulbFilled,
+  LoadingOutlined,
+  SoundOutlined,
+  MutedOutlined,
 } from '@ant-design/icons';
 import { useThemeStore } from '../stores/themeStore';
+import { useAudioStore } from '../stores/audioStore';
 import AudioSettings from './AudioSettings';
 import AppSettings from './AppSettings';
 import { VUMeter } from './VUMeter';
@@ -16,6 +20,7 @@ import { VUMeter } from './VUMeter';
 export default function Header() {
   const { theme: appTheme, toggleTheme } = useThemeStore();
   const { token } = theme.useToken();
+  const { status, isMuted, setMuted } = useAudioStore();
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
 
@@ -53,6 +58,29 @@ export default function Header() {
         <VUMeter compact />
         {/* Controls */}
         <Space size="middle">
+          {/* Stream status badge — read-only */}
+          <Space size={6} align="center">
+            {status.is_monitoring
+              ? <Badge status="processing" color={token.colorSuccess} />
+              : <LoadingOutlined style={{ fontSize: 12, color: token.colorTextSecondary }} />}
+            <Text
+              style={{
+                fontSize: 12,
+                color: status.is_monitoring ? token.colorSuccess : token.colorTextSecondary,
+              }}
+            >
+              {status.is_monitoring ? 'Running' : 'Loading…'}
+            </Text>
+          </Space>
+          {/* Mute toggle */}
+          <Tooltip title={isMuted ? 'Unmute output' : 'Mute output'}>
+            <Button
+              type={isMuted ? 'primary' : 'text'}
+              danger={isMuted}
+              icon={isMuted ? <MutedOutlined /> : <SoundOutlined />}
+              onClick={() => setMuted(!isMuted)}
+            />
+          </Tooltip>
           {/* Theme toggle */}
           <Tooltip title={appTheme === 'dark' ? 'Switch to Light' : 'Switch to Dark'}>
             <Button

@@ -1,5 +1,6 @@
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use std::sync::Mutex;
 use anyhow::Result;
@@ -33,6 +34,8 @@ pub struct AudioManager {
     process_fn:  Arc<Mutex<Option<ProcessChainFn>>>,
     /// VU meter for output level monitoring
     vu_meter:    Arc<VUMeter>,
+    /// Output mute — when true the output callback writes silence.
+    muted:       Arc<AtomicBool>,
 }
 
 impl AudioManager {
@@ -44,6 +47,7 @@ impl AudioManager {
             monitoring:  Mutex::new(None),
             process_fn:  Arc::new(Mutex::new(None)),
             vu_meter:    Arc::new(VUMeter::new()),
+            muted:       Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -98,6 +102,16 @@ impl AudioManager {
             *self.monitoring.lock().unwrap() = None;
             self.status.write().is_monitoring = false;
             log::info!("Input monitoring stopped");
+            return Ok(());
+        }
+
+        // Hold the monitoring mutex for the entire setup so that a second call
+        // (e.g. React StrictMode double-effect) cannot race and create duplicate
+        // streams — which caused STATUS_ACCESS_VIOLATION when the first set of
+        // streams was dropped mid-callback.
+        let mut monitoring_guard = self.monitoring.lock().unwrap();
+        if monitoring_guard.is_some() {
+            log::info!("Audio stream already running — ignoring duplicate start");
             return Ok(());
         }
 
@@ -220,6 +234,7 @@ impl AudioManager {
         // -----------------------------------------------------------------
         let process_fn = Arc::clone(&self.process_fn);
         let vu_meter = Arc::clone(&self.vu_meter);
+        let muted = Arc::clone(&self.muted);
         let mut left_buf  = vec![0.0f32; config.buffer_size as usize];
         let mut right_buf = vec![0.0f32; config.buffer_size as usize];
 
@@ -254,10 +269,14 @@ impl AudioManager {
                     vu_meter.update(&left_buf[..frames], &right_buf[..frames]);
 
                     // Step 3: Re-interleave L/R → CPAL output buffer.
+                    // If muted, write silence so the VU meter still shows levels
+                    // but speakers hear nothing.
+                    let is_muted = muted.load(Ordering::Relaxed);
                     for frame in 0..frames {
                         for ch in 0..output_channels {
-                            data[frame * output_channels + ch] =
-                                if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] };
+                            data[frame * output_channels + ch] = if is_muted { 0.0 } else {
+                                if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] }
+                            };
                         }
                     }
                 },
@@ -273,13 +292,24 @@ impl AudioManager {
             .play()
             .map_err(|e| anyhow::anyhow!("Failed to start output stream: {e}"))?;
 
-        *self.monitoring.lock().unwrap() = Some(MonitoringStreams {
+        *monitoring_guard = Some(MonitoringStreams {
             _input: in_stream,
             _output: out_stream,
         });
         self.status.write().is_monitoring = true;
         log::info!("Input monitoring started ({}Hz, {} samples)", config.sample_rate, config.buffer_size);
         Ok(())
+    }
+
+    /// Set output mute state.
+    pub fn set_muted(&self, muted: bool) {
+        self.muted.store(muted, Ordering::Relaxed);
+        log::info!("Audio output {}", if muted { "muted" } else { "unmuted" });
+    }
+
+    /// Get current mute state.
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
     }
 
     /// Get current audio status
@@ -303,6 +333,10 @@ impl AudioManager {
     pub fn set_output_device(&self, device_id: Option<String>) -> Result<()> {
         self.config.write().output_device_id = device_id;
         log::info!("Output device updated");
+        if self.status.read().is_monitoring {
+            self.toggle_monitoring(false)?;
+            self.toggle_monitoring(true)?;
+        }
         Ok(())
     }
 
@@ -310,22 +344,32 @@ impl AudioManager {
     pub fn set_input_device(&self, device_id: Option<String>) -> Result<()> {
         self.config.write().input_device_id = device_id;
         log::info!("Input device updated");
+        if self.status.read().is_monitoring {
+            self.toggle_monitoring(false)?;
+            self.toggle_monitoring(true)?;
+        }
         Ok(())
     }
 
     /// Set sample rate
     pub fn set_sample_rate(&self, rate: u32) -> Result<()> {
         self.config.write().sample_rate = rate;
-        self.start()?;
         log::info!("Sample rate set to {}Hz", rate);
+        if self.status.read().is_monitoring {
+            self.toggle_monitoring(false)?;
+            self.toggle_monitoring(true)?;
+        }
         Ok(())
     }
 
     /// Set buffer size
     pub fn set_buffer_size(&self, size: u32) -> Result<()> {
         self.config.write().buffer_size = size;
-        self.start()?;
         log::info!("Buffer size set to {} samples", size);
+        if self.status.read().is_monitoring {
+            self.toggle_monitoring(false)?;
+            self.toggle_monitoring(true)?;
+        }
         Ok(())
     }
 }

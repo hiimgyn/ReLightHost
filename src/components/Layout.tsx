@@ -16,8 +16,23 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const { theme } = useThemeStore();
-  const { status } = useAudioStore();
+  const { status, toggleMonitoring, fetchStatus } = useAudioStore();
   const { pluginChain } = usePluginStore();
+
+  // Auto-start the audio stream on app launch.
+  // The stream stays running until the window closes.
+  useEffect(() => {
+    const start = async () => {
+      try {
+        await toggleMonitoring(true);
+        await fetchStatus();
+      } catch (e) {
+        console.error('Failed to auto-start audio stream:', e);
+      }
+    };
+    start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <ConfigProvider

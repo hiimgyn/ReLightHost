@@ -129,6 +129,12 @@ fn toggle_monitoring(state: tauri::State<AppState>, enabled: bool) -> Result<(),
 }
 
 #[tauri::command]
+fn set_muted(state: tauri::State<AppState>, muted: bool) -> Result<(), String> {
+    state.audio_manager.read().set_muted(muted);
+    Ok(())
+}
+
+#[tauri::command]
 fn get_vu_data(state: tauri::State<AppState>) -> Result<audio::VUData, String> {
     Ok(state.audio_manager.read().get_vu_data())
 }
@@ -289,6 +295,18 @@ fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(
         // Use the existing VST3 processor's GUI instead of loading a new instance
         instance.open_gui()
             .map_err(|e| format!("Failed to open plugin GUI: {}", e))
+    } else {
+        Err(format!("Plugin instance not found: {}", instance_id))
+    }
+}
+
+/// Return the current voice-activity probability (0.0–1.0) from the built-in
+/// noise suppressor.  Used by the NoiseSuppressorGui component for the VAD meter.
+#[tauri::command]
+fn get_noise_suppressor_vad(state: tauri::State<AppState>, instance_id: String) -> Result<f32, String> {
+    let manager = state.plugin_manager.read();
+    if let Some(instance) = manager.get_instance(&instance_id) {
+        Ok(instance.get_builtin_vad())
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
     }
@@ -644,6 +662,7 @@ pub fn run() {
             set_sample_rate,
             set_buffer_size,
             toggle_monitoring,
+            set_muted,
             get_vu_data,
             scan_plugins,
             load_plugin,
@@ -673,6 +692,7 @@ pub fn run() {
             get_plugin_crash_status,
             reset_plugin_crash_protection,
             midi_panic,
+            get_noise_suppressor_vad,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,11 +5,13 @@ import {
   PlayCircleOutlined,
   ThunderboltOutlined,
   WarningOutlined,
-  ReloadOutlined
+  ReloadOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { useState, useEffect } from 'react';
 import type { PluginInstanceInfo, PluginStatus } from '../lib/types';
 import * as tauri from '../lib/tauri';
+import NoiseSuppressorGui from './NoiseSuppressorGui';
 
 interface PluginCardProps {
   plugin: PluginInstanceInfo;
@@ -22,6 +24,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
   const { token } = theme.useToken();
   const [crashStatus, setCrashStatus] = useState<PluginStatus>({ type: 'Ok' });
   const [checkingStatus, setCheckingStatus] = useState(false);
+  const [showBuiltinGui, setShowBuiltinGui] = useState(false);
   
   // Check crash status periodically
   useEffect(() => {
@@ -81,6 +84,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
   const isCrashed = crashStatus.type !== 'Ok';
   
   return (
+    <>
     <Card
       size="small"
       className={`
@@ -165,11 +169,11 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
             <Button
               type="default"
               size="small"
-              icon={<PlayCircleOutlined />}
-              onClick={onLaunch}
+              icon={plugin.format === 'builtin' ? <SettingOutlined /> : <PlayCircleOutlined />}
+              onClick={plugin.format === 'builtin' ? () => setShowBuiltinGui(true) : onLaunch}
               disabled={isCrashed}
             >
-              Launch
+              {plugin.format === 'builtin' ? 'Settings' : 'Launch'}
             </Button>
           </Tooltip>
 
@@ -185,5 +189,15 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
         </Space>
       </Space>
     </Card>
+
+    {/* Built-in plugin GUI (rendered outside the Card to avoid z-index issues) */}
+    {plugin.format === 'builtin' && (
+      <NoiseSuppressorGui
+        plugin={plugin}
+        isOpen={showBuiltinGui}
+        onClose={() => setShowBuiltinGui(false)}
+      />
+    )}
+  </>
   );
 }

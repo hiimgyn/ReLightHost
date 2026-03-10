@@ -38,6 +38,10 @@ export async function toggleMonitoring(enabled: boolean): Promise<void> {
   return invoke('toggle_monitoring', { enabled });
 }
 
+export async function setMuted(muted: boolean): Promise<void> {
+  return invoke('set_muted', { muted });
+}
+
 export async function getVUData(): Promise<VUData> {
   return invoke('get_vu_data');
 }
@@ -119,4 +123,8 @@ export async function resetPluginCrashProtection(instanceId: string): Promise<vo
 
 export async function midiPanic(): Promise<void> {
   return invoke('midi_panic');
+}
+
+export async function getNoiseSuppressorVad(instanceId: string): Promise<number> {
+  return invoke('get_noise_suppressor_vad', { instanceId });
 }

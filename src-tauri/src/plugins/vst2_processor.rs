@@ -339,6 +339,7 @@ impl Vst2Processor {
     }
 
     /// Set a normalised parameter value ([0.0, 1.0]).
+    #[allow(dead_code)]
     pub fn set_param_normalized(&self, index: u32, normalized: f32) {
         match &self.backend {
             Backend::Vst(arc) => {
@@ -353,6 +354,7 @@ impl Vst2Processor {
     }
 
     /// Return basic plugin metadata for the UI.
+    #[allow(dead_code)]
     pub fn get_info(&self) -> Option<(String, String)> {
         match &self.backend {
             Backend::Vst(arc) => {

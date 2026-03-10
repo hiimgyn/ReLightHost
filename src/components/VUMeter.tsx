@@ -1,6 +1,165 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import * as tauri from '../lib/tauri';
 import './VUMeter.css';
+
+interface VUChannel {
+  peak: number;      // 0.0 - 1.0
+  peak_hold: number; // 0.0 - 1.0
+  rms: number;       // 0.0 - 1.0
+}
+
+interface VUData {
+  left: VUChannel;
+  right: VUChannel;
+}
+
+interface VUMeterProps {
+  updateInterval?: number;
+  compact?: boolean;
+}
+
+/** Convert linear amplitude → dB, clamped to [-60, +∞) */
+function toDb(linear: number): number {
+  if (linear <= 0.00001) return -Infinity;
+  return Math.max(20 * Math.log10(linear), -60);
+}
+
+/** Normalize dB [-60…0] → [0…100] */
+function normalize(db: number): number {
+  if (!isFinite(db)) return 0;
+  return ((db + 60) / 60) * 100;
+}
+
+function dbLabel(db: number): string {
+  if (!isFinite(db)) return '-∞';
+  return db.toFixed(1);
+}
+
+/**
+ * VU Meter — segmented PPM-style with peak hold, RMS, and dB readout.
+ * compact=true → slim dual-bar for the header toolbar.
+ */
+export function VUMeter({ updateInterval = 50, compact = false }: VUMeterProps) {
+  const [vuData, setVuData] = useState<VUData>({
+    left:  { peak: 0, peak_hold: 0, rms: 0 },
+    right: { peak: 0, peak_hold: 0, rms: 0 },
+  });
+
+  // track clip state independently so it stays visible briefly
+  const clipTimerL = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clipTimerR = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [clipL, setClipL] = useState(false);
+  const [clipR, setClipR] = useState(false);
+
+  useEffect(() => {
+    const fetch = async () => {
+      try {
+        const data = await tauri.getVUData();
+        setVuData(data);
+        // Clip detection (> -0.1 dB ≈ 0.989)
+        if (data.left.peak > 0.989) {
+          setClipL(true);
+          if (clipTimerL.current) clearTimeout(clipTimerL.current);
+          clipTimerL.current = setTimeout(() => setClipL(false), 1500);
+        }
+        if (data.right.peak > 0.989) {
+          setClipR(true);
+          if (clipTimerR.current) clearTimeout(clipTimerR.current);
+          clipTimerR.current = setTimeout(() => setClipR(false), 1500);
+        }
+      } catch { /* engine not started yet */ }
+    };
+    fetch();
+    const id = setInterval(fetch, updateInterval);
+    return () => {
+      clearInterval(id);
+      if (clipTimerL.current) clearTimeout(clipTimerL.current);
+      if (clipTimerR.current) clearTimeout(clipTimerR.current);
+    };
+  }, [updateInterval]);
+
+  if (compact) {
+    return (
+      <div className="vum-compact">
+        <CompactBar label="L" channel={vuData.left} clip={clipL} />
+        <CompactBar label="R" channel={vuData.right} clip={clipR} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="vum-full">
+      <FullBar label="L" channel={vuData.left} clip={clipL} />
+      <FullBar label="R" channel={vuData.right} clip={clipR} />
+      {/* dB scale ticks */}
+      <div className="vum-scale-row">
+        {['-60','-48','-36','-24','-18','-12','-6','-3','0'].map(db => (
+          <span key={db} className="vum-scale-tick"
+            style={{ left: `${normalize(parseFloat(db))}%` }}
+          >{db}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---- Compact bar (header) ---- */
+function CompactBar({ label, channel, clip }: { label: string; channel: VUChannel; clip: boolean }) {
+  const peakDb  = toDb(channel.peak);
+  const rmsDb   = toDb(channel.rms);
+  const holdDb  = toDb(channel.peak_hold);
+  const peakPct = normalize(peakDb);
+  const rmsPct  = normalize(rmsDb);
+  const holdPct = normalize(holdDb);
+
+  return (
+    <div className="vum-compact-channel">
+      <span className="vum-compact-label">{label}</span>
+      <div className="vum-bar-wrap">
+        {/* ghost gradient background */}
+        <div className="vum-ghost" />
+        {/* RMS underlay */}
+        <div className="vum-rms-bar" style={{ width: `${rmsPct}%` }} />
+        {/* Peak fill */}
+        <div className="vum-peak-bar" style={{ width: `${peakPct}%` }} />
+        {/* Peak-hold tick */}
+        {channel.peak_hold > 0.001 && (
+          <div className="vum-hold-tick" style={{ left: `calc(${holdPct}% - 1px)` }} />
+        )}
+      </div>
+      <span className="vum-compact-db" style={{ color: clip ? '#e74c3c' : peakDb > -12 ? '#f39c12' : '#8ec86e' }}>
+        {clip ? 'CLIP' : dbLabel(peakDb)}
+      </span>
+    </div>
+  );
+}
+
+/* ---- Full bar (standalone) ---- */
+function FullBar({ label, channel, clip }: { label: string; channel: VUChannel; clip: boolean }) {
+  const peakDb  = toDb(channel.peak);
+  const rmsDb   = toDb(channel.rms);
+  const holdDb  = toDb(channel.peak_hold);
+  const peakPct = normalize(peakDb);
+  const rmsPct  = normalize(rmsDb);
+  const holdPct = normalize(holdDb);
+
+  return (
+    <div className="vum-full-channel">
+      <span className="vum-full-label">{label}</span>
+      <div className="vum-full-bar-wrap">
+        <div className="vum-ghost" />
+        <div className="vum-rms-bar" style={{ width: `${rmsPct}%` }} />
+        <div className="vum-peak-bar" style={{ width: `${peakPct}%` }} />
+        {channel.peak_hold > 0.001 && (
+          <div className="vum-hold-tick" style={{ left: `calc(${holdPct}% - 1px)` }} />
+        )}
+      </div>
+      <span className="vum-full-db" style={{ color: clip ? '#e74c3c' : peakDb > -12 ? '#f39c12' : '#8ec86e' }}>
+        {clip ? '▲CLIP' : `${dbLabel(peakDb)} dB`}
+      </span>
+    </div>
+  );
+}
 
 interface VUChannel {
   peak: number;      // 0.0 - 1.0
@@ -22,156 +181,3 @@ interface VUMeterProps {
   compact?: boolean;
 }
 
-/**
- * VU Meter component for real-time audio level visualization
- * 
- * Features:
- * - Peak detection with color coding (green/yellow/red)
- * - Peak hold indicators
- * - RMS display for average loudness
- * - dB scale (-60 to 0 dB)
- * - Inspired by rust-vst3-host metering
- */
-export function VUMeter({ updateInterval = 50, showRMS = false, compact = false }: VUMeterProps) {
-  const [vuData, setVuData] = useState<VUData>({
-    left: { peak: 0, peak_hold: 0, rms: 0 },
-    right: { peak: 0, peak_hold: 0, rms: 0 },
-  });
-
-  useEffect(() => {
-    const fetchVU = async () => {
-      try {
-        const data = await tauri.getVUData();
-        setVuData(data);
-      } catch (err) {
-        // Silently fail - audio engine may not be started
-      }
-    };
-
-    fetchVU(); // Initial fetch
-    const interval = setInterval(fetchVU, updateInterval);
-    return () => clearInterval(interval);
-  }, [updateInterval]);
-
-  return (
-    <div className={`vu-meter ${compact ? 'vu-meter-compact' : ''}`}>
-      <VUChannel
-        label="L"
-        channel={vuData.left}
-        showRMS={showRMS}
-        compact={compact}
-      />
-      <VUChannel
-        label="R"
-        channel={vuData.right}
-        showRMS={showRMS}
-        compact={compact}
-      />
-    </div>
-  );
-}
-
-interface VUChannelProps {
-  label: string;
-  channel: VUChannel;
-  showRMS: boolean;
-  compact: boolean;
-}
-
-function VUChannel({ label, channel, showRMS, compact }: VUChannelProps) {
-  const peakDb = toDb(channel.peak);
-  const rmsDb = toDb(channel.rms);
-  const holdDb = toDb(channel.peak_hold);
-
-  // Calculate percentage for display (map -60dB to 0dB → 0% to 100%)
-  const peakPercent = normalize(peakDb);
-  const rmsPercent = normalize(rmsDb);
-  const holdPercent = normalize(holdDb);
-
-  const peakColor = getColorForDb(peakDb);
-  const rmsColor = 'rgba(255, 255, 255, 0.3)'; // Dim white for RMS
-
-  return (
-    <div className="vu-channel">
-      {!compact && <span className="vu-label">{label}</span>}
-      
-      <div className="vu-bar-container">
-        {/* RMS bar (background) */}
-        {showRMS && (
-          <div
-            className="vu-bar vu-rms"
-            style={{
-              width: `${rmsPercent}%`,
-              backgroundColor: rmsColor,
-            }}
-          />
-        )}
-        
-        {/* Peak bar (foreground) */}
-        <div
-          className="vu-bar vu-peak"
-          style={{
-            width: `${peakPercent}%`,
-            backgroundColor: peakColor,
-          }}
-        />
-        
-        {/* Peak hold line */}
-        {channel.peak_hold > 0.001 && (
-          <div
-            className="vu-hold"
-            style={{ left: `${holdPercent}%` }}
-          />
-        )}
-        
-        {/* dB scale markers */}
-        <div className="vu-scale">
-          <div className="vu-mark" style={{ left: '0%' }} title="-60 dB" />
-          <div className="vu-mark" style={{ left: '50%' }} title="-30 dB" />
-          <div className="vu-mark vu-mark-hot" style={{ left: '80%' }} title="-12 dB" />
-          <div className="vu-mark vu-mark-clip" style={{ left: '95%' }} title="-3 dB" />
-          <div className="vu-mark vu-mark-clip" style={{ left: '100%' }} title="0 dB" />
-        </div>
-      </div>
-      
-      {!compact && (
-        <span className="vu-value">
-          {peakDb > -60 ? `${peakDb.toFixed(1)}` : '-∞'}
-          <span className="vu-unit">dB</span>
-        </span>
-      )}
-    </div>
-  );
-}
-
-/**
- * Convert linear amplitude to decibels
- */
-function toDb(linear: number): number {
-  const SILENCE_THRESHOLD = 0.00001; // -100 dB
-  if (linear > SILENCE_THRESHOLD) {
-    return Math.max(20 * Math.log10(linear), -60);
-  }
-  return -Infinity;
-}
-
-/**
- * Normalize dB to percentage (map -60dB to 0dB → 0% to 100%)
- */
-function normalize(db: number): number {
-  if (!isFinite(db)) return 0;
-  return ((db + 60) / 60) * 100;
-}
-
-/**
- * Get color based on dB level
- * Green: < -12 dB (normal)
- * Yellow: -12 to -3 dB (hot)
- * Red: > -3 dB (clipping warning)
- */
-function getColorForDb(db: number): string {
-  if (!isFinite(db) || db < -60) return '#2ecc71'; // Green (silence)
-  if (db > -3) return '#e74c3c';   // Red (clipping)
-  if (db > -12) return '#f39c12';  // Yellow (hot)
-  return '#2ecc71';                // Green (normal)
-}

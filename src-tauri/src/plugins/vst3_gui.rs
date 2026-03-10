@@ -45,18 +45,32 @@ pub mod win {
             std::cell::RefCell::new(None);
         /// Initial (width, height) applied via WM_VST_ATTACH once the loop runs.
         static TL_INITIAL_SIZE: Cell<(i32, i32)> = Cell::new((0, 0));
-        /// The IPlugView clone to be attached inside the message loop.
-        /// Stored by setup, consumed exactly once by the WM_VST_ATTACH handler.
+        /// View clone passed to the attach helper thread.
         static TL_PENDING_VIEW: std::cell::RefCell<Option<ComPtr<IPlugView>>> =
+            std::cell::RefCell::new(None);
+        /// JoinHandle for the background attach thread.
+        /// Joined before view.removed() to prevent data-race on the ComPtr.
+        static TL_ATTACH_THREAD: std::cell::RefCell<Option<std::thread::JoinHandle<()>>> =
             std::cell::RefCell::new(None);
     }
 
-    /// Posted BEFORE starting the message loop.
-    /// The handler calls IPlugView::attached(), onSize(), and ShowWindow() so
-    /// that these run while the pump is active — this prevents deadlocks caused
-    /// by plugins that SendMessage back to our HWND from their own threads
-    /// during attached() initialization (e.g. JUCE-based plugins).
+    /// Posted to self just before the message loop starts.
+    /// Handler spawns a helper thread to call IPlugView::attached() and
+    /// immediately returns 0 — the GUI thread stays in GetMessage() and is
+    /// therefore responsive to cross-thread SendMessage calls from the plugin
+    /// (e.g. WM_PARENTNOTIFY from JUCE's SharedMessageThread when it calls
+    /// CreateWindowExW with our HWND as parent).  Without this, those sends
+    /// deadlock because DispatchMessage does NOT pump the sent-message queue.
     const WM_VST_ATTACH: u32 = WM_USER + 1;
+    /// Posted by the attach helper thread when IPlugView::attached() returns.
+    /// Handler calls onSize() and ShowWindow() once the plugin is fully ready.
+    const WM_VST_READY:  u32 = WM_USER + 2;
+
+    /// Wrapper that makes ComPtr<IPlugView> safe to send to a helper thread.
+    /// VST3 IPlugView is a plain C++ vtable interface — it has no COM apartment
+    /// enforcement, so calling across threads is safe for the attach() step.
+    struct SendView(ComPtr<IPlugView>);
+    unsafe impl Send for SendView {}
 
     // ── IPlugFrame host implementation ────────────────────────────────────────
     // Provided to the plugin via view.setFrame() so it can request window
@@ -124,21 +138,51 @@ pub mod win {
         std::thread::Builder::new()
             .name(format!("vst3-gui-{}", plugin_name))
             .spawn(move || {
-                struct GuiFlagGuard(Arc<AtomicBool>, Arc<AtomicIsize>);
-                impl Drop for GuiFlagGuard {
+                use std::mem::ManuallyDrop;
+
+                // CleanupGuard releases the COM interface clones (controller +
+                // component) BEFORE it clears gui_open.  This ordering is
+                // critical: PluginInstance::drop() waits for gui_open → false,
+                // then immediately drops Vst3Processor which unloads the DLL.
+                // If these ComPtr clones were still alive at that point, the
+                // subsequent ComPtr::drop() would call Release() through a freed
+                // vtable, causing STATUS_ACCESS_VIOLATION.
+                struct CleanupGuard {
+                    controller: ManuallyDrop<ComPtr<IEditController>>,
+                    component:  ManuallyDrop<ComPtr<IComponent>>,
+                    flag: Arc<AtomicBool>,
+                    hwnd: Arc<AtomicIsize>,
+                }
+                impl Drop for CleanupGuard {
                     fn drop(&mut self) {
-                        // Clear HWND first so PluginInstance::drop's PostMessageW
-                        // is not duplicated if the window was already closed.
-                        self.1.store(0, Ordering::Release);
-                        self.0.store(false, Ordering::Release);
+                        unsafe {
+                            // Release COM interfaces first — do NOT reorder.
+                            ManuallyDrop::drop(&mut self.controller);
+                            ManuallyDrop::drop(&mut self.component);
+                        }
+                        // Only THEN signal that it is safe to unload the DLL.
+                        self.hwnd.store(0, Ordering::Release);
+                        self.flag.store(false, Ordering::Release);
                         log::debug!("GUI flag cleared");
                     }
                 }
-                let _guard = GuiFlagGuard(gui_flag, Arc::clone(&gui_hwnd));
 
-                if let Err(e) = run_gui_window_impl(&controller_clone, &component_clone, &name_owned, &gui_hwnd) {
+                let _cleanup = CleanupGuard {
+                    controller: ManuallyDrop::new(controller_clone),
+                    component:  ManuallyDrop::new(component_clone),
+                    flag: gui_flag,
+                    hwnd: Arc::clone(&gui_hwnd),
+                };
+
+                if let Err(e) = run_gui_window_impl(
+                    &_cleanup.controller,
+                    &_cleanup.component,
+                    &name_owned,
+                    &gui_hwnd,
+                ) {
                     log::error!("VST3 GUI error for '{}': {}", name_owned, e);
                 }
+                // _cleanup drops here: COM refs released, then gui_open cleared
             })
             .map_err(|e| anyhow!("Failed to spawn GUI thread: {}", e))?;
 
@@ -329,10 +373,15 @@ pub mod win {
         run_message_loop();
 
         // 10. Cleanup — window destroyed by WM_CLOSE → DefWindowProc.
+        // Wait for the attach thread to finish before calling view.removed().
+        // The attach thread holds a SendView clone; if we call removed() while
+        // it is still running attached() we race on the COM refcount.
+        if let Some(handle) = TL_ATTACH_THREAD.with(|c| c.borrow_mut().take()) {
+            let _ = handle.join();
+        }
         unsafe { view.setFrame(ptr::null_mut()); }
         let _ = unsafe { view.removed() };
-        // Clear thread-locals — releases ComPtr clones before view drops.
-        // (TL_PENDING_VIEW may still hold a clone if WM_VST_ATTACH never fired.)
+        // Clear remaining thread-locals — releases ComPtr clones before view drops.
         TL_PENDING_VIEW.with(|c| *c.borrow_mut() = None);
         TL_ON_SIZE.with(|cell| *cell.borrow_mut() = None);
         TL_INITIAL_SIZE.with(|c| c.set((0, 0)));
@@ -359,32 +408,59 @@ pub mod win {
                 PostQuitMessage(0);
                 0
             }
-            // First message in the loop: call IPlugView::attached() while the
-            // pump is running, then apply initial size and reveal the window.
-            // Running attached() here (not before the loop) ensures any
-            // cross-thread SendMessage calls from the plugin's init threads are
-            // serviced without deadlocking the GUI thread.
+            // Spawn a helper thread to call IPlugView::attached() and return
+            // immediately.  This keeps the GUI thread in GetMessage() so that
+            // cross-thread SendMessage calls from the plugin (e.g. the
+            // WM_PARENTNOTIFY that fires when JUCE's SharedMessageThread calls
+            // CreateWindowExW with our HWND as parent) are delivered instantly.
+            // If attached() were called directly inside WndProc, the GUI thread
+            // would be inside DispatchMessage and Win32 would NOT deliver those
+            // cross-thread sends — causing a deadlock.
             m if m == WM_VST_ATTACH => {
                 let view_opt = TL_PENDING_VIEW.with(|c| c.borrow_mut().take());
-                if let Some(view) = view_opt {
-                    let attach_res = view.attached(hwnd, kPlatformTypeHWND);
-                    if attach_res != 0 {
-                        // kResultOk == 0; non-zero means failure.  Many plugins
-                        // still render correctly — warn and continue.
-                        log::warn!(
-                            "VST3 IPlugView::attached() returned {} (continuing)",
-                            attach_res
-                        );
+                match view_opt {
+                    None => {
+                        log::warn!("WM_VST_ATTACH: no pending view — aborting GUI");
+                        PostQuitMessage(1);
                     }
-                    let (w, h) = TL_INITIAL_SIZE.with(|c| c.get());
-                    if w > 0 && h > 0 {
-                        TL_ON_SIZE.with(|cell| {
-                            if let Some(ref f) = *cell.borrow() { f(w, h); }
-                        });
+                    Some(view) => {
+                        let hwnd_key = hwnd as isize;
+                        let send_view = SendView(view);
+                        let spawn_res = std::thread::Builder::new()
+                            .name("vst3-attach".into())
+                            .spawn(move || {
+                                let res = send_view.0.attached(
+                                    hwnd_key as _,
+                                    kPlatformTypeHWND,
+                                );
+                                // Signal GUI thread; result in wparam.
+                                PostMessageW(hwnd_key as _, WM_VST_READY, res as usize, 0);
+                            });
+                        match spawn_res {
+                            Ok(handle) => {
+                                TL_ATTACH_THREAD.with(|c| *c.borrow_mut() = Some(handle));
+                            }
+                            Err(e) => {
+                                log::error!("Failed to spawn vst3-attach thread: {}", e);
+                                PostQuitMessage(1);
+                            }
+                        }
                     }
-                } else {
-                    log::warn!("WM_VST_ATTACH fired but no pending view — closing");
-                    PostQuitMessage(1);
+                }
+                0  // return immediately — GUI thread stays in GetMessage
+            }
+            // Helper thread finished IPlugView::attached(); now safe to call
+            // onSize() and show the window.
+            m if m == WM_VST_READY => {
+                let attach_res = wparam as i32;
+                if attach_res != 0 {
+                    log::warn!("VST3 attached() returned {} (continuing)", attach_res);
+                }
+                let (w, h) = TL_INITIAL_SIZE.with(|c| c.get());
+                if w > 0 && h > 0 {
+                    TL_ON_SIZE.with(|cell| {
+                        if let Some(ref f) = *cell.borrow() { f(w, h); }
+                    });
                 }
                 ShowWindow(hwnd, SW_SHOW);
                 SetForegroundWindow(hwnd);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Modal, Form, Select, Button, Divider, Tag, Space, message, Alert } from 'antd';
-import { CheckOutlined, AudioOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { CheckOutlined, AudioOutlined, ThunderboltOutlined, SyncOutlined } from '@ant-design/icons';
 import { useAudioStore } from '../stores/audioStore';
 import type { AudioDeviceInfo } from '../lib/types';
 
@@ -67,7 +67,10 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
 
   useEffect(() => {
     if (!isOpen) return;
-    fetchDevices();
+
+    // Only enumerate devices when the list is empty (app start or explicit refresh).
+    // Re-enumerating ASIO hosts while a stream is active kills the running driver.
+    if (devices.length === 0) fetchDevices();
 
     // Auto-detect host type from the currently stored device
     const currentIsAsio = isAsioId(selectedDevice);
@@ -121,6 +124,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       await toggleMonitoring(true);
       await fetchStatus();
       message.success('Audio settings applied — stream restarted');
+      localStorage.setItem('audioConfigured', 'true');
       onClose();
     } catch (error) {
       console.error('Failed to apply settings:', error);
@@ -141,6 +145,9 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       width={600}
       footer={[
         <Button key="cancel" onClick={onClose}>Cancel</Button>,
+        <Button key="refresh" icon={<SyncOutlined />} onClick={fetchDevices}>
+          Refresh Devices
+        </Button>,
         <Button key="apply" type="primary" icon={<CheckOutlined />} onClick={handleApply}>
           Apply
         </Button>,

@@ -203,6 +203,17 @@ fn set_plugin_parameter(state: tauri::State<AppState>, instance_id: String, para
 }
 
 #[tauri::command]
+fn rename_plugin(state: tauri::State<AppState>, instance_id: String, new_name: String) -> Result<(), String> {
+    let manager = state.plugin_manager.read();
+    if let Some(instance) = manager.get_instance(&instance_id) {
+        instance.rename(new_name);
+        Ok(())
+    } else {
+        Err(format!("Plugin instance not found: {}", instance_id))
+    }
+}
+
+#[tauri::command]
 fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to_index: usize) -> Result<(), String> {
     state.plugin_manager
         .read()
@@ -619,6 +630,98 @@ pub fn run() {
                 )?;
             }
 
+            // System tray icon with context menu.
+            {
+                use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
+                use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+                use tauri::Manager;
+
+                let show_item   = MenuItem::with_id(app, "show",          "Show ReLightHost",      true, None::<&str>)?;
+                let mute_item   = MenuItem::with_id(app, "toggle_mute",   "Mute / Unmute Audio",   true, None::<&str>)?;
+                let audio_item  = MenuItem::with_id(app, "audio_settings","Audio Settings…",       true, None::<&str>)?;
+                let app_item    = MenuItem::with_id(app, "app_settings",  "Application Settings…", true, None::<&str>)?;
+                let quit_item   = MenuItem::with_id(app, "quit",          "Exit",                  true, None::<&str>)?;
+                let sep1 = PredefinedMenuItem::separator(app)?;
+                let sep2 = PredefinedMenuItem::separator(app)?;
+                let sep3 = PredefinedMenuItem::separator(app)?;
+
+                let menu = Menu::with_items(app, &[
+                    &show_item,
+                    &sep1,
+                    &mute_item,
+                    &sep2,
+                    &audio_item,
+                    &app_item,
+                    &sep3,
+                    &quit_item,
+                ])?;
+
+                let tray = TrayIconBuilder::with_id("main")
+                    .tooltip("ReLightHost")
+                    .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
+                        tauri::image::Image::new(&[] as &[u8], 0, 0)
+                    }))
+                    .menu(&menu)
+                    .on_menu_event(|app: &tauri::AppHandle<tauri::Wry>, event: tauri::menu::MenuEvent| {
+                        use tauri::Emitter;
+                        match event.id.as_ref() {
+                            "show" => {
+                                if let Some(win) = app.get_webview_window("main") {
+                                    let _ = win.show();
+                                    let _ = win.unminimize();
+                                    let _ = win.set_focus();
+                                }
+                            }
+                            "toggle_mute" => {
+                                // Toggle mute on the audio engine and sync the frontend
+                                let state = app.state::<AppState>();
+                                let manager = state.audio_manager.read();
+                                let new_muted = !manager.is_muted();
+                                manager.set_muted(new_muted);
+                                if let Some(win) = app.get_webview_window("main") {
+                                    let _ = win.emit("tray-mute-changed", new_muted);
+                                }
+                            }
+                            "audio_settings" => {
+                                if let Some(win) = app.get_webview_window("main") {
+                                    let _ = win.show();
+                                    let _ = win.unminimize();
+                                    let _ = win.set_focus();
+                                    let _ = win.emit("tray-open-audio-settings", ());
+                                }
+                            }
+                            "app_settings" => {
+                                if let Some(win) = app.get_webview_window("main") {
+                                    let _ = win.show();
+                                    let _ = win.unminimize();
+                                    let _ = win.set_focus();
+                                    let _ = win.emit("tray-open-app-settings", ());
+                                }
+                            }
+                            "quit" => {
+                                app.exit(0);
+                            }
+                            _ => {}
+                        }
+                    })
+                    .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event: TrayIconEvent| {
+                        // Left-click: show/restore window
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event {
+                            if let Some(window) = tray.app_handle().get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    })
+                    .build(app)?;
+                let _ = tray; // keep alive
+            }
+
             // Set initial window size proportional to the primary monitor,
             // keeping the ~11:7 aspect ratio and respecting the 800×520 minimum.
             const RATIO: f64 = 860.0 / 560.0;
@@ -673,6 +776,7 @@ pub fn run() {
             get_plugin_state,
             set_plugin_state,
             reorder_plugin_chain,
+            rename_plugin,
             apply_preset,
             play_test_sound,
             save_preset,

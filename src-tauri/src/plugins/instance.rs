@@ -18,6 +18,8 @@ use anyhow::Result;
 pub struct PluginInstance {
     instance_id:    String,
     plugin_info:    PluginInfo,
+    /// User-set display name; None means use plugin_info.name.
+    display_name:   RwLock<Option<String>>,
     bypassed:       Arc<RwLock<bool>>,
     parameters:     Arc<RwLock<Vec<PluginParameter>>>,
     /// VST3 audio processor (vst3-rs) — present when format == VST3.
@@ -106,6 +108,7 @@ impl PluginInstance {
         Ok(Self {
             instance_id,
             plugin_info,
+            display_name:      RwLock::new(None),
             bypassed:          Arc::new(RwLock::new(false)),
             parameters:        Arc::new(RwLock::new(initial_params)),
             vst3_processor:    Mutex::new(vst3_processor),
@@ -241,10 +244,13 @@ impl PluginInstance {
 
     /// Get instance info for serialization
     pub fn get_info(&self) -> PluginInstanceInfo {
+        let name = self.display_name.read()
+            .clone()
+            .unwrap_or_else(|| self.plugin_info.name.clone());
         PluginInstanceInfo {
             instance_id: self.instance_id.clone(),
             plugin_id: self.plugin_info.id.clone(),
-            name: self.plugin_info.name.clone(),
+            name,
             vendor: self.plugin_info.vendor.clone(),
             version: self.plugin_info.version.clone(),
             path: self.plugin_info.path.clone(),
@@ -252,7 +258,17 @@ impl PluginInstance {
             category: self.plugin_info.category.clone(),
             bypassed: self.is_bypassed(),
             parameters: self.parameters.read().clone(),
+            gui_open: self.gui_open.load(Ordering::Acquire),
         }
+    }
+
+    /// Rename this plugin instance (display name only; does not affect the plugin file).
+    pub fn rename(&self, new_name: String) {
+        *self.display_name.write() = if new_name.is_empty() {
+            None
+        } else {
+            Some(new_name)
+        };
     }
 
     /// Set parameter value and forward to the VST3 edit controller.
@@ -387,29 +403,40 @@ impl PluginInstance {
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
-        // If a native GUI window is still open, post WM_CLOSE and wait for the
-        // GUI thread to exit *before* Vst3Processor drops and calls terminate().
-        // Without this, terminate() races with the GUI message loop and causes
-        // STATUS_ACCESS_VIOLATION (0xC0000005) on Windows.
-        let hwnd = self.gui_hwnd.load(Ordering::Acquire);
-        if hwnd != 0 {
-            #[cfg(target_os = "windows")]
-            unsafe {
-                use windows_sys::Win32::Foundation::HWND;
-                use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
-                PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
+        // If a GUI is open (or being opened), wait for the GUI thread to release
+        // all COM interface clones before we drop Vst3Processor (which unloads
+        // the DLL).  The GUI thread's CleanupGuard sets gui_open → false only
+        // AFTER releasing its ComPtr clones — so this ordering is safe.
+        if !self.gui_open.load(Ordering::Acquire) {
+            return;
+        }
+
+        // The HWND may not be published yet if we're removed during window
+        // creation startup.  Spin until it appears (or gui_open clears on its
+        // own in case of an early error), then send WM_CLOSE.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut close_sent = false;
+
+        while self.gui_open.load(Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        {
+            if !close_sent {
+                let hwnd = self.gui_hwnd.load(Ordering::Acquire);
+                if hwnd != 0 {
+                    #[cfg(target_os = "windows")]
+                    unsafe {
+                        use windows_sys::Win32::Foundation::HWND;
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+                        PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
+                    }
+                    close_sent = true;
+                }
             }
-            // Spin-wait up to 2 s for the GUI thread to clear gui_open.
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_secs(2);
-            while self.gui_open.load(Ordering::Acquire)
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            if self.gui_open.load(Ordering::Acquire) {
-                log::warn!("GUI thread did not exit within 2 s; proceeding with plugin teardown");
-            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        if self.gui_open.load(Ordering::Acquire) {
+            log::warn!("GUI thread did not release in time; proceeding with plugin teardown (may crash)");
         }
     }
 }

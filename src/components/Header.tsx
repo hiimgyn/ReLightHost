@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button, Space, Tooltip, Typography, theme, Badge } from 'antd';
+import { listen } from '@tauri-apps/api/event';
 
 const { Text } = Typography;
 import {
@@ -24,6 +25,17 @@ export default function Header() {
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
 
+  // Listen for tray context-menu events
+  useEffect(() => {
+    const unlistens = [
+      listen<boolean>('tray-mute-changed', (e) => setMuted(e.payload)),
+      listen('tray-open-audio-settings',   ()    => setShowAudioSettings(true)),
+      listen('tray-open-app-settings',     ()    => setShowAppSettings(true)),
+    ];
+    return () => { unlistens.forEach(p => p.then(fn => fn())); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <>
       <header
@@ -40,7 +52,7 @@ export default function Header() {
       >
         {/* Logo */}
         <Space size="small">
-          <AudioOutlined style={{ fontSize: 22, color: token.colorPrimary }} />
+          <img src="/logo.png" alt="ReLightHost" style={{ width: 22, height: 22 }} />
           <Text strong style={{ fontSize: 18 }}>ReLightHost</Text>
           <Text
             style={{

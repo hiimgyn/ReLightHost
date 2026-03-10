@@ -52,6 +52,7 @@ pub struct PluginParameter {
 pub struct PluginInstanceInfo {
     pub instance_id: String,
     pub plugin_id: String,
+    /// Display name — may differ from plugin_info.name if the user renamed it.
     pub name: String,
     #[serde(rename = "manufacture")]
     pub vendor: String,
@@ -61,4 +62,6 @@ pub struct PluginInstanceInfo {
     pub category: String,
     pub bypassed: bool,
     pub parameters: Vec<PluginParameter>,
+    /// True while the native GUI window is open.
+    pub gui_open: bool,
 }

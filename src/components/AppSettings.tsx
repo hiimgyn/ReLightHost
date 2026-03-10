@@ -134,13 +134,10 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
             <Text strong>ReLightHost</Text>
           </Descriptions.Item>
           <Descriptions.Item label="Version">
-            <Text strong>1.0.0</Text>
+            <Text strong>Beta</Text>
           </Descriptions.Item>
           <Descriptions.Item label="Author">
-            <Text strong>LightHost Team</Text>
-          </Descriptions.Item>
-          <Descriptions.Item label="Framework">
-            <Text strong>Tauri + React</Text>
+            <Text strong>HiimGyn</Text>
           </Descriptions.Item>
           <Descriptions.Item label="Description">
             <Paragraph style={{ marginBottom: 0 }} type="secondary">

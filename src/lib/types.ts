@@ -49,6 +49,8 @@ export interface PluginInstanceInfo {
   category: string;
   bypassed: boolean;
   parameters: PluginParameter[];
+  /** True while the native GUI window is open */
+  gui_open: boolean;
 }
 
 export interface Preset {

@@ -19,6 +19,12 @@ export default function Layout({ children }: LayoutProps) {
   const { status, toggleMonitoring, fetchStatus } = useAudioStore();
   const { pluginChain } = usePluginStore();
 
+  // Poll audio status for real footer data
+  useEffect(() => {
+    const id = setInterval(fetchStatus, 2000);
+    return () => clearInterval(id);
+  }, [fetchStatus]);
+
   // Auto-start the audio stream on app launch.
   // The stream stays running until the window closes.
   useEffect(() => {
@@ -39,7 +45,7 @@ export default function Layout({ children }: LayoutProps) {
       theme={{
         algorithm: theme === 'dark' ? antTheme.darkAlgorithm : antTheme.defaultAlgorithm,
         token: {
-          colorPrimary: '#1677ff',
+          colorPrimary: '#9b72cf',
           borderRadius: 8,
         },
       }}

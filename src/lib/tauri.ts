@@ -75,6 +75,10 @@ export async function reorderPluginChain(fromIndex: number, toIndex: number): Pr
   return invoke('reorder_plugin_chain', { fromIndex, toIndex });
 }
 
+export async function renamePlugin(instanceId: string, newName: string): Promise<void> {
+  return invoke('rename_plugin', { instanceId, newName });
+}
+
 export async function applyPreset(name: string): Promise<void> {
   return invoke('apply_preset', { name });
 }

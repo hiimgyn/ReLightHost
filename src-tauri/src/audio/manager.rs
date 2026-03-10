@@ -119,25 +119,40 @@ impl AudioManager {
 
         // -----------------------------------------------------------------
         // Resolve cpal devices
+        //
+        // Full-duplex ASIO insert (e.g. Voicemeeter insert): when the same
+        // ASIO device name is used for both input AND output we MUST obtain
+        // both Device objects from the SAME cpal::Host instance.  Using two
+        // separate host instances (as find_input_device / find_output_device
+        // each do) creates two independent ASIO driver singletons with
+        // separate bufferSwitch callbacks — input data never reaches the
+        // output ring buffer, producing silence.
         // -----------------------------------------------------------------
         let input_is_asio = config.input_device_id.as_deref()
             .map(|id| id.starts_with("asio_")).unwrap_or(false);
         let output_is_asio = config.output_device_id.as_deref()
             .map(|id| id.starts_with("asio_")).unwrap_or(false);
 
-        let input_device = config
-            .input_device_id
-            .as_deref()
-            .and_then(AudioDevice::find_input_device)
-            .or_else(|| cpal::default_host().default_input_device())
-            .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
+        let in_asio_name  = config.input_device_id.as_deref().and_then(|id| id.strip_prefix("asio_"));
+        let out_asio_name = config.output_device_id.as_deref().and_then(|id| id.strip_prefix("asio_"));
+        let same_asio_device = input_is_asio && output_is_asio && in_asio_name == out_asio_name;
 
-        let output_device = config
-            .output_device_id
-            .as_deref()
-            .and_then(AudioDevice::find_output_device)
-            .or_else(|| cpal::default_host().default_output_device())
-            .ok_or_else(|| anyhow::anyhow!("No output device available"))?;
+        let (input_device, output_device) = if same_asio_device {
+            let asio_name = in_asio_name.unwrap(); // safe: guarded above
+            log::info!("ASIO full-duplex insert mode: using shared host for '{}'", asio_name);
+            AudioDevice::find_asio_device_pair(asio_name)
+                .ok_or_else(|| anyhow::anyhow!("ASIO device '{}' not found for insert mode", asio_name))?
+        } else {
+            let inp = config.input_device_id.as_deref()
+                .and_then(AudioDevice::find_input_device)
+                .or_else(|| cpal::default_host().default_input_device())
+                .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
+            let out = config.output_device_id.as_deref()
+                .and_then(AudioDevice::find_output_device)
+                .or_else(|| cpal::default_host().default_output_device())
+                .ok_or_else(|| anyhow::anyhow!("No output device available"))?;
+            (inp, out)
+        };
 
         // -----------------------------------------------------------------
         // Build StreamConfigs.
@@ -189,14 +204,20 @@ impl AudioManager {
         let (out_cfg, output_channels) = build_config(&output_device, false, output_is_asio)?;
 
         // -----------------------------------------------------------------
-        // Lock-free SPSC ring buffer — stereo, 4 blocks deep.
+        // Lock-free SPSC ring buffer — stereo, sized by mode:
+        //  • Same-ASIO full-duplex: input fires synchronously before output
+        //    within the same bufferSwitch → 2 stereo frames is enough.
+        //    Keep a small margin (4×) to absorb any block-size discrepancy.
+        //  • Cross-device (WASAPI or different ASIO drivers): clocks can
+        //    drift; keep the existing 8× safety margin.
         // Producer  → input callback  (audio thread, no alloc, no lock)
         // Consumer  → output callback (audio thread, no alloc, no lock)
         // -----------------------------------------------------------------
-        // Size ring buffer generously so it can absorb even the largest ASIO block
-        // (driver may report a bigger block than config.buffer_size when
-        //  BufferSize::Default is used).
-        let buf_capacity = (config.buffer_size as usize).max(4096) * 8 * 2; // frames × 8 × stereo
+        let buf_capacity = if same_asio_device {
+            (config.buffer_size as usize).max(2048) * 4 * 2  // 4 frames × stereo
+        } else {
+            (config.buffer_size as usize).max(4096) * 8 * 2  // 8 frames × stereo
+        };
         let rb = HeapRb::<f32>::new(buf_capacity);
         let (mut producer, mut consumer) = rb.split();
 

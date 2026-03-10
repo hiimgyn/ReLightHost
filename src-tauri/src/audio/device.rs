@@ -211,5 +211,29 @@ impl AudioDevice {
         }
         None
     }
+
+    /// For ASIO full-duplex insert (e.g. Voicemeeter insert): find BOTH the input
+    /// and output `cpal::Device` for the same ASIO driver from a **single host
+    /// instance**.  This is required because cpal's ASIO backend keys the
+    /// underlying driver singleton on the `cpal::Host` — using two separate hosts
+    /// (which `find_input_device` + `find_output_device` each create internally)
+    /// gives two independent ASIO instances with unrelated bufferSwitch callbacks,
+    /// so input data never reaches the output ring buffer.
+    pub fn find_asio_device_pair(device_name: &str) -> Option<(cpal::Device, cpal::Device)> {
+        for host_id in cpal::available_hosts() {
+            if !is_asio_host(host_id) { continue; }
+            let Ok(host) = cpal::host_from_id(host_id) else { continue };
+
+            let input = host.input_devices().ok()
+                .and_then(|mut it| it.find(|d| d.name().ok().as_deref() == Some(device_name)));
+            let output = host.output_devices().ok()
+                .and_then(|mut it| it.find(|d| d.name().ok().as_deref() == Some(device_name)));
+
+            if let (Some(inp), Some(out)) = (input, output) {
+                return Some((inp, out));
+            }
+        }
+        None
+    }
 }
 

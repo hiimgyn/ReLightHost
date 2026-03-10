@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState, useRef } from 'react';
 import { Card, Button, Empty, Space, Tooltip, message, theme, Typography } from 'antd';
 
 const { Text } = Typography;
@@ -7,7 +7,7 @@ import {
   ArrowRightOutlined,
   AudioOutlined,
   ExportOutlined,
-  DragOutlined
+  HolderOutlined,
 } from '@ant-design/icons';
 import { usePluginStore } from '../stores/pluginStore';
 import PluginCard from './PluginCard';
@@ -20,13 +20,16 @@ export default function PluginChain() {
   const { pluginChain, removeFromChain, toggleBypass, fetchChain } = usePluginStore();
   const [showPresetManager, setShowPresetManager] = useState(false);
   const [showPluginLibrary, setShowPluginLibrary] = useState(false);
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  // draggedIndex: which card is being dragged
+  // insertBefore: the index BEFORE which the dragged card will be inserted
+  //               (0 = before first, pluginChain.length = after last)
+  const [draggedIndex, setDraggedIndex]   = useState<number | null>(null);
+  const [insertBefore, setInsertBefore]   = useState<number | null>(null);
+  const dragCounter = useRef(0); // tracks enter/leave of nested elements
 
   useEffect(() => {
-    // Fetch chain on mount
     fetchChain();
-    // Poll chain every 2 seconds
     const interval = setInterval(fetchChain, 2000);
     return () => clearInterval(interval);
   }, [fetchChain]);
@@ -36,33 +39,62 @@ export default function PluginChain() {
     setShowPluginLibrary(true);
   };
 
+  // â”€â”€ Drag handle: only the handle strip triggers drag â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedIndex(index);
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', index.toString());
+    // Show a clean ghost (empty image) â€” the card dims via opacity
+    const ghost = document.createElement('div');
+    ghost.style.cssText = 'width:1px;height:1px;position:absolute;top:-9999px';
+    document.body.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, 0, 0);
+    setTimeout(() => document.body.removeChild(ghost), 0);
   };
 
-  const handleDragOver = (e: React.DragEvent, index: number) => {
+  const handleDragEnd = () => {
+    setDraggedIndex(null);
+    setInsertBefore(null);
+    dragCounter.current = 0;
+  };
+
+  // â”€â”€ Drop zone: invisible strip between cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const handleZoneDragEnter = (e: React.DragEvent, pos: number) => {
+    e.preventDefault();
+    dragCounter.current++;
+    setInsertBefore(pos);
+  };
+
+  const handleZoneDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setDragOverIndex(index);
   };
 
-  const handleDragLeave = () => {
-    setDragOverIndex(null);
-  };
-
-  const handleDrop = async (e: React.DragEvent, dropIndex: number) => {
-    e.preventDefault();
-    
-    if (draggedIndex === null || draggedIndex === dropIndex) {
-      setDraggedIndex(null);
-      setDragOverIndex(null);
-      return;
+  const handleZoneDragLeave = () => {
+    dragCounter.current--;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setInsertBefore(null);
     }
+  };
+
+  const handleZoneDrop = async (e: React.DragEvent, pos: number) => {
+    e.preventDefault();
+    dragCounter.current = 0;
+    setInsertBefore(null);
+
+    if (draggedIndex === null) return;
+
+    // Normalise: when moving forward, insertion point shifts by -1 after remove
+    const from = draggedIndex;
+    // `pos` is the index BEFORE which we insert in the ORIGINAL array.
+    // After remove(from), if pos > from, pos effectively shifts left by 1.
+    const to = pos > from ? pos - 1 : pos;
+
+    if (from === to) { setDraggedIndex(null); return; }
 
     try {
-      await tauri.reorderPluginChain(draggedIndex, dropIndex);
+      await tauri.reorderPluginChain(from, to);
       await fetchChain();
       message.success('Plugin order updated');
     } catch (error) {
@@ -70,14 +102,40 @@ export default function PluginChain() {
       console.error(error);
     } finally {
       setDraggedIndex(null);
-      setDragOverIndex(null);
     }
   };
 
-  const handleDragEnd = () => {
-    setDraggedIndex(null);
-    setDragOverIndex(null);
+  // â”€â”€ Helper: is a drop zone "active" for the current drag? â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Suppress insertion line next to the dragged card itself (looks silly)
+  const isActiveZone = (pos: number) => {
+    if (insertBefore !== pos || draggedIndex === null) return false;
+    // pos == draggedIndex means "insert before self" (no-op)
+    // pos == draggedIndex+1 means "insert after self" (no-op)
+    if (pos === draggedIndex || pos === draggedIndex + 1) return false;
+    return true;
   };
+
+  // â”€â”€ Drop zone strip component (rendered between every pair of items) â”€â”€â”€â”€â”€â”€â”€
+  const DropZone = ({ pos }: { pos: number }) => (
+    <div
+      onDragEnter={(e) => handleZoneDragEnter(e, pos)}
+      onDragOver={handleZoneDragOver}
+      onDragLeave={handleZoneDragLeave}
+      onDrop={(e) => handleZoneDrop(e, pos)}
+      style={{
+        width: isActiveZone(pos) ? 4 : 12,
+        alignSelf: 'stretch',
+        flexShrink: 0,
+        borderRadius: 4,
+        background: isActiveZone(pos) ? token.colorPrimary : 'transparent',
+        boxShadow: isActiveZone(pos)
+          ? `0 0 8px ${token.colorPrimary}88`
+          : 'none',
+        transition: 'all 0.1s ease',
+        cursor: 'default',
+      }}
+    />
+  );
 
   return (
     <div className="h-full flex flex-col">
@@ -101,122 +159,140 @@ export default function PluginChain() {
         >
           Presets
         </Button>
-
-        {pluginChain.length > 1 && (
-          <Tooltip title="Drag & drop plugins to reorder" placement="right">
-            <DragOutlined style={{ fontSize: 16, color: token.colorTextQuaternary, marginLeft: 8 }} />
-          </Tooltip>
-        )}
       </Space>
 
-      {/* Plugin Chain Area - Flex Layout with Context Menu */}
+      {/* Plugin Chain Area */}
       <Card
         style={{ flex: 1, background: token.colorBgContainer }}
         bodyStyle={{ height: '100%', padding: '24px', overflow: 'auto' }}
         onContextMenu={handleContextMenu}
       >
         {pluginChain.length > 0 ? (
-          <div className="flex flex-wrap items-start gap-4 pb-4">
-            {/* Input */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 0, paddingBottom: 16 }}>
+
+            {/* IN node */}
             <Tooltip title="Audio Input">
-              <Card 
-                className="flex-shrink-0 w-24 h-32 bg-gradient-to-br from-green-600 to-green-700 border-2 border-green-400"
-                bodyStyle={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  justifyContent: 'center',
-                  padding: '12px'
+              <Card
+                style={{ width: 72, height: 110, flexShrink: 0 }}
+                bodyStyle={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: 8, height: '100%',
+                  background: 'linear-gradient(135deg,#15803d,#166534)',
+                  borderRadius: 8,
                 }}
               >
-                <div className="text-center text-white">
-                  <AudioOutlined className="text-3xl mb-2" />
-                  <div className="font-bold text-sm">IN</div>
+                <div style={{ textAlign: 'center', color: '#fff' }}>
+                  <AudioOutlined style={{ fontSize: 22, display: 'block', marginBottom: 4 }} />
+                  <div style={{ fontWeight: 700, fontSize: 12 }}>IN</div>
                 </div>
               </Card>
             </Tooltip>
 
-            {/* Plugin Chain */}
+            {/* â”€â”€ Plugin cards with drop zones between them â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
             {pluginChain.map((plugin, index) => (
-              <div 
-                key={plugin.instance_id} 
-                className="flex items-center gap-4"
-                draggable
-                onDragStart={(e) => handleDragStart(e, index)}
-                onDragOver={(e) => handleDragOver(e, index)}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(e, index)}
-                onDragEnd={handleDragEnd}
-                style={{
-                  opacity: draggedIndex === index ? 0.5 : 1,
-                  transform: dragOverIndex === index && draggedIndex !== index ? 'scale(1.02)' : 'scale(1)',
-                  transition: 'all 0.2s ease',
-                  cursor: 'move',
-                  position: 'relative',
-                }}
-              >
-                <ArrowRightOutlined style={{ fontSize: 22, color: token.colorTextQuaternary, flexShrink: 0 }} />
-                <div 
-                  className="flex-shrink-0 w-72"
+              <div key={plugin.instance_id} style={{ display: 'flex', alignItems: 'center' }}>
+
+                {/* Drop zone BEFORE this card (+ arrow visually) */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+                  <ArrowRightOutlined style={{
+                    fontSize: 15,
+                    color: token.colorTextQuaternary,
+                    flexShrink: 0,
+                    margin: '0 2px',
+                  }} />
+                  <DropZone pos={index} />
+                </div>
+
+                {/* Card wrapper */}
+                <div
                   style={{
-                    border: dragOverIndex === index && draggedIndex !== index 
-                      ? `2px dashed ${token.colorPrimary}` 
-                      : 'none',
-                    borderRadius: '8px',
-                    padding: dragOverIndex === index && draggedIndex !== index ? '2px' : '0',
+                    position: 'relative',
+                    width: 260,
+                    flexShrink: 0,
+                    opacity: draggedIndex === index ? 0.35 : 1,
+                    transition: 'opacity 0.15s ease',
+                    borderRadius: 8,
                   }}
                 >
-                  {/* Drag Handle Indicator */}
-                  <div 
-                    style={{ 
-                      position: 'absolute', 
-                      left: '-28px', 
-                      top: '50%', 
-                      transform: 'translateY(-50%)',
-                      color: token.colorTextQuaternary,
-                      cursor: 'move',
-                      opacity: draggedIndex === index ? 0.3 : 0.6,
+                  {/* â”€â”€ Drag handle (top strip) â”€â”€ */}
+                  <div
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, index)}
+                    onDragEnd={handleDragEnd}
+                    title="Drag to reorder"
+                    style={{
+                      position: 'absolute',
+                      top: 0, left: 0, right: 0,
+                      height: 10,
+                      borderRadius: '8px 8px 0 0',
+                      background: draggedIndex === index
+                        ? token.colorPrimary
+                        : token.colorFillSecondary,
+                      cursor: 'grab',
+                      zIndex: 5,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      transition: 'background 0.15s ease',
                     }}
                   >
-                    <DragOutlined style={{ fontSize: 16 }} />
+                    <HolderOutlined style={{
+                      fontSize: 10,
+                      color: draggedIndex === index
+                        ? '#fff'
+                        : token.colorTextQuaternary,
+                      pointerEvents: 'none',
+                    }} />
                   </div>
-                  
-                  <PluginCard
-                    plugin={plugin}
-                    onRemove={() => removeFromChain(plugin.instance_id)}
-                    onToggleBypass={() => toggleBypass(plugin.instance_id)}
-                    onLaunch={async () => {
-                      try {
-                        await tauri.launchPlugin(plugin.instance_id);
-                        message.info(`${plugin.name} launched`);
-                      } catch {
-                        message.error('Failed to launch plugin');
-                      }
-                    }}
-                  />
+
+                  {/* The card itself â€” not draggable, so buttons work normally */}
+                  <div style={{ paddingTop: 10 }}>
+                    <PluginCard
+                      plugin={plugin}
+                      onRemove={() => removeFromChain(plugin.instance_id)}
+                      onToggleBypass={() => toggleBypass(plugin.instance_id)}
+                      onLaunch={async () => {
+                        try {
+                          await tauri.launchPlugin(plugin.instance_id);
+                        } catch {
+                          message.error('Failed to launch plugin');
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
             ))}
 
-            {/* Arrow to Output */}
-            <ArrowRightOutlined style={{ fontSize: 22, color: token.colorTextQuaternary, flexShrink: 0 }} />
+            {/* Drop zone AFTER last card */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+              <ArrowRightOutlined style={{
+                fontSize: 15,
+                color: token.colorTextQuaternary,
+                flexShrink: 0,
+                margin: '0 2px',
+              }} />
+              <DropZone pos={pluginChain.length} />
+            </div>
 
-            {/* Output */}
+            {/* OUT node */}
             <Tooltip title="Audio Output">
-              <Card 
-                className="flex-shrink-0 w-24 h-32 bg-gradient-to-br from-blue-600 to-blue-700 border-2 border-blue-400"
-                bodyStyle={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  justifyContent: 'center',
-                  padding: '12px'
+              <Card
+                style={{ width: 72, height: 110, flexShrink: 0 }}
+                bodyStyle={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: 8, height: '100%',
+                  background: 'linear-gradient(135deg,#1d4ed8,#1e3a8a)',
+                  borderRadius: 8,
                 }}
               >
-                <div className="text-center text-white">
-                  <AudioOutlined className="text-3xl mb-2" />
-                  <div className="font-bold text-sm">OUT</div>
+                <div style={{ textAlign: 'center', color: '#fff' }}>
+                  <AudioOutlined style={{ fontSize: 22, display: 'block', marginBottom: 4 }} />
+                  <div style={{ fontWeight: 700, fontSize: 12 }}>OUT</div>
                 </div>
               </Card>
             </Tooltip>
+
           </div>
         ) : (
           <Empty
@@ -228,7 +304,7 @@ export default function PluginChain() {
                   Right-click or use the "Add Plugin" button to add plugins
                 </Text>
                 <Text style={{ fontSize: 12, color: token.colorTextQuaternary, marginTop: 4 }}>
-                  💡 Tip: Drag & drop plugins to reorder them
+                  ðŸ’¡ Drag the top handle of a card to reorder
                 </Text>
               </Space>
             }
@@ -245,18 +321,14 @@ export default function PluginChain() {
         )}
       </Card>
 
-      {/* Plugin Library Modal */}
       <PluginLibrary
         isOpen={showPluginLibrary}
         onClose={() => setShowPluginLibrary(false)}
       />
-
-      {/* Preset Manager Modal */}
       <PresetManager 
         isOpen={showPresetManager} 
         onClose={() => setShowPresetManager(false)} 
       />
-
     </div>
   );
 }

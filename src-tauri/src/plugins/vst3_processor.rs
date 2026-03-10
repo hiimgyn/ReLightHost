@@ -15,7 +15,8 @@ mod win {
         BusDirections_::{kInput, kOutput},
         IAudioProcessor, IAudioProcessorTrait,
         IComponent, IComponentTrait,
-        MediaTypes_::kAudio,
+        IEditController, IEditControllerTrait,
+        MediaTypes_::{kAudio, kEvent},
         ProcessModes_::kRealtime,
         ProcessSetup,
         SymbolicSampleSizes_::kSample32,
@@ -122,11 +123,17 @@ mod win {
 
     //  Vst3Processor 
     pub struct Vst3Processor {
-        _lib:       Library,
         component:  ComPtr<IComponent>,
         audio_proc: ComPtr<IAudioProcessor>,
+        /// Optional edit controller for parameter automation.
+        /// Present for both single-component and separate-controller VST3 designs.
+        controller: Option<ComPtr<IEditController>>,
         in_l:       Vec<f32>,
         in_r:       Vec<f32>,
+        /// MUST be last: DLL must outlive all COM interface pointers above so that
+        /// ComPtr::drop() (which calls Release() through the vtable) never fires
+        /// after the DLL is unloaded.
+        _lib:       Library,
     }
 
     // Safety: Vst3Processor owns the plugin instance; we never share it across
@@ -217,11 +224,17 @@ mod win {
                 })?
             };
 
-            // Initialize, activate buses
+            // Initialize, activate all buses (audio + event)
             unsafe {
                 component.initialize(ptr::null_mut());
-                component.activateBus(kAudio as i32, kInput as i32, 0, 1);
-                component.activateBus(kAudio as i32, kOutput as i32, 0, 1);
+                let ai = component.getBusCount(kAudio as i32, kInput as i32);
+                let ao = component.getBusCount(kAudio as i32, kOutput as i32);
+                let ei = component.getBusCount(kEvent as i32, kInput as i32);
+                let eo = component.getBusCount(kEvent as i32, kOutput as i32);
+                for i in 0..ai { component.activateBus(kAudio as i32, kInput as i32,  i, 1); }
+                for i in 0..ao { component.activateBus(kAudio as i32, kOutput as i32, i, 1); }
+                for i in 0..ei { component.activateBus(kEvent as i32, kInput as i32,  i, 1); }
+                for i in 0..eo { component.activateBus(kEvent as i32, kOutput as i32, i, 1); }
             }
 
             // QueryInterface  IAudioProcessor
@@ -251,11 +264,46 @@ mod win {
                 audio_proc.setProcessing(1);
             }
 
+            // Try to obtain an IEditController for parameter automation.
+            // Single-component design: IComponent itself implements IEditController.
+            // Separate-controller design: ask the component for its controller CID.
+            let controller: Option<ComPtr<IEditController>> = {
+                // Single-component: QI directly on the component
+                if let Some(ec) = component.cast::<IEditController>() {
+                    unsafe { ec.initialize(ptr::null_mut()) };
+                    Some(ec)
+                } else {
+                    // Separate-controller: getControllerClassId + createInstance
+                    let mut ctrl_cid: vst3::Steinberg::TUID = [0i8; 16];
+                    let gc_ok = unsafe { component.getControllerClassId(&mut ctrl_cid) };
+                    if gc_ok == kResultOk && ctrl_cid != [0i8; 16] {
+                        let mut ec_ptr: *mut IEditController = ptr::null_mut();
+                        let r = unsafe {
+                            factory.createInstance(
+                                ctrl_cid.as_ptr() as *const i8,
+                                IEditController::IID.as_ptr() as *const i8,
+                                &mut ec_ptr as *mut _ as *mut _,
+                            )
+                        };
+                        if r == kResultOk && !ec_ptr.is_null() {
+                            if let Some(ec) = unsafe { ComPtr::<IEditController>::from_raw(ec_ptr) } {
+                                unsafe { ec.initialize(ptr::null_mut()) };
+                                Some(ec)
+                            } else { None }
+                        } else { None }
+                    } else { None }
+                }
+            };
+            if controller.is_none() {
+                log::debug!("'{}': IEditController not available (parameter automation disabled)", plugin_path);
+            }
+
             log::info!("VST3 plugin loaded: '{}'", plugin_path);
             Ok(Self {
                 _lib: lib,
                 component,
                 audio_proc,
+                controller,
                 in_l: vec![0.0f32; block_size.max(4096)],
                 in_r: vec![0.0f32; block_size.max(4096)],
             })
@@ -299,6 +347,15 @@ mod win {
             }
         }
 
+        /// Set a parameter via IEditController::setParamNormalized.
+        ///
+        /// `normalized` must be in [0.0, 1.0].  No-op if no controller is available.
+        pub fn set_param_normalized(&self, param_id: u32, normalized: f64) {
+            if let Some(ref ctrl) = self.controller {
+                unsafe { ctrl.setParamNormalized(param_id, normalized); }
+            }
+        }
+
         /// Snapshot the plugin state as raw bytes (serialised via IComponent::getState).
         pub fn get_state(&self) -> Vec<u8> {
             let stream = ComWrapper::new(RustIBStream::write_stream());
@@ -318,6 +375,19 @@ mod win {
                 unsafe { self.component.setState(ptr.as_ptr()); }
             }
         }
+
+        /// Open the plugin's native editor GUI using the existing IEditController.
+        ///
+        /// Spawns a new thread with a Win32 message loop. The window stays open until
+        /// the user closes it. This reuses the same VST3 instance used for audio processing,
+        /// ensuring parameter changes in the GUI automatically sync with audio.
+        pub fn open_gui(&self, plugin_name: &str, gui_flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<()> {
+            let controller = self.controller.as_ref()
+                .ok_or_else(|| anyhow!("Plugin '{}' has no IEditController (GUI not supported)", plugin_name))?;
+
+            // Use the new GUI module with IPlugFrame support
+            crate::plugins::vst3_gui::win::open_gui_window(controller, plugin_name, gui_flag)
+        }
     }
 
     impl Drop for Vst3Processor {
@@ -325,6 +395,9 @@ mod win {
             unsafe {
                 self.audio_proc.setProcessing(0);
                 self.component.setActive(0);
+                if let Some(ref ctrl) = self.controller {
+                    ctrl.terminate();
+                }
                 self.component.terminate();
             }
         }

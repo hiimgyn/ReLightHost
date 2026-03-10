@@ -5,6 +5,7 @@ mod config;
 
 use parking_lot::RwLock;
 use std::sync::Arc;
+use tauri::Manager;
 use audio::{AudioManager, AudioStatus, AudioDeviceInfo, AudioDevice, AudioConfig};
 use plugins::{PluginScanner, PluginInstanceManager, PluginInfo, PluginInstanceInfo};
 use preset::{PresetManager, Preset};
@@ -127,6 +128,11 @@ fn toggle_monitoring(state: tauri::State<AppState>, enabled: bool) -> Result<(),
         .map_err(|e| format!("Failed to toggle monitoring: {}", e))
 }
 
+#[tauri::command]
+fn get_vu_data(state: tauri::State<AppState>) -> Result<audio::VUData, String> {
+    Ok(state.audio_manager.read().get_vu_data())
+}
+
 // Plugin Commands
 
 #[tauri::command]
@@ -198,6 +204,30 @@ fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to_ind
         .map_err(|e| format!("Failed to reorder plugin chain: {}", e))
 }
 
+/// Get the full binary state of a plugin instance (via IComponent::getState).
+/// Returns the state as a byte array (JSON array of u8 integers).
+#[tauri::command]
+fn get_plugin_state(state: tauri::State<AppState>, instance_id: String) -> Result<Vec<u8>, String> {
+    let manager = state.plugin_manager.read();
+    if let Some(instance) = manager.get_instance(&instance_id) {
+        Ok(instance.get_state_binary())
+    } else {
+        Err(format!("Plugin instance not found: {}", instance_id))
+    }
+}
+
+/// Restore the full binary state of a plugin instance (via IComponent::setState).
+#[tauri::command]
+fn set_plugin_state(state: tauri::State<AppState>, instance_id: String, plugin_state: Vec<u8>) -> Result<(), String> {
+    let manager = state.plugin_manager.read();
+    if let Some(instance) = manager.get_instance(&instance_id) {
+        instance.set_state_binary(&plugin_state);
+        Ok(())
+    } else {
+        Err(format!("Plugin instance not found: {}", instance_id))
+    }
+}
+
 #[tauri::command]
 fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), String> {
     use plugins::PluginInfo;
@@ -215,13 +245,13 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
     for plugin_preset in preset.plugin_chain {
         if plugin_preset.plugin_path.is_some() && plugin_preset.plugin_format.is_some() {
             let plugin_info = PluginInfo {
-                id: plugin_preset.plugin_id,
-                name: plugin_preset.plugin_name,
-                vendor: plugin_preset.plugin_vendor.unwrap_or_default(),
-                version: plugin_preset.plugin_version.unwrap_or_default(),
-                path: plugin_preset.plugin_path.unwrap(),
+                id: plugin_preset.plugin_id.clone(),
+                name: plugin_preset.plugin_name.clone(),
+                vendor: plugin_preset.plugin_vendor.clone().unwrap_or_default(),
+                version: plugin_preset.plugin_version.clone().unwrap_or_default(),
+                path: plugin_preset.plugin_path.clone().unwrap(),
                 format: plugin_preset.plugin_format.unwrap(),
-                category: plugin_preset.plugin_category.unwrap_or_default(),
+                category: plugin_preset.plugin_category.clone().unwrap_or_default(),
             };
 
             if let Ok(instance_id) = state.plugin_manager.read().load_plugin(
@@ -231,6 +261,15 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
             ) {
                 if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
                     instance.set_bypassed(plugin_preset.bypassed);
+                    
+                    // Restore VST3 binary state first (contains internal plugin data)
+                    if let Some(ref vst3_state) = plugin_preset.vst3_state {
+                        log::debug!("🔄 Restoring VST3 state for '{}' ({} bytes)", 
+                            plugin_preset.plugin_name, vst3_state.len());
+                        instance.set_state_binary(vst3_state);
+                    }
+                    
+                    // Then apply parameter values (may override some state)
                     for p in plugin_preset.parameters {
                         instance.set_parameter(p.id, p.value);
                     }
@@ -239,7 +278,7 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
         }
     }
 
-    log::info!("Applied preset: {}", name);
+    log::info!("✅ Applied preset: {}", name);
     Ok(())
 }
 
@@ -247,24 +286,9 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
 fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
     let manager = state.plugin_manager.read();
     if let Some(instance) = manager.get_instance(&instance_id) {
-        let info = instance.get_info();
-        let path = info.path.clone();
-        let name = info.name.clone();
-        let format = info.format;
-        drop(manager); // release lock before spawning
-
-        match format {
-            plugins::PluginFormat::VST3 => {
-                plugins::launch_vst3_gui(&path, &name)
-                    .map_err(|e| format!("Failed to launch plugin GUI: {}", e))
-            }
-            plugins::PluginFormat::VST => {
-                Err("VST2 plugin GUI launching is not yet supported".to_string())
-            }
-            plugins::PluginFormat::CLAP => {
-                Err("CLAP plugin GUI launching is not yet supported".to_string())
-            }
-        }
+        // Use the existing VST3 processor's GUI instead of loading a new instance
+        instance.open_gui()
+            .map_err(|e| format!("Failed to open plugin GUI: {}", e))
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
     }
@@ -291,12 +315,62 @@ fn play_test_sound() -> Result<(), String> {
     Ok(())
 }
 
+// Crash Protection Commands
+
+#[tauri::command]
+fn get_plugin_crash_status(state: tauri::State<AppState>, instance_id: String) -> Result<plugins::PluginStatus, String> {
+    let manager = state.plugin_manager.read();
+    if let Some(instance) = manager.get_instance(&instance_id) {
+        Ok(instance.get_crash_status())
+    } else {
+        Err(format!("Plugin instance not found: {}", instance_id))
+    }
+}
+
+#[tauri::command]
+fn reset_plugin_crash_protection(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
+    let manager = state.plugin_manager.read();
+    if let Some(instance) = manager.get_instance(&instance_id) {
+        instance.reset_crash_protection();
+        Ok(())
+    } else {
+        Err(format!("Plugin instance not found: {}", instance_id))
+    }
+}
+
+#[tauri::command]
+fn midi_panic(state: tauri::State<AppState>) -> Result<(), String> {
+    log::info!("🚨 MIDI Panic - Sending All Notes Off to all channels");
+
+    let manager = state.plugin_manager.read();
+    let count = manager.get_instances().len();
+
+    // TODO: Implement MIDI CC sending when VST3 MIDI support is added
+    log::info!("✅ MIDI Panic placeholder - affected {} plugins", count);
+    Ok(())
+}
+
+
 // Preset Commands
 
 #[tauri::command]
 fn save_preset(state: tauri::State<AppState>, name: String) -> Result<String, String> {
     let plugin_chain = state.plugin_manager.read().get_instances();
-    let preset = Preset::new(name, plugin_chain);
+    let mut preset = Preset::new(name, plugin_chain);
+    
+    // Enhance preset with VST3 binary state for each plugin
+    let manager = state.plugin_manager.read();
+    for preset_plugin in &mut preset.plugin_chain {
+        if let Some(instance) = manager.get_instance(&preset_plugin.plugin_id) {
+            // Capture full VST3 state (includes internal data, samples, banks, etc.)
+            let state_blob = instance.get_state_binary();
+            if !state_blob.is_empty() {
+                preset_plugin.vst3_state = Some(state_blob);
+                log::debug!("💾 Captured VST3 state for '{}' ({} bytes)", 
+                    preset_plugin.plugin_name, preset_plugin.vst3_state.as_ref().unwrap().len());
+            }
+        }
+    }
     
     state.preset_manager
         .read()
@@ -332,9 +406,23 @@ fn delete_preset(state: tauri::State<AppState>, name: String) -> Result<(), Stri
 #[tauri::command]
 fn auto_save_preset(state: tauri::State<AppState>) -> Result<(), String> {
     let plugin_chain = state.plugin_manager.read().get_instances();
+    let mut preset = Preset::new("__autosave__".to_string(), plugin_chain);
+    
+    // Also capture VST3 state for auto-save
+    let manager = state.plugin_manager.read();
+    for preset_plugin in &mut preset.plugin_chain {
+        if let Some(instance) = manager.get_instance(&preset_plugin.plugin_id) {
+            let state_blob = instance.get_state_binary();
+            if !state_blob.is_empty() {
+                preset_plugin.vst3_state = Some(state_blob);
+            }
+        }
+    }
+    
     state.preset_manager
         .read()
-        .auto_save(plugin_chain)
+        .save_preset(&preset)
+        .map(|_| ())
         .map_err(|e| format!("Failed to auto-save: {}", e))
 }
 
@@ -512,6 +600,37 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // Set initial window size proportional to the primary monitor,
+            // keeping the ~11:7 aspect ratio and respecting the 800×520 minimum.
+            const RATIO: f64 = 860.0 / 560.0;
+            const MIN_W: f64 = 800.0;
+            const MIN_H: f64 = 520.0;
+
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(Some(monitor)) = window.primary_monitor() {
+                    let monitor: tauri::Monitor = monitor;
+                    let scale: f64 = monitor.scale_factor();
+                    let logical_w = monitor.size().width  as f64 / scale;
+                    let logical_h = monitor.size().height as f64 / scale;
+
+                    // Use 65% of the screen width to derive the window size.
+                    let from_w = (logical_w * 0.65).round();
+                    let from_h = (from_w / RATIO).round();
+                    let (mut win_w, mut win_h): (f64, f64) = if from_h <= logical_h * 0.9 {
+                        (from_w, from_h)
+                    } else {
+                        let h = (logical_h * 0.9).round();
+                        (( h * RATIO).round(), h)
+                    };
+
+                    win_w = win_w.max(MIN_W);
+                    win_h = win_h.max(MIN_H);
+
+                    let _ = window.set_size(tauri::LogicalSize::new(win_w, win_h));
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -525,12 +644,15 @@ pub fn run() {
             set_sample_rate,
             set_buffer_size,
             toggle_monitoring,
+            get_vu_data,
             scan_plugins,
             load_plugin,
             remove_plugin,
             get_plugin_chain,
             set_plugin_bypass,
             set_plugin_parameter,
+            get_plugin_state,
+            set_plugin_state,
             reorder_plugin_chain,
             apply_preset,
             play_test_sound,
@@ -548,6 +670,9 @@ pub fn run() {
             toggle_startup,
             launch_plugin,
             get_system_stats,
+            get_plugin_crash_status,
+            reset_plugin_crash_protection,
+            midi_panic,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

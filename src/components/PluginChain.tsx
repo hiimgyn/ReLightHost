@@ -6,7 +6,8 @@ import {
   PlusOutlined, 
   ArrowRightOutlined,
   AudioOutlined,
-  ExportOutlined 
+  ExportOutlined,
+  DragOutlined
 } from '@ant-design/icons';
 import { usePluginStore } from '../stores/pluginStore';
 import PluginCard from './PluginCard';
@@ -19,6 +20,8 @@ export default function PluginChain() {
   const { pluginChain, removeFromChain, toggleBypass, fetchChain } = usePluginStore();
   const [showPresetManager, setShowPresetManager] = useState(false);
   const [showPluginLibrary, setShowPluginLibrary] = useState(false);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   useEffect(() => {
     // Fetch chain on mount
@@ -31,6 +34,49 @@ export default function PluginChain() {
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     setShowPluginLibrary(true);
+  };
+
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', index.toString());
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverIndex(index);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = async (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    
+    if (draggedIndex === null || draggedIndex === dropIndex) {
+      setDraggedIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+
+    try {
+      await tauri.reorderPluginChain(draggedIndex, dropIndex);
+      await fetchChain();
+      message.success('Plugin order updated');
+    } catch (error) {
+      message.error('Failed to reorder plugins');
+      console.error(error);
+    } finally {
+      setDraggedIndex(null);
+      setDragOverIndex(null);
+    }
+  };
+
+  const handleDragEnd = () => {
+    setDraggedIndex(null);
+    setDragOverIndex(null);
   };
 
   return (
@@ -55,6 +101,12 @@ export default function PluginChain() {
         >
           Presets
         </Button>
+
+        {pluginChain.length > 1 && (
+          <Tooltip title="Drag & drop plugins to reorder" placement="right">
+            <DragOutlined style={{ fontSize: 16, color: token.colorTextQuaternary, marginLeft: 8 }} />
+          </Tooltip>
+        )}
       </Space>
 
       {/* Plugin Chain Area - Flex Layout with Context Menu */}
@@ -84,10 +136,50 @@ export default function PluginChain() {
             </Tooltip>
 
             {/* Plugin Chain */}
-            {pluginChain.map((plugin) => (
-              <div key={plugin.instance_id} className="flex items-center gap-4">
+            {pluginChain.map((plugin, index) => (
+              <div 
+                key={plugin.instance_id} 
+                className="flex items-center gap-4"
+                draggable
+                onDragStart={(e) => handleDragStart(e, index)}
+                onDragOver={(e) => handleDragOver(e, index)}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, index)}
+                onDragEnd={handleDragEnd}
+                style={{
+                  opacity: draggedIndex === index ? 0.5 : 1,
+                  transform: dragOverIndex === index && draggedIndex !== index ? 'scale(1.02)' : 'scale(1)',
+                  transition: 'all 0.2s ease',
+                  cursor: 'move',
+                  position: 'relative',
+                }}
+              >
                 <ArrowRightOutlined style={{ fontSize: 22, color: token.colorTextQuaternary, flexShrink: 0 }} />
-                <div className="flex-shrink-0 w-72">
+                <div 
+                  className="flex-shrink-0 w-72"
+                  style={{
+                    border: dragOverIndex === index && draggedIndex !== index 
+                      ? `2px dashed ${token.colorPrimary}` 
+                      : 'none',
+                    borderRadius: '8px',
+                    padding: dragOverIndex === index && draggedIndex !== index ? '2px' : '0',
+                  }}
+                >
+                  {/* Drag Handle Indicator */}
+                  <div 
+                    style={{ 
+                      position: 'absolute', 
+                      left: '-28px', 
+                      top: '50%', 
+                      transform: 'translateY(-50%)',
+                      color: token.colorTextQuaternary,
+                      cursor: 'move',
+                      opacity: draggedIndex === index ? 0.3 : 0.6,
+                    }}
+                  >
+                    <DragOutlined style={{ fontSize: 16 }} />
+                  </div>
+                  
                   <PluginCard
                     plugin={plugin}
                     onRemove={() => removeFromChain(plugin.instance_id)}
@@ -132,7 +224,12 @@ export default function PluginChain() {
             description={
               <Space direction="vertical" size={0}>
                 <Text style={{ fontSize: 16, color: token.colorTextSecondary }}>No plugins loaded</Text>
-                <Text style={{ fontSize: 13, color: token.colorTextTertiary }}>Right-click or use the "Add Plugin" button to add plugins</Text>
+                <Text style={{ fontSize: 13, color: token.colorTextTertiary }}>
+                  Right-click or use the "Add Plugin" button to add plugins
+                </Text>
+                <Text style={{ fontSize: 12, color: token.colorTextQuaternary, marginTop: 4 }}>
+                  💡 Tip: Drag & drop plugins to reorder them
+                </Text>
               </Space>
             }
           >

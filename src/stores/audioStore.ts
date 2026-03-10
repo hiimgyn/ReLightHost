@@ -16,7 +16,6 @@ interface AudioStore {
   fetchDevices: () => Promise<void>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
-  setDevice: (deviceId: string) => void; // legacy alias
   setOutputDevice: (deviceId: string) => Promise<void>;
   setInputDevice: (deviceId: string | null) => Promise<void>;
   setSampleRate: (rate: number) => Promise<void>;
@@ -27,7 +26,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   status: {
     is_monitoring: false,
     sample_rate: 48000,
-    buffer_size: 512,
+    buffer_size: 1024,
     cpu_usage: 0,
     latency_ms: 0,
   },
@@ -35,7 +34,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   selectedDevice: null,
   selectedInputDevice: null,
   sampleRate: 48000,
-  bufferSize: 512,
+  bufferSize: 1024,
 
   fetchStatus: async () => {
     try {
@@ -79,10 +78,6 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       console.error('Failed to stop audio:', error);
       throw error;
     }
-  },
-
-  setDevice: (deviceId: string) => {
-    set({ selectedDevice: deviceId });
   },
 
   setOutputDevice: async (deviceId: string) => {

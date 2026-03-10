@@ -1,12 +1,10 @@
 import { create } from 'zustand';
-import type { Preset } from '../lib/types';
 import * as tauri from '../lib/tauri';
 import { usePluginStore } from './pluginStore';
 
 interface PresetStore {
   // State
   presets: string[];
-  currentPreset: Preset | null;
   
   // Actions
   fetchPresets: () => Promise<void>;
@@ -17,7 +15,6 @@ interface PresetStore {
 
 export const usePresetStore = create<PresetStore>((set, get) => ({
   presets: [],
-  currentPreset: null,
 
   fetchPresets: async () => {
     try {
@@ -41,8 +38,6 @@ export const usePresetStore = create<PresetStore>((set, get) => ({
   loadPreset: async (name: string) => {
     try {
       await tauri.applyPreset(name);
-      const preset = await tauri.loadPreset(name);
-      set({ currentPreset: preset });
       // Refresh the plugin chain in UI after applying preset
       await usePluginStore.getState().fetchChain();
     } catch (error) {

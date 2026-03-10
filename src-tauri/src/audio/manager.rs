@@ -1,13 +1,15 @@
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Instant;
-use std::collections::VecDeque;
 use std::sync::Mutex;
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{BufferSize, SampleRate, StreamConfig};
+use ringbuf::{HeapRb, traits::{Producer, Consumer, Split}};
 
 use crate::audio::types::{AudioStatus, AudioConfig};
 use crate::audio::device::AudioDevice;
+use crate::audio::vu_meter::VUMeter;
 
 /// Holds live CPAL streams for input monitoring (kept alive while monitoring is on)
 struct MonitoringStreams {
@@ -29,6 +31,8 @@ pub struct AudioManager {
     monitoring:  Mutex<Option<MonitoringStreams>>,
     /// Plugin chain callback — set by lib.rs after AppState is built.
     process_fn:  Arc<Mutex<Option<ProcessChainFn>>>,
+    /// VU meter for output level monitoring
+    vu_meter:    Arc<VUMeter>,
 }
 
 impl AudioManager {
@@ -39,14 +43,11 @@ impl AudioManager {
             last_update: Arc::new(RwLock::new(Instant::now())),
             monitoring:  Mutex::new(None),
             process_fn:  Arc::new(Mutex::new(None)),
+            vu_meter:    Arc::new(VUMeter::new()),
         }
     }
 
     /// Register the plugin-chain callback.
-    ///
-    /// Called from lib.rs after AppState is constructed so the CPAL audio
-    /// callback can route audio through the active plugin chain—matching
-    /// LightHost's AudioProcessorGraph mechanism.
     pub fn set_process_callback<F>(&self, f: F)
     where
         F: Fn(&mut [f32], &mut [f32]) + Send + 'static,
@@ -58,7 +59,6 @@ impl AudioManager {
     pub fn start(&self) -> Result<()> {
         let config = self.config.read().clone();
         
-        // Update status
         {
             let mut status = self.status.write();
             status.sample_rate = config.sample_rate;
@@ -82,7 +82,17 @@ impl AudioManager {
         Ok(())
     }
 
-    /// Toggle real-time input monitoring (routes input device audio → output device)
+    /// Toggle real-time input monitoring (routes input device → plugin chain → output device).
+    ///
+    /// # ASIO note
+    /// ASIO is full-duplex: input and output are driven by a single driver
+    /// callback at the exact same buffer size.  We honour the configured
+    /// `buffer_size` and `sample_rate` in the StreamConfig instead of falling
+    /// back to `default_*_config()` so the driver doesn't refuse the request.
+    ///
+    /// The ring buffer capacity is set to 4× the configured buffer size
+    /// (stereo samples) — enough for two full blocks without adding noticeable
+    /// latency.
     pub fn toggle_monitoring(&self, enabled: bool) -> Result<()> {
         if !enabled {
             *self.monitoring.lock().unwrap() = None;
@@ -93,7 +103,14 @@ impl AudioManager {
 
         let config = self.config.read().clone();
 
-        // Locate cpal devices
+        // -----------------------------------------------------------------
+        // Resolve cpal devices
+        // -----------------------------------------------------------------
+        let input_is_asio = config.input_device_id.as_deref()
+            .map(|id| id.starts_with("asio_")).unwrap_or(false);
+        let output_is_asio = config.output_device_id.as_deref()
+            .map(|id| id.starts_with("asio_")).unwrap_or(false);
+
         let input_device = config
             .input_device_id
             .as_deref()
@@ -108,84 +125,133 @@ impl AudioManager {
             .or_else(|| cpal::default_host().default_output_device())
             .ok_or_else(|| anyhow::anyhow!("No output device available"))?;
 
-        // Get default stream configs
-        let in_cfg = input_device
-            .default_input_config()
-            .map_err(|e| anyhow::anyhow!("Input config error: {}", e))?;
-        let out_cfg = output_device
-            .default_output_config()
-            .map_err(|e| anyhow::anyhow!("Output config error: {}", e))?;
+        // -----------------------------------------------------------------
+        // Build StreamConfigs.
+        //
+        // For ASIO: the driver owns the sample rate and buffer size — we MUST
+        // use whatever the driver reports via default_*_config(), otherwise
+        // build_input_stream / build_output_stream will return an
+        // "unsupported stream config" error (this is the case with VoiceMeeter
+        // Virtual ASIO which is typically locked at 44100 Hz in the driver).
+        //
+        // For WASAPI / other hosts: use the user-configured sample rate as a hint.
+        // -----------------------------------------------------------------
+        let build_config = |device: &cpal::Device, is_input: bool, is_asio: bool| -> Result<(StreamConfig, usize)> {
+            let default_cfg = if is_input {
+                device.default_input_config()
+            } else {
+                device.default_output_config()
+            }.map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
 
-        // Shared ring buffer (capacity = ~170 ms @ 48 kHz stereo)
-        const BUF_CAPACITY: usize = 16_384;
-        let shared: Arc<Mutex<VecDeque<f32>>> =
-            Arc::new(Mutex::new(VecDeque::with_capacity(BUF_CAPACITY)));
+            let channels = default_cfg.channels() as usize;
+            // ASIO: let the driver decide sample rate (it controls the HW clock).
+            // Non-ASIO: pass the user-configured rate as a preference.
+            let sample_rate = if is_asio {
+                let driver_rate = default_cfg.sample_rate().0;
+                if driver_rate != config.sample_rate {
+                    log::warn!(
+                        "ASIO driver sample rate {} Hz differs from configured {} Hz; \
+                         using driver rate. Change VoiceMeeter or ASIO panel to {} Hz \
+                         if you want them to match.",
+                        driver_rate, config.sample_rate, config.sample_rate
+                    );
+                }
+                driver_rate
+            } else {
+                config.sample_rate
+            };
+            let stream_cfg = StreamConfig {
+                channels: default_cfg.channels(),
+                sample_rate: SampleRate(sample_rate),
+                // BufferSize::Default lets the ASIO driver report its own block size;
+                // WASAPI treats it as a hint. The output callback handles variable
+                // frame counts via left_buf/right_buf dynamic resizing.
+                buffer_size: BufferSize::Default,
+            };
+            Ok((stream_cfg, channels))
+        };
 
-        let input_channels = in_cfg.channels() as usize;
-        let output_channels = out_cfg.channels() as usize;
+        let (in_cfg, input_channels)  = build_config(&input_device,  true,  input_is_asio)?;
+        let (out_cfg, output_channels) = build_config(&output_device, false, output_is_asio)?;
 
-        // Build input stream
-        let buf_write = Arc::clone(&shared);
+        // -----------------------------------------------------------------
+        // Lock-free SPSC ring buffer — stereo, 4 blocks deep.
+        // Producer  → input callback  (audio thread, no alloc, no lock)
+        // Consumer  → output callback (audio thread, no alloc, no lock)
+        // -----------------------------------------------------------------
+        // Size ring buffer generously so it can absorb even the largest ASIO block
+        // (driver may report a bigger block than config.buffer_size when
+        //  BufferSize::Default is used).
+        let buf_capacity = (config.buffer_size as usize).max(4096) * 8 * 2; // frames × 8 × stereo
+        let rb = HeapRb::<f32>::new(buf_capacity);
+        let (mut producer, mut consumer) = rb.split();
+
+        // -----------------------------------------------------------------
+        // Input stream — de-interleave and push into ring buffer
+        // -----------------------------------------------------------------
         let in_stream = input_device
             .build_input_stream(
-                &in_cfg.config(),
+                &in_cfg,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mut buf = buf_write.lock().unwrap();
-                    for &s in data {
-                        if buf.len() < BUF_CAPACITY {
-                            buf.push_back(s);
-                        }
+                    for chunk in data.chunks(input_channels.max(1)) {
+                        // Always produce exactly 2 samples (L, R) per frame
+                        let l = chunk.first().copied().unwrap_or(0.0);
+                        let r = if input_channels >= 2 {
+                            chunk.get(1).copied().unwrap_or(0.0)
+                        } else {
+                            l  // mono → duplicate to both channels
+                        };
+                        // Non-blocking: if the ring buffer is full we drop the
+                        // frame rather than blocking the realtime thread.
+                        let _ = producer.try_push(l);
+                        let _ = producer.try_push(r);
                     }
                 },
-                |err| log::error!("Input stream error: {}", err),
+                |err| log::error!("Input stream error: {err}"),
                 None,
             )
-            .map_err(|e| anyhow::anyhow!("Failed to build input stream: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to build input stream: {e}"))?;
 
-        // Build output stream — reads ring-buffer, processes through plugin chain,
-        // then writes to output.  Mirrors LightHost's JUCE AudioProcessorGraph:
-        //   INPUT node → plugin chain → OUTPUT node
-        let buf_read     = Arc::clone(&shared);
-        let process_fn   = Arc::clone(&self.process_fn);
-        // Pre-allocate L/R bounce buffers (max 4096 frames, grows if needed)
-        let mut left_buf  = vec![0.0f32; 4096];
-        let mut right_buf = vec![0.0f32; 4096];
+        // -----------------------------------------------------------------
+        // Output stream — read ring buffer, process through plugin chain,
+        //                 write to output.
+        // Mirrors LightHost's AudioProcessorGraph:
+        //   INPUT node -> plugin chain -> OUTPUT node
+        // -----------------------------------------------------------------
+        let process_fn = Arc::clone(&self.process_fn);
+        let vu_meter = Arc::clone(&self.vu_meter);
+        let mut left_buf  = vec![0.0f32; config.buffer_size as usize];
+        let mut right_buf = vec![0.0f32; config.buffer_size as usize];
+
         let out_stream = output_device
             .build_output_stream(
-                &out_cfg.config(),
+                &out_cfg,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     let frames = data.len() / output_channels.max(1);
 
-                    // Ensure bounce buffers are large enough (grows only, never shrinks).
+                    // Grow bounce buffers if needed (happens at most once per
+                    // session when the driver uses a larger block than configured).
                     if left_buf.len()  < frames { left_buf.resize(frames,  0.0); }
                     if right_buf.len() < frames { right_buf.resize(frames, 0.0); }
 
-                    // Step 1: De-interleave ring-buffer → L/R bounce buffers.
-                    {
-                        let mut buf = buf_read.lock().unwrap();
-                        for frame in 0..frames {
-                            if input_channels >= 2 {
-                                left_buf[frame]  = buf.pop_front().unwrap_or(0.0);
-                                right_buf[frame] = buf.pop_front().unwrap_or(0.0);
-                            } else if input_channels == 1 {
-                                let s = buf.pop_front().unwrap_or(0.0);
-                                left_buf[frame]  = s;
-                                right_buf[frame] = s;
-                            } else {
-                                left_buf[frame]  = 0.0;
-                                right_buf[frame] = 0.0;
-                            }
-                        }
+                    // Step 1: Drain ring buffer → L/R bounce buffers.
+                    // Ring buffer samples are already interleaved as [L, R] pairs.
+                    for frame in 0..frames {
+                        left_buf[frame]  = consumer.try_pop().unwrap_or(0.0);
+                        right_buf[frame] = consumer.try_pop().unwrap_or(0.0);
                     }
 
-                    // Step 2: Run the plugin chain (non-blocking try_lock).
-                    // If the lock is contended the audio passes through unchanged —
-                    // same behaviour as LightHost when a bypassed plugin is removed.
+                    // Step 2: Run plugin chain (non-blocking try_lock).
+                    // If the lock is contended (parameter update from UI thread)
+                    // audio passes through unchanged — same as LightHost bypass.
                     if let Ok(guard) = process_fn.try_lock() {
                         if let Some(ref f) = *guard {
                             f(&mut left_buf[..frames], &mut right_buf[..frames]);
                         }
                     }
+
+                    // Step 2.5: Update VU meter with processed audio
+                    vu_meter.update(&left_buf[..frames], &right_buf[..frames]);
 
                     // Step 3: Re-interleave L/R → CPAL output buffer.
                     for frame in 0..frames {
@@ -195,24 +261,24 @@ impl AudioManager {
                         }
                     }
                 },
-                |err| log::error!("Output stream error: {}", err),
+                |err| log::error!("Output stream error: {err}"),
                 None,
             )
-            .map_err(|e| anyhow::anyhow!("Failed to build output stream: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to build output stream: {e}"))?;
 
         in_stream
             .play()
-            .map_err(|e| anyhow::anyhow!("Failed to start input stream: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to start input stream: {e}"))?;
         out_stream
             .play()
-            .map_err(|e| anyhow::anyhow!("Failed to start output stream: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to start output stream: {e}"))?;
 
         *self.monitoring.lock().unwrap() = Some(MonitoringStreams {
             _input: in_stream,
             _output: out_stream,
         });
         self.status.write().is_monitoring = true;
-        log::info!("Input monitoring started");
+        log::info!("Input monitoring started ({}Hz, {} samples)", config.sample_rate, config.buffer_size);
         Ok(())
     }
 
@@ -226,6 +292,11 @@ impl AudioManager {
     /// Get current audio configuration
     pub fn get_config(&self) -> AudioConfig {
         self.config.read().clone()
+    }
+    
+    /// Get current VU meter data
+    pub fn get_vu_data(&self) -> crate::audio::vu_meter::VUData {
+        self.vu_meter.get_data()
     }
 
     /// Set output device
@@ -264,3 +335,4 @@ impl Default for AudioManager {
         Self::new()
     }
 }
+

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AudioStatus, AudioDeviceInfo, AudioConfig, PluginInfo, PluginInstanceInfo, Preset, SystemStats } from './types';
+import type { AudioStatus, AudioDeviceInfo, PluginInfo, PluginInstanceInfo, Preset, SystemStats, PluginStatus, VUData } from './types';
 
 // Audio Commands
 export async function startAudio(): Promise<void> {
@@ -16,10 +16,6 @@ export async function getAudioStatus(): Promise<AudioStatus> {
 
 export async function listAudioDevices(): Promise<AudioDeviceInfo[]> {
   return invoke('list_audio_devices');
-}
-
-export async function getAudioConfig(): Promise<AudioConfig> {
-  return invoke('get_audio_config');
 }
 
 export async function setOutputDevice(deviceId: string): Promise<void> {
@@ -40,6 +36,10 @@ export async function setBufferSize(bufferSize: number): Promise<void> {
 
 export async function toggleMonitoring(enabled: boolean): Promise<void> {
   return invoke('toggle_monitoring', { enabled });
+}
+
+export async function getVUData(): Promise<VUData> {
+  return invoke('get_vu_data');
 }
 
 // Plugin Commands
@@ -108,11 +108,15 @@ export async function autoSavePreset(): Promise<void> {
   return invoke('auto_save_preset');
 }
 
-export async function hasAutoSave(): Promise<boolean> {
-  return invoke('has_auto_save');
+// Crash Protection Commands
+export async function getPluginCrashStatus(instanceId: string): Promise<PluginStatus> {
+  return invoke('get_plugin_crash_status', { instanceId });
 }
 
-export async function restoreAutoSave(): Promise<Preset> {
-  return invoke('restore_auto_save');
+export async function resetPluginCrashProtection(instanceId: string): Promise<void> {
+  return invoke('reset_plugin_crash_protection', { instanceId });
 }
 
+export async function midiPanic(): Promise<void> {
+  return invoke('midi_panic');
+}

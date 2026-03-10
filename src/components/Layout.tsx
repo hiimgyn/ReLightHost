@@ -35,8 +35,18 @@ export default function Layout({ children }: LayoutProps) {
           style={{ background: theme === 'dark' ? '#0a0a0a' : '#f5f5f5' }}
         >
           <Header />
-          <div className="flex-1 overflow-hidden">
-            {children}
+          <div className="flex-1 overflow-hidden" style={{ position: 'relative' }}>
+            <div style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '125%',
+              height: '125%',
+              transform: 'scale(0.8)',
+              transformOrigin: 'top left',
+            }}>
+              {children}
+            </div>
           </div>
           <Footer status={status} pluginCount={pluginChain.length} />
         </div>
@@ -158,7 +168,7 @@ function Footer({ status, pluginCount }: {
         </Tooltip>
         {sep}
         <Text style={{ fontSize: 11, color: token.colorTextQuaternary }}>
-          ReLightHost v0.1.0 · Made by <HeartFilled style={{ color: '#ff4d4f', fontSize: 10 }} /> Gyn
+          ReLightHost · Made by <HeartFilled style={{ color: '#ff4d4f', fontSize: 10 }} /> Gyn
         </Text>
       </Space>
     </footer>

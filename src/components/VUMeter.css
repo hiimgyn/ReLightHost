@@ -1,0 +1,110 @@
+/* VU Meter Styles */
+.vu-meter {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  min-width: 200px;
+}
+
+.vu-meter-compact {
+  padding: 6px;
+  gap: 6px;
+}
+
+.vu-channel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.vu-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+  min-width: 12px;
+  text-align: center;
+}
+
+.vu-bar-container {
+  position: relative;
+  flex: 1;
+  height: 20px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.vu-meter-compact .vu-bar-container {
+  height: 12px;
+}
+
+.vu-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  transition: width 50ms linear;
+  border-radius: 4px 0 0 4px;
+}
+
+.vu-rms {
+  z-index: 1;
+}
+
+.vu-peak {
+  z-index: 2;
+}
+
+.vu-hold {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.9);
+  z-index: 3;
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.5);
+}
+
+.vu-scale {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.vu-mark {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.vu-mark-hot {
+  background: rgba(243, 156, 18, 0.3);
+}
+
+.vu-mark-clip {
+  background: rgba(231, 76, 60, 0.3);
+}
+
+.vu-value {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+  min-width: 50px;
+  text-align: right;
+  font-family: 'Courier New', monospace;
+}
+
+.vu-unit {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-left: 2px;
+}

@@ -14,7 +14,7 @@ impl Default for AudioStatus {
         Self {
             is_monitoring: false,
             sample_rate: 48000,
-            buffer_size: 512,
+            buffer_size: 1024,
             cpu_usage: 0.0,
             latency_ms: 0.0,
         }
@@ -43,7 +43,7 @@ impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             sample_rate: 48000,
-            buffer_size: 512,
+            buffer_size: 1024,
             output_device_id: None,
             input_device_id: None,
         }

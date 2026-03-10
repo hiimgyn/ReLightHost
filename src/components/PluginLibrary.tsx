@@ -23,7 +23,7 @@ interface PluginLibraryProps {
 export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   const { availablePlugins, isScanning, scanPlugins, addToChain } = usePluginStore();
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterFormat, setFilterFormat] = useState<'all' | 'vst3' | 'vst' | 'clap'>('all');
+  const [filterFormat, setFilterFormat] = useState<'all' | 'vst3' | 'vst' | 'clap' | 'builtin'>('all');
   const [showSettings, setShowSettings] = useState(false);
   const [selectedPlugin, setSelectedPlugin] = useState<PluginInfo | null>(null);
 
@@ -55,6 +55,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
       case 'vst3': return 'purple';
       case 'vst': return 'blue';
       case 'clap': return 'green';
+      case 'builtin': return 'cyan';
       default: return 'default';
     }
   };
@@ -63,6 +64,11 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
     {
       key: 'all',
       label: `All (${availablePlugins.length})`,
+      children: null,
+    },
+    {
+      key: 'builtin',
+      label: `Built-in (${availablePlugins.filter(p => p.format === 'builtin').length})`,
       children: null,
     },
     {

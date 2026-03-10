@@ -11,6 +11,7 @@ import {
 import { useThemeStore } from '../stores/themeStore';
 import AudioSettings from './AudioSettings';
 import AppSettings from './AppSettings';
+import { VUMeter } from './VUMeter';
 
 export default function Header() {
   const { theme: appTheme, toggleTheme } = useThemeStore();
@@ -45,10 +46,11 @@ export default function Header() {
               color: token.colorTextSecondary,
             }}
           >
-            v0.1.0
+            Beta
           </Text>
         </Space>
-
+        {/* VU Meter */}
+        <VUMeter compact />
         {/* Controls */}
         <Space size="middle">
           {/* Theme toggle */}

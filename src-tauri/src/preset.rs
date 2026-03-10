@@ -26,6 +26,10 @@ pub struct PresetPlugin {
     pub plugin_category: Option<String>,
     pub bypassed: bool,
     pub parameters: Vec<PresetParameter>,
+    /// VST3 binary state blob (from IComponent::getState)
+    /// This includes internal plugin data like sample banks, custom presets, etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vst3_state: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +63,7 @@ impl Preset {
                         value: p.value,
                     })
                     .collect(),
+                vst3_state: None, // Will be populated by save_preset command
             })
             .collect();
 
@@ -170,13 +175,6 @@ impl Default for PresetManager {
     }
 }
 impl PresetManager {
-    /// Auto-save current plugin chain state (for session restore)
-    pub fn auto_save(&self, plugin_chain: Vec<PluginInstanceInfo>) -> Result<()> {
-        let preset = Preset::new(AUTO_SAVE_PRESET_NAME.to_string(), plugin_chain);
-        self.save_preset(&preset)?;
-        Ok(())
-    }
-
     /// Check if an auto-saved session exists
     pub fn has_auto_save(&self) -> bool {
         let filename = format!("{}.json", AUTO_SAVE_PRESET_NAME);

@@ -14,9 +14,6 @@ interface PluginStore {
   removeFromChain: (instanceId: string) => Promise<void>;
   toggleBypass: (instanceId: string) => Promise<void>;
   fetchChain: () => Promise<void>;
-  reorderChain: (fromIndex: number, toIndex: number) => Promise<void>;
-  setParameter: (instanceId: string, paramId: number, value: number) => Promise<void>;
-  applyPreset: (name: string) => Promise<void>;
 }
 
 export const usePluginStore = create<PluginStore>((set, get) => ({
@@ -84,46 +81,4 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     }
   },
 
-  reorderChain: async (fromIndex: number, toIndex: number) => {
-    // Optimistic UI update
-    const chain = [...get().pluginChain];
-    const [removed] = chain.splice(fromIndex, 1);
-    chain.splice(toIndex, 0, removed);
-    set({ pluginChain: chain });
-    try {
-      await tauri.reorderPluginChain(fromIndex, toIndex);
-    } catch (error) {
-      console.error('Failed to reorder chain:', error);
-      // Revert on failure
-      await get().fetchChain();
-      throw error;
-    }
-  },
-
-  setParameter: async (instanceId: string, paramId: number, value: number) => {
-    // Optimistic local update
-    set(state => ({
-      pluginChain: state.pluginChain.map(p =>
-        p.instance_id === instanceId
-          ? { ...p, parameters: p.parameters.map(param => param.id === paramId ? { ...param, value } : param) }
-          : p
-      )
-    }));
-    try {
-      await tauri.setPluginParameter(instanceId, paramId, value);
-    } catch (error) {
-      console.error('Failed to set parameter:', error);
-      throw error;
-    }
-  },
-
-  applyPreset: async (name: string) => {
-    try {
-      await tauri.applyPreset(name);
-      await get().fetchChain();
-    } catch (error) {
-      console.error('Failed to apply preset:', error);
-      throw error;
-    }
-  },
 }));

@@ -29,18 +29,33 @@ tauri-plugin-dialog = "2"
 # ASIO support: requires ASIO SDK (https://www.steinberg.net/asiosdk) and env var CPAL_ASIO_DIR
 # Set CPAL_ASIO_DIR=C:\path\to\asiosdk before building to enable VirtualASIO / Voicemeeter ASIO
 cpal = { version = "0.15", features = ["asio"] }
+# Lock-free SPSC ring buffer for audio callbacks (avoids Mutex in realtime thread)
+ringbuf = "0.4"
 parking_lot = "0.12"
+
+# Plugin hosting
+vst3 = "0.3"                                              # vst3-rs: VST3 plugin hosting
+vst = "0.3"                                               # vst-rs: VST2 plugin hosting
+
+# MIDI I/O
+midir = "0.10"
+
+# DSP framework — Stereo<f32> frames in the audio pipeline
+dasp = { version = "0.11", features = ["signal"] }
+
+# Built-in DSP — noise suppression via RNNoise (pure Rust)
+nnnoiseless = "0.5"
 
 # Utilities
 anyhow = "1.0"
 dirs = "5.0"
 libloading = "0.8"
-vst3 = "0.3"
 sysinfo = "0.32"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_System_LibraryLoader",
+    "Win32_System_Com",               # CoInitializeEx
+    "Win32_System_LibraryLoader",     # GetModuleHandleW
+    "Win32_UI_WindowsAndMessaging",   # CreateWindowExW, WNDCLASSW, WM_* constants
 ] }

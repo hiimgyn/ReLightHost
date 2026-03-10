@@ -74,6 +74,9 @@ impl PluginScanner {
     pub fn scan(&self) -> Result<Vec<PluginInfo>> {
         let mut plugins = Vec::new();
 
+        // Always include built-in processors first so they appear at the top.
+        plugins.extend(Self::builtin_plugins());
+
         for path in &self.scan_paths {
             if path.exists() && path.is_dir() {
                 if let Ok(found) = self.scan_directory(path) {
@@ -222,5 +225,25 @@ impl PluginScanner {
 impl Default for PluginScanner {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl PluginScanner {
+    /// Returns the list of processors built into the application.
+    /// These are always available and do not need file scanning.
+    pub fn builtin_plugins() -> Vec<PluginInfo> {
+        use crate::plugins::types::PluginFormat;
+        use crate::plugins::builtin_processor::NoiseSuppressor;
+        vec![
+            PluginInfo {
+                id:       NoiseSuppressor::ID.to_string(),
+                name:     "Noise Suppressor (RNNoise)".to_string(),
+                vendor:   "Built-in".to_string(),
+                version:  env!("CARGO_PKG_VERSION").to_string(),
+                path:     NoiseSuppressor::ID.to_string(),
+                format:   PluginFormat::Builtin,
+                category: "Noise Reduction".to_string(),
+            },
+        ]
     }
 }

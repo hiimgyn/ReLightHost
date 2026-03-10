@@ -1,11 +1,15 @@
-import { Card, Button, Space, Tag, Tooltip, theme } from 'antd';
+import { Card, Button, Space, Tag, Tooltip, theme, message } from 'antd';
 import { 
   CloseOutlined, 
   PoweroffOutlined, 
   PlayCircleOutlined,
-  ThunderboltOutlined 
+  ThunderboltOutlined,
+  WarningOutlined,
+  ReloadOutlined
 } from '@ant-design/icons';
-import type { PluginInstanceInfo } from '../lib/types';
+import { useState, useEffect } from 'react';
+import type { PluginInstanceInfo, PluginStatus } from '../lib/types';
+import * as tauri from '../lib/tauri';
 
 interface PluginCardProps {
   plugin: PluginInstanceInfo;
@@ -16,16 +20,77 @@ interface PluginCardProps {
 
 export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch }: PluginCardProps) {
   const { token } = theme.useToken();
+  const [crashStatus, setCrashStatus] = useState<PluginStatus>({ type: 'Ok' });
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  
+  // Check crash status periodically
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const status = await tauri.getPluginCrashStatus(plugin.instance_id);
+        setCrashStatus(status);
+      } catch (err) {
+        console.error('Failed to check crash status:', err);
+      }
+    };
+    
+    // Check immediately
+    checkStatus();
+    
+    // Then check every 2 seconds
+    const interval = setInterval(checkStatus, 2000);
+    return () => clearInterval(interval);
+  }, [plugin.instance_id]);
+  
+  const handleResetCrash = async () => {
+    try {
+      setCheckingStatus(true);
+      await tauri.resetPluginCrashProtection(plugin.instance_id);
+      setCrashStatus({ type: 'Ok' });
+      message.success('Plugin crash protection reset');
+    } catch (err) {
+      message.error(`Failed to reset: ${err}`);
+    } finally {
+      setCheckingStatus(false);
+    }
+  };
+  
+  const getCrashStatusTag = () => {
+    if (crashStatus.type === 'Crashed') {
+      return (
+        <Tag icon={<WarningOutlined />} color="error">
+          CRASHED: {crashStatus.data}
+        </Tag>
+      );
+    } else if (crashStatus.type === 'Error') {
+      return (
+        <Tag icon={<WarningOutlined />} color="warning">
+          ERROR: {crashStatus.data}
+        </Tag>
+      );
+    } else if (crashStatus.type === 'Timeout') {
+      return (
+        <Tag icon={<WarningOutlined />} color="warning">
+          TIMEOUT
+        </Tag>
+      );
+    }
+    return null;
+  };
+  
+  const isCrashed = crashStatus.type !== 'Ok';
+  
   return (
     <Card
       size="small"
       className={`
         transition-all shadow-lg
         ${plugin.bypassed ? 'opacity-60' : ''}
+        ${isCrashed ? 'border-red-500' : ''}
       `}
       style={{
         borderWidth: 2,
-        borderColor: plugin.bypassed ? token.colorBorderSecondary : token.colorPrimary,
+        borderColor: isCrashed ? token.colorError : (plugin.bypassed ? token.colorBorderSecondary : token.colorPrimary),
         background: token.colorBgContainer,
       }}
       bodyStyle={{ padding: '16px' }}
@@ -54,6 +119,9 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
             </code>
           </div>
         </div>
+        
+        {/* Crash Status */}
+        {getCrashStatusTag()}
 
         {/* Parameters Info */}
         {plugin.parameters.length > 0 && (
@@ -64,6 +132,21 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
 
         {/* Action Buttons */}
         <Space style={{ width: '100%' }} size="small">
+          {isCrashed && (
+            <Tooltip title="Reset Crash Protection">
+              <Button
+                type="default"
+                size="small"
+                icon={<ReloadOutlined />}
+                onClick={handleResetCrash}
+                loading={checkingStatus}
+                style={{ flex: 1 }}
+              >
+                Reset
+              </Button>
+            </Tooltip>
+          )}
+          
           <Tooltip title={plugin.bypassed ? 'Enable Plugin' : 'Bypass Plugin'}>
             <Button
               type={plugin.bypassed ? 'default' : 'primary'}
@@ -72,6 +155,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
               icon={<PoweroffOutlined />}
               onClick={onToggleBypass}
               style={{ flex: 1 }}
+              disabled={isCrashed}
             >
               {plugin.bypassed ? 'Bypassed' : 'Active'}
             </Button>
@@ -83,6 +167,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
               size="small"
               icon={<PlayCircleOutlined />}
               onClick={onLaunch}
+              disabled={isCrashed}
             >
               Launch
             </Button>

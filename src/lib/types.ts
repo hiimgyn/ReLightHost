@@ -17,7 +17,7 @@ export interface AudioDeviceInfo {
 }
 
 // Plugin Types
-export type PluginFormat = 'clap' | 'vst3' | 'vst';
+export type PluginFormat = 'clap' | 'vst3' | 'vst' | 'builtin';
 
 export interface PluginInfo {
   id: string;
@@ -51,13 +51,6 @@ export interface PluginInstanceInfo {
   parameters: PluginParameter[];
 }
 
-// Audio Config
-export interface AudioConfig {
-  sample_rate: number;
-  buffer_size: number;
-  output_device_id: string | null;
-  input_device_id: string | null;
-}
 export interface Preset {
   name: string;
   description: string;
@@ -83,4 +76,23 @@ export interface SystemStats {
   ram_percent: number;
   ram_used_mb: number;
   ram_total_mb: number;
+}
+
+// Crash Protection Types
+export type PluginStatus = 
+  | { type: 'Ok' }
+  | { type: 'Crashed'; data: string }
+  | { type: 'Timeout'; data: { secs: number; nanos: number } }
+  | { type: 'Error'; data: string };
+
+// VU Meter Types
+export interface VUChannel {
+  peak: number;       // 0.0 - 1.0
+  peak_hold: number;  // 0.0 - 1.0
+  rms: number;        // 0.0 - 1.0
+}
+
+export interface VUData {
+  left: VUChannel;
+  right: VUChannel;
 }

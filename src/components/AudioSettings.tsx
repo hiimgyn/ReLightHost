@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Modal, Form, Select, Button, Divider, Tag, Space, message } from 'antd';
-import { CheckOutlined, AudioOutlined, SoundOutlined } from '@ant-design/icons';
+import { Modal, Form, Select, Button, Divider, Tag, Space, message, Alert } from 'antd';
+import { CheckOutlined, AudioOutlined, SoundOutlined, ThunderboltOutlined, WarningOutlined } from '@ant-design/icons';
 import { useAudioStore } from '../stores/audioStore';
+import type { AudioDeviceInfo } from '../lib/types';
 import * as tauri from '../lib/tauri';
 
 interface AudioSettingsProps {
@@ -9,43 +10,87 @@ interface AudioSettingsProps {
   onClose: () => void;
 }
 
+const isAsioId   = (id: string | null | undefined): boolean => id?.startsWith('asio_') ?? false;
+const isAsioHost = (ht: string): boolean => ht.toLowerCase().includes('asio');
+
+function getHostTypeColor(hostType: string) {
+  if (isAsioHost(hostType))            return 'blue';
+  if (hostType.includes('WASAPI'))     return 'green';
+  if (hostType.includes('DirectSound')) return 'orange';
+  if (hostType.includes('CoreAudio'))  return 'purple';
+  return 'default';
+}
+
+function DeviceOption({ device }: { device: AudioDeviceInfo }) {
+  const channelLabel = device.input_channels > 0 && device.output_channels > 0
+    ? `${device.input_channels} in / ${device.output_channels} out`
+    : device.output_channels > 0
+      ? `${device.output_channels} ch out`
+      : `${device.input_channels} ch in`;
+
+  return (
+    <Space direction="vertical" size={0} style={{ width: '100%' }}>
+      <Space>
+        <span style={{ fontWeight: 600 }}>{device.name}</span>
+        {device.is_default && <Tag color="blue">Default</Tag>}
+      </Space>
+      <Space size={4}>
+        <Tag color={getHostTypeColor(device.host_type)}>{device.host_type}</Tag>
+        <Tag color="cyan">{channelLabel}</Tag>
+      </Space>
+    </Space>
+  );
+}
+
 export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
-  const { devices, selectedDevice, selectedInputDevice, sampleRate, bufferSize, status, setOutputDevice, setInputDevice, setSampleRate, setBufferSize, fetchDevices, fetchStatus } = useAudioStore();
+  const {
+    devices, selectedDevice, selectedInputDevice,
+    sampleRate, bufferSize, status,
+    setOutputDevice, setInputDevice, setSampleRate, setBufferSize,
+    fetchDevices, fetchStatus,
+  } = useAudioStore();
   const [form] = Form.useForm();
   const [selectedHostType, setSelectedHostType] = useState<string>('');
 
-  // Derive sorted unique host types from available devices
   const hostTypes = Array.from(new Set(devices.map(d => d.host_type))).sort();
+  const asioMode  = isAsioHost(selectedHostType);
 
-  // Filter devices by selected host type
+  // Partition devices for the current host type
   const filteredDevices = selectedHostType
     ? devices.filter(d => d.host_type === selectedHostType)
     : devices;
 
-  useEffect(() => {
-    if (isOpen) {
-      fetchDevices();
-      form.setFieldsValue({
-        outputDevice: selectedDevice,
-        inputDevice: selectedInputDevice || '',
-        sampleRate: String(sampleRate),
-        bufferSize: String(bufferSize),
-      });
-    }
-  }, [isOpen, selectedDevice, selectedInputDevice, sampleRate, bufferSize, fetchDevices, form]);
+  // Full-duplex ASIO devices (both channels populated)
+  const asioDevices  = filteredDevices.filter(d => d.input_channels > 0 && d.output_channels > 0);
+  // Separate output / input lists for non-ASIO
+  const outputDevices = filteredDevices.filter(d => d.output_channels > 0 && d.input_channels === 0);
+  const inputDevices  = filteredDevices.filter(d => d.input_channels  > 0 && d.output_channels === 0);
 
-  // When host type changes, reset device selections if they no longer match
+  useEffect(() => {
+    if (!isOpen) return;
+    fetchDevices();
+
+    // Auto-detect host type from the currently stored device
+    const currentIsAsio = isAsioId(selectedDevice);
+    if (currentIsAsio && !selectedHostType) {
+      const stored = devices.find(d => d.id === selectedDevice);
+      if (stored) setSelectedHostType(stored.host_type);
+    }
+
+    form.setFieldsValue({
+      asioDevice:   currentIsAsio ? selectedDevice : undefined,
+      outputDevice: !currentIsAsio ? (selectedDevice ?? undefined) : undefined,
+      inputDevice:  !currentIsAsio ? (selectedInputDevice || '') : '',
+      sampleRate:   String(sampleRate),
+      bufferSize:   String(bufferSize),
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
   const handleHostTypeChange = (ht: string) => {
     setSelectedHostType(ht);
-    const filtered = ht ? devices.filter(d => d.host_type === ht) : devices;
-    const currentOut = form.getFieldValue('outputDevice');
-    const currentIn = form.getFieldValue('inputDevice');
-    if (currentOut && !filtered.find(d => d.id === currentOut)) {
-      form.setFieldValue('outputDevice', undefined);
-    }
-    if (currentIn && !filtered.find(d => d.id === currentIn)) {
-      form.setFieldValue('inputDevice', '');
-    }
+    // Clear device selections so user picks from the new API's list
+    form.setFieldsValue({ asioDevice: undefined, outputDevice: undefined, inputDevice: '' });
   };
 
   const handleApply = async () => {
@@ -53,8 +98,17 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       const values = await form.validateFields();
       const tasks: Promise<void>[] = [];
 
-      if (values.outputDevice) tasks.push(setOutputDevice(values.outputDevice));
-      tasks.push(setInputDevice(values.inputDevice || null));
+      if (asioMode) {
+        // ASIO is full-duplex: one device ID handles both I/O
+        if (values.asioDevice) {
+          tasks.push(setOutputDevice(values.asioDevice));
+          tasks.push(setInputDevice(values.asioDevice));
+        }
+      } else {
+        if (values.outputDevice) tasks.push(setOutputDevice(values.outputDevice));
+        tasks.push(setInputDevice(values.inputDevice || null));
+      }
+
       tasks.push(setSampleRate(parseInt(values.sampleRate)));
       tasks.push(setBufferSize(parseInt(values.bufferSize)));
 
@@ -65,14 +119,6 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       console.error('Failed to apply settings:', error);
       message.error('Failed to apply audio settings');
     }
-  };
-
-  const getHostTypeColor = (hostType: string) => {
-    if (hostType.includes('ASIO')) return 'blue';
-    if (hostType.includes('WASAPI')) return 'green';
-    if (hostType.includes('DirectSound')) return 'orange';
-    if (hostType.includes('CoreAudio')) return 'purple';
-    return 'default';
   };
 
   return (
@@ -87,31 +133,16 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       onCancel={onClose}
       width={600}
       footer={[
-        <Button key="cancel" onClick={onClose}>
-          Cancel
-        </Button>,
-        <Button
-          key="apply"
-          type="primary"
-          icon={<CheckOutlined />}
-          onClick={handleApply}
-        >
+        <Button key="cancel" onClick={onClose}>Cancel</Button>,
+        <Button key="apply" type="primary" icon={<CheckOutlined />} onClick={handleApply}>
           Apply
         </Button>,
       ]}
     >
       <Divider />
-      <Form
-        form={form}
-        layout="vertical"
-        initialValues={{
-          outputDevice: selectedDevice,
-          inputDevice: '',
-          sampleRate: '48000',
-          bufferSize: '512',
-        }}
-      >
-        {/* Host Type (API) Selection */}
+      <Form form={form} layout="vertical" initialValues={{ sampleRate: '48000', bufferSize: '1024' }}>
+
+        {/* Audio API */}
         <Form.Item label="Audio API">
           <Select
             size="large"
@@ -122,84 +153,88 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
           >
             {hostTypes.map(ht => (
               <Select.Option key={ht} value={ht}>
-                <Tag color={getHostTypeColor(ht)}>{ht}</Tag>
-              </Select.Option>
-            ))}
-          </Select>
-        </Form.Item>
-
-        {/* Output Device Selection */}
-        <Form.Item
-          label="Output Device"
-          name="outputDevice"
-          rules={[{ required: true, message: 'Please select an output device' }]}
-        >
-          <Select
-            size="large"
-            placeholder="Select output device"
-            optionLabelProp="label"
-          >
-            {filteredDevices.filter(d => d.output_channels > 0).map((device) => (
-              <Select.Option 
-                key={device.id} 
-                value={device.id}
-                label={device.name}
-              >
-                <Space direction="vertical" size={0} style={{ width: '100%' }}>
-                  <Space>
-                    <span style={{ fontWeight: 600 }}>{device.name}</span>
-                    {device.is_default && <Tag color="blue">Default</Tag>}
-                  </Space>
-                  <Space size={4}>
-                    <Tag color={getHostTypeColor(device.host_type)}>{device.host_type}</Tag>
-                    <Tag color="cyan">{device.output_channels} channels</Tag>
-                  </Space>
+                <Space>
+                  <Tag color={getHostTypeColor(ht)}>{ht}</Tag>
+                  {isAsioHost(ht) && (
+                    <Tag icon={<ThunderboltOutlined />} color="blue">Full-Duplex</Tag>
+                  )}
                 </Space>
               </Select.Option>
             ))}
           </Select>
         </Form.Item>
 
-        {/* Input Device Selection */}
-        <Form.Item
-          label="Input Device"
-          name="inputDevice"
-        >
-          <Select
-            size="large"
-            placeholder="None (No Input)"
-            allowClear
-            optionLabelProp="label"
-          >
-            <Select.Option value="" label="None (No Input)">
-              <span>None (No Input)</span>
-            </Select.Option>
-            {filteredDevices.filter(d => d.input_channels > 0).map((device) => (
-              <Select.Option 
-                key={device.id} 
-                value={device.id}
-                label={device.name}
+        {/* ── ASIO MODE: single full-duplex device ── */}
+        {asioMode ? (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              icon={<ThunderboltOutlined />}
+              style={{ marginBottom: 16 }}
+              message="ASIO — Full-Duplex"
+              description={
+                <>
+                  ASIO drivers manage input and output through a single device.
+                  Select one device below; it will be used for both input and output.
+                  The buffer size must match your ASIO driver's current setting
+                  (configured in the driver's own control panel).
+                </>
+              }
+            />
+
+            <Form.Item
+              label="ASIO Device"
+              name="asioDevice"
+              rules={[{ required: true, message: 'Please select an ASIO device' }]}
+            >
+              <Select
+                size="large"
+                placeholder="Select ASIO device"
+                optionLabelProp="label"
               >
-                <Space direction="vertical" size={0} style={{ width: '100%' }}>
-                  <Space>
-                    <span style={{ fontWeight: 600 }}>{device.name}</span>
-                    {device.is_default && <Tag color="blue">Default</Tag>}
-                  </Space>
-                  <Space size={4}>
-                    <Tag color={getHostTypeColor(device.host_type)}>{device.host_type}</Tag>
-                    <Tag color="green">{device.input_channels} channels</Tag>
-                  </Space>
-                </Space>
-              </Select.Option>
-            ))}
-          </Select>
-        </Form.Item>
+                {asioDevices.map(device => (
+                  <Select.Option key={device.id} value={device.id} label={device.name}>
+                    <DeviceOption device={device} />
+                  </Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
+          </>
+        ) : (
+          /* ── NON-ASIO MODE: separate output / input ── */
+          <>
+            <Form.Item
+              label="Output Device"
+              name="outputDevice"
+              rules={[{ required: true, message: 'Please select an output device' }]}
+            >
+              <Select size="large" placeholder="Select output device" optionLabelProp="label">
+                {outputDevices.map(device => (
+                  <Select.Option key={device.id} value={device.id} label={device.name}>
+                    <DeviceOption device={device} />
+                  </Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
+
+            <Form.Item label="Input Device" name="inputDevice">
+              <Select size="large" placeholder="None (No Input)" allowClear optionLabelProp="label">
+                <Select.Option value="" label="None (No Input)">
+                  <span>None (No Input)</span>
+                </Select.Option>
+                {inputDevices.map(device => (
+                  <Select.Option key={device.id} value={device.id} label={device.name}>
+                    <DeviceOption device={device} />
+                  </Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
+          </>
+        )}
 
         {/* Sample Rate */}
-        <Form.Item
-          label="Sample Rate"
-          name="sampleRate"
-        >
+        <Form.Item label="Sample Rate" name="sampleRate">
           <Select size="large">
             <Select.Option value="44100">44.1 kHz</Select.Option>
             <Select.Option value="48000">48 kHz</Select.Option>
@@ -213,21 +248,25 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
         <Form.Item
           label="Buffer Size"
           name="bufferSize"
-          extra="Lower buffer size = lower latency but higher CPU usage"
+          extra={
+            asioMode
+              ? 'Must match the buffer size set in your ASIO driver control panel'
+              : 'Lower buffer size = lower latency but higher CPU usage'
+          }
         >
           <Select size="large">
-            <Select.Option value="64">64 samples (1.3ms @ 48kHz)</Select.Option>
-            <Select.Option value="128">128 samples (2.7ms @ 48kHz)</Select.Option>
-            <Select.Option value="256">256 samples (5.3ms @ 48kHz)</Select.Option>
-            <Select.Option value="512">512 samples (10.7ms @ 48kHz)</Select.Option>
-            <Select.Option value="1024">1024 samples (21.3ms @ 48kHz)</Select.Option>
-            <Select.Option value="2048">2048 samples (42.7ms @ 48kHz)</Select.Option>
+            <Select.Option value="64">64 samples (1.3 ms @ 48 kHz)</Select.Option>
+            <Select.Option value="128">128 samples (2.7 ms @ 48 kHz)</Select.Option>
+            <Select.Option value="256">256 samples (5.3 ms @ 48 kHz)</Select.Option>
+            <Select.Option value="512">512 samples (10.7 ms @ 48 kHz)</Select.Option>
+            <Select.Option value="1024">1024 samples (21.3 ms @ 48 kHz)</Select.Option>
+            <Select.Option value="2048">2048 samples (42.7 ms @ 48 kHz)</Select.Option>
           </Select>
         </Form.Item>
 
         {/* Test Audio */}
-        <Divider orientationMargin={0} style={{ fontSize: 13 }}>Test Audio</Divider>
-        <Space size="middle">
+        <Divider orientationMargin={0} style={{ fontSize: 13 }}>Test Audio & MIDI</Divider>
+        <Space size="middle" wrap>
           <Button
             icon={<SoundOutlined />}
             onClick={async () => {
@@ -257,7 +296,22 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
           >
             {status.is_monitoring ? 'Monitoring...' : 'Hear Input'}
           </Button>
+          <Button
+            danger
+            icon={<WarningOutlined />}
+            onClick={async () => {
+              try {
+                await tauri.midiPanic();
+                message.success('🚨 MIDI Panic sent to all plugins');
+              } catch (err) {
+                message.error(`Failed to send MIDI panic: ${err}`);
+              }
+            }}
+          >
+            🚨 MIDI Panic
+          </Button>
         </Space>
+
       </Form>
     </Modal>
   );

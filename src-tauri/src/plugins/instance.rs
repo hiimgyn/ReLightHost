@@ -1,22 +1,35 @@
 use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
-use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::AssertUnwindSafe;
+use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, PluginFormat};
 use crate::plugins::vst3_processor::Vst3Processor;
+use crate::plugins::vst2_processor::Vst2Processor;
+use crate::plugins::builtin_processor::NoiseSuppressor;
+use crate::plugins::crash_protection::{self, SharedCrashProtection};
 use anyhow::Result;
 
-/// Represents a loaded plugin instance with an optional real VST3 audio processor.
+/// Represents a loaded plugin instance with an optional real audio processor.
 ///
 /// Mirrors LightHost's per-node model in AudioProcessorGraph:
 ///   instance_id  ↔  node id
-///   vst3_processor.process_stereo  ↔  AudioPlugin::processBlock
-///   vst3_processor.get_state/set_state  ↔  getStateInformation/setStateInformation
+///   processor.process_stereo  ↔  AudioPlugin::processBlock
+///   processor.get_state/set_state  ↔  getStateInformation/setStateInformation
 pub struct PluginInstance {
     instance_id:    String,
     plugin_info:    PluginInfo,
     bypassed:       Arc<RwLock<bool>>,
     parameters:     Arc<RwLock<Vec<PluginParameter>>>,
-    /// The real VST3 audio processor — None if loading failed or format is non-VST3.
+    /// VST3 audio processor (vst3-rs) — present when format == VST3.
     vst3_processor: Mutex<Option<Vst3Processor>>,
+    /// VST2 audio processor (vst-rs) — present when format == VST.
+    vst2_processor: Mutex<Option<Vst2Processor>>,
+    /// Built-in processor — present when format == Builtin.
+    builtin_processor: Mutex<Option<NoiseSuppressor>>,
+    /// Track if GUI window is currently open (prevents multiple windows)
+    gui_open:       Arc<AtomicBool>,
+    /// Crash protection state
+    crash_protection: SharedCrashProtection,
 }
 
 impl PluginInstance {
@@ -30,9 +43,9 @@ impl PluginInstance {
 
         log::info!("Creating plugin instance: {} ({})", plugin_info.name, instance_id);
 
-        // Try to load a real VST3 audio processor (only for VST3 format).
+        // Load the appropriate audio processor for the plugin format.
         // Failure is non-fatal; the instance still works in pass-through mode.
-        let vst3_processor = if plugin_info.format == crate::plugins::types::PluginFormat::VST3 {
+        let vst3_processor = if plugin_info.format == PluginFormat::VST3 {
             match Vst3Processor::load(&plugin_info.path, sample_rate, block_size) {
                 Ok(proc) => {
                     log::info!("VST3 processor ready for '{}'", plugin_info.name);
@@ -47,12 +60,38 @@ impl PluginInstance {
             None
         };
 
+        let vst2_processor = if plugin_info.format == PluginFormat::VST {
+            match Vst2Processor::load(&plugin_info.path, sample_rate, block_size) {
+                Ok(proc) => {
+                    log::info!("VST2 processor ready for '{}'", plugin_info.name);
+                    Some(proc)
+                }
+                Err(e) => {
+                    log::warn!("VST2 audio processor failed for '{}': {}", plugin_info.name, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let builtin_processor = if plugin_info.format == PluginFormat::Builtin {
+            log::info!("Built-in processor ready for '{}'", plugin_info.name);
+            Some(NoiseSuppressor::new())
+        } else {
+            None
+        };
+
         Ok(Self {
             instance_id,
             plugin_info,
-            bypassed:       Arc::new(RwLock::new(false)),
-            parameters:     Arc::new(RwLock::new(Vec::new())),
-            vst3_processor: Mutex::new(vst3_processor),
+            bypassed:          Arc::new(RwLock::new(false)),
+            parameters:        Arc::new(RwLock::new(Vec::new())),
+            vst3_processor:    Mutex::new(vst3_processor),
+            vst2_processor:    Mutex::new(vst2_processor),
+            builtin_processor: Mutex::new(builtin_processor),
+            gui_open:          Arc::new(AtomicBool::new(false)),
+            crash_protection:  crash_protection::create_shared(),
         })
     }
 
@@ -81,24 +120,82 @@ impl PluginInstance {
     ///
     /// Mirrors LightHost's chain: INPUT → plugin → OUTPUT.
     /// Uses try_lock so the audio callback never blocks waiting for the mutex.
+    /// Wrapped with crash protection to prevent plugin crashes from taking down the app.
     pub fn process_stereo(&self, left: &mut [f32], right: &mut [f32]) {
         if self.is_bypassed() {
             return; // Pass through unchanged — matches LightHost bypass logic
         }
-        if let Some(mut guard) = self.vst3_processor.try_lock() {
-            if let Some(ref mut proc) = *guard {
-                proc.process_stereo(left, right);
+        
+        // Check if plugin is in crashed state
+        if let Some(protection) = self.crash_protection.try_lock() {
+            if !protection.is_healthy() {
+                // Plugin crashed - fill with silence
+                left.fill(0.0);
+                right.fill(0.0);
+                return;
             }
-            // No processor loaded → pass through (e.g. VST2 or CLAP — not yet supported)
         }
-        // Lock contended → pass through non-blocking (real-time safe)
+        
+        // Try VST3 processor first, then VST2.
+        let processed = if let Some(mut guard) = self.vst3_processor.try_lock() {
+            if let Some(ref mut proc) = *guard {
+                let result = crash_protection::protected_call(AssertUnwindSafe(|| {
+                    proc.process_stereo(left, right);
+                }));
+                if let Err(crash_msg) = result {
+                    log::error!("VST3 plugin crashed during processing: {}", crash_msg);
+                    if let Some(mut protection) = self.crash_protection.try_lock() {
+                        protection.mark_crashed(crash_msg);
+                    }
+                    left.fill(0.0);
+                    right.fill(0.0);
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !processed {
+            if let Some(mut guard) = self.vst2_processor.try_lock() {
+                if let Some(ref mut proc) = *guard {
+                    let result = crash_protection::protected_call(AssertUnwindSafe(|| {
+                        proc.process_stereo(left, right);
+                    }));
+                    if let Err(crash_msg) = result {
+                        log::error!("VST2 plugin crashed during processing: {}", crash_msg);
+                        if let Some(mut protection) = self.crash_protection.try_lock() {
+                            protection.mark_crashed(crash_msg);
+                        }
+                        left.fill(0.0);
+                        right.fill(0.0);
+                    }
+                    return;
+                }
+                // No VST2 processor → fall through to built-in check
+            }
+
+            // Built-in processors are crash-safe (pure Rust); no extra protection needed.
+            if let Some(mut guard) = self.builtin_processor.try_lock() {
+                if let Some(ref mut proc) = *guard {
+                    proc.process_stereo(left, right);
+                }
+            }
+            // Lock contended → pass through non-blocking (real-time safe)
+        }
     }
 
     /// Serialize plugin state as raw bytes (mirrors LightHost's `getStateInformation`).
-    #[allow(dead_code)]
     pub fn get_state_binary(&self) -> Vec<u8> {
         if let Some(guard) = self.vst3_processor.try_lock() {
             if let Some(ref proc) = *guard {
+                return proc.get_state();
+            }
+        }
+        if let Some(mut guard) = self.vst2_processor.try_lock() {
+            if let Some(ref mut proc) = *guard {
                 return proc.get_state();
             }
         }
@@ -106,10 +203,15 @@ impl PluginInstance {
     }
 
     /// Restore plugin state from raw bytes (mirrors LightHost's `setStateInformation`).
-    #[allow(dead_code)]
     pub fn set_state_binary(&self, data: &[u8]) {
         if let Some(guard) = self.vst3_processor.try_lock() {
             if let Some(ref proc) = *guard {
+                proc.set_state(data);
+                return;
+            }
+        }
+        if let Some(mut guard) = self.vst2_processor.try_lock() {
+            if let Some(ref mut proc) = *guard {
                 proc.set_state(data);
             }
         }
@@ -131,14 +233,91 @@ impl PluginInstance {
         }
     }
 
-    /// Set parameter value
+    /// Set parameter value and forward to the VST3 edit controller.
     pub fn set_parameter(&self, param_id: u32, value: f64) {
-        let mut params = self.parameters.write();
-        if let Some(param) = params.iter_mut().find(|p| p.id == param_id) {
-            param.value = value.clamp(param.min, param.max);
-            // TODO: Send to actual plugin
+        let normalized = {
+            let mut params = self.parameters.write();
+            if let Some(param) = params.iter_mut().find(|p| p.id == param_id) {
+                param.value = value.clamp(param.min, param.max);
+                if param.max > param.min {
+                    (param.value - param.min) / (param.max - param.min)
+                } else {
+                    0.0
+                }
+            } else {
+                return; // Unknown parameter — no-op
+            }
+        };
+        // Forward normalized value to the actual VST3 edit controller.
+        // Use try_lock so this is safe to call from any thread without blocking.
+        if let Some(guard) = self.vst3_processor.try_lock() {
+            if let Some(ref proc) = *guard {
+                proc.set_param_normalized(param_id, normalized);
+            }
         }
     }
+
+    /// Open the plugin's native GUI editor using the existing VST3 processor.
+    ///
+    /// This reuses the same VST3 instance used for audio processing, ensuring
+    /// that parameter changes in the GUI automatically sync with the audio processor.
+    /// Only one GUI window can be open per instance at a time.
+    pub fn open_gui(&self) -> Result<()> {
+        // Check if GUI is already open
+        if self.gui_open.load(Ordering::Acquire) {
+            return Err(anyhow::anyhow!("GUI window already open for this plugin"));
+        }
+
+        // Set flag to prevent multiple opens
+        if self.gui_open.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Err(anyhow::anyhow!("GUI window already opening"));
+        }
+
+        let gui_flag = self.gui_open.clone();
+        let crash_protection = self.crash_protection.clone();
+        
+        if let Some(guard) = self.vst3_processor.try_lock() {
+            if let Some(ref proc) = *guard {
+                // Wrap GUI opening with crash protection
+                let plugin_name = self.plugin_info.name.clone();
+                
+                let result = crash_protection::protected_call(|| {
+                    proc.open_gui(&plugin_name, gui_flag.clone())
+                });
+                
+                match result {
+                    Ok(Ok(())) => return Ok(()),
+                    Ok(Err(e)) => {
+                        gui_flag.store(false, Ordering::Release);
+                        return Err(e);
+                    }
+                    Err(crash_msg) => {
+                        log::error!("Plugin crashed during GUI opening: {}", crash_msg);
+                        if let Some(mut protection) = crash_protection.try_lock() {
+                            protection.mark_crashed(crash_msg.clone());
+                        }
+                        gui_flag.store(false, Ordering::Release);
+                        return Err(anyhow::anyhow!("Plugin crashed: {}", crash_msg));
+                    }
+                }
+            }
+        }
+        
+        // Failed to get processor - clear flag
+        self.gui_open.store(false, Ordering::Release);
+        Err(anyhow::anyhow!("VST3 processor not available for GUI"))
+    }
+    
+    /// Get crash protection status
+    pub fn get_crash_status(&self) -> crash_protection::PluginStatus {
+        self.crash_protection.lock().status.clone()
+    }
+    
+    /// Reset crash protection status
+    pub fn reset_crash_protection(&self) {
+        self.crash_protection.lock().reset();
+    }
+    
 }
 
 /// Manager for all plugin instances

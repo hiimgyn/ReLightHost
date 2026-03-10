@@ -20,6 +20,9 @@ pub enum PluginFormat {
     VST3,
     #[serde(rename = "vst")]
     VST,
+    /// Built-in processors compiled into the app (e.g. noise suppression).
+    #[serde(rename = "builtin")]
+    Builtin,
 }
 
 impl PluginFormat {

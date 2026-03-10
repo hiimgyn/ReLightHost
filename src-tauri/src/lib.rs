@@ -148,9 +148,10 @@ fn scan_plugins(state: tauri::State<AppState>) -> Result<Vec<PluginInfo>, String
 
 #[tauri::command]
 fn load_plugin(state: tauri::State<AppState>, plugin_info: PluginInfo) -> Result<String, String> {
+    let config = state.audio_manager.read().get_config();
     state.plugin_manager
         .read()
-        .load_plugin(plugin_info)
+        .load_plugin(plugin_info, config.sample_rate as f64, config.buffer_size as usize)
         .map_err(|e| format!("Failed to load plugin: {}", e))
 }
 
@@ -210,6 +211,7 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
     state.plugin_manager.read().clear();
 
     // Reload plugins from preset
+    let config = state.audio_manager.read().get_config();
     for plugin_preset in preset.plugin_chain {
         if plugin_preset.plugin_path.is_some() && plugin_preset.plugin_format.is_some() {
             let plugin_info = PluginInfo {
@@ -222,7 +224,11 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
                 category: plugin_preset.plugin_category.unwrap_or_default(),
             };
 
-            if let Ok(instance_id) = state.plugin_manager.read().load_plugin(plugin_info) {
+            if let Ok(instance_id) = state.plugin_manager.read().load_plugin(
+                plugin_info,
+                config.sample_rate as f64,
+                config.buffer_size as usize,
+            ) {
                 if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
                     instance.set_bypassed(plugin_preset.bypassed);
                     for p in plugin_preset.parameters {
@@ -456,8 +462,7 @@ fn toggle_startup(enable: bool) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize managers
-    let audio_manager = Arc::new(RwLock::new(AudioManager::new()));
+    let audio_manager  = Arc::new(RwLock::new(AudioManager::new()));
     let plugin_scanner = Arc::new(RwLock::new(PluginScanner::new()));
     let plugin_manager = Arc::new(RwLock::new(PluginInstanceManager::new()));
     let preset_manager = Arc::new(RwLock::new(PresetManager::default()));
@@ -474,6 +479,20 @@ pub fn run() {
         s.refresh_all();
         s
     }));
+
+    // Wire the plugin chain into the audio manager.
+    // When monitoring is active, the CPAL output callback calls this closure
+    // once per block — exactly like LightHost's AudioProcessorGraph routing:
+    //   INPUT node → plugin1 → plugin2 → ... → OUTPUT node
+    {
+        let pm = Arc::clone(&plugin_manager);
+        audio_manager.read().set_process_callback(move |left, right| {
+            // try_read is non-blocking — safe for real-time audio thread.
+            if let Some(guard) = pm.try_read() {
+                guard.process_chain_stereo(left, right);
+            }
+        });
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

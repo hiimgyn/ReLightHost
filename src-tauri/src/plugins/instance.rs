@@ -1,36 +1,58 @@
 use std::sync::Arc;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter};
+use crate::plugins::vst3_processor::Vst3Processor;
 use anyhow::Result;
 
-/// Represents a loaded plugin instance
-#[allow(dead_code)]
+/// Represents a loaded plugin instance with an optional real VST3 audio processor.
+///
+/// Mirrors LightHost's per-node model in AudioProcessorGraph:
+///   instance_id  ↔  node id
+///   vst3_processor.process_stereo  ↔  AudioPlugin::processBlock
+///   vst3_processor.get_state/set_state  ↔  getStateInformation/setStateInformation
 pub struct PluginInstance {
-    instance_id: String,
-    plugin_info: PluginInfo,
-    bypassed: Arc<RwLock<bool>>,
-    parameters: Arc<RwLock<Vec<PluginParameter>>>,
+    instance_id:    String,
+    plugin_info:    PluginInfo,
+    bypassed:       Arc<RwLock<bool>>,
+    parameters:     Arc<RwLock<Vec<PluginParameter>>>,
+    /// The real VST3 audio processor — None if loading failed or format is non-VST3.
+    vst3_processor: Mutex<Option<Vst3Processor>>,
 }
 
 impl PluginInstance {
-    /// Create a new plugin instance
-    pub fn new(plugin_info: PluginInfo) -> Result<Self> {
+    /// Create a new plugin instance.
+    ///
+    /// `sample_rate` and `block_size` are used to initialize the VST3 audio
+    /// processor — matching LightHost's `deviceManager.initialise` values passed
+    /// to `formatManager.createPluginInstance`.
+    pub fn new(plugin_info: PluginInfo, sample_rate: f64, block_size: usize) -> Result<Self> {
         let instance_id = format!("instance_{}", uuid::Uuid::new_v4());
-        
+
         log::info!("Creating plugin instance: {} ({})", plugin_info.name, instance_id);
 
-        // Create default parameters for demonstration
-        let default_params = vec![
-            PluginParameter { id: 0, name: "Gain".to_string(), value: 0.0, min: -12.0, max: 12.0, default: 0.0 },
-            PluginParameter { id: 1, name: "Mix".to_string(), value: 100.0, min: 0.0, max: 100.0, default: 100.0 },
-            PluginParameter { id: 2, name: "Output".to_string(), value: 0.0, min: -12.0, max: 12.0, default: 0.0 },
-        ];
+        // Try to load a real VST3 audio processor (only for VST3 format).
+        // Failure is non-fatal; the instance still works in pass-through mode.
+        let vst3_processor = if plugin_info.format == crate::plugins::types::PluginFormat::VST3 {
+            match Vst3Processor::load(&plugin_info.path, sample_rate, block_size) {
+                Ok(proc) => {
+                    log::info!("VST3 processor ready for '{}'", plugin_info.name);
+                    Some(proc)
+                }
+                Err(e) => {
+                    log::warn!("VST3 audio processor failed for '{}': {}", plugin_info.name, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         Ok(Self {
             instance_id,
             plugin_info,
-            bypassed: Arc::new(RwLock::new(false)),
-            parameters: Arc::new(RwLock::new(default_params)),
+            bypassed:       Arc::new(RwLock::new(false)),
+            parameters:     Arc::new(RwLock::new(Vec::new())),
+            vst3_processor: Mutex::new(vst3_processor),
         })
     }
 
@@ -55,17 +77,41 @@ impl PluginInstance {
         *self.bypassed.read()
     }
 
-    /// Process audio buffer
-    #[allow(dead_code)]
-    pub fn process(&self, buffer: &mut [f32]) {
+    /// Process a stereo buffer in-place through the VST3 plugin.
+    ///
+    /// Mirrors LightHost's chain: INPUT → plugin → OUTPUT.
+    /// Uses try_lock so the audio callback never blocks waiting for the mutex.
+    pub fn process_stereo(&self, left: &mut [f32], right: &mut [f32]) {
         if self.is_bypassed() {
-            return; // Pass through without processing
+            return; // Pass through unchanged — matches LightHost bypass logic
         }
+        if let Some(mut guard) = self.vst3_processor.try_lock() {
+            if let Some(ref mut proc) = *guard {
+                proc.process_stereo(left, right);
+            }
+            // No processor loaded → pass through (e.g. VST2 or CLAP — not yet supported)
+        }
+        // Lock contended → pass through non-blocking (real-time safe)
+    }
 
-        // TODO: Actual plugin processing using clack-host
-        // For now, just silence
-        for sample in buffer.iter_mut() {
-            *sample *= 0.5; // Reduce volume as placeholder
+    /// Serialize plugin state as raw bytes (mirrors LightHost's `getStateInformation`).
+    #[allow(dead_code)]
+    pub fn get_state_binary(&self) -> Vec<u8> {
+        if let Some(guard) = self.vst3_processor.try_lock() {
+            if let Some(ref proc) = *guard {
+                return proc.get_state();
+            }
+        }
+        Vec::new()
+    }
+
+    /// Restore plugin state from raw bytes (mirrors LightHost's `setStateInformation`).
+    #[allow(dead_code)]
+    pub fn set_state_binary(&self, data: &[u8]) {
+        if let Some(guard) = self.vst3_processor.try_lock() {
+            if let Some(ref proc) = *guard {
+                proc.set_state(data);
+            }
         }
     }
 
@@ -107,13 +153,15 @@ impl PluginInstanceManager {
         }
     }
 
-    /// Load a plugin and create an instance
-    pub fn load_plugin(&self, plugin_info: PluginInfo) -> Result<String> {
-        let instance = Arc::new(PluginInstance::new(plugin_info)?);
+    /// Load a plugin and create an instance.
+    ///
+    /// `sample_rate` / `block_size` are forwarded to the VST3 processor for
+    /// `setupProcessing`, matching LightHost's `graph.getSampleRate()` /
+    /// `graph.getBlockSize()` passed to `createPluginInstance`.
+    pub fn load_plugin(&self, plugin_info: PluginInfo, sample_rate: f64, block_size: usize) -> Result<String> {
+        let instance = Arc::new(PluginInstance::new(plugin_info, sample_rate, block_size)?);
         let instance_id = instance.instance_id().to_string();
-        
         self.instances.write().push(instance);
-        
         Ok(instance_id)
     }
 
@@ -147,12 +195,15 @@ impl PluginInstanceManager {
             .cloned()
     }
 
-    /// Process audio through all instances in chain
-    #[allow(dead_code)]
-    pub fn process_chain(&self, buffer: &mut [f32]) {
+    /// Process stereo audio in-place through the entire plugin chain.
+    ///
+    /// Mirrors LightHost's `loadActivePlugins` graph routing:
+    ///   INPUT → (non-bypassed) plugin 1 → plugin 2 → … → OUTPUT
+    /// Called from the CPAL audio output callback via the process callback.
+    pub fn process_chain_stereo(&self, left: &mut [f32], right: &mut [f32]) {
         let instances = self.instances.read();
         for instance in instances.iter() {
-            instance.process(buffer);
+            instance.process_stereo(left, right);
         }
     }
 

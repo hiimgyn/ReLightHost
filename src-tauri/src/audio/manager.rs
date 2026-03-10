@@ -17,21 +17,41 @@ struct MonitoringStreams {
 // SAFETY: cpal::Stream implements Send on all supported platforms
 unsafe impl Send for MonitoringStreams {}
 
+/// Signature for the plugin-chain processing callback.
+/// Called per audio block with non-interleaved L/R buffers.
+/// Mirrors LightHost's AudioProcessorGraph routing: INPUT → chain → OUTPUT.
+type ProcessChainFn = Box<dyn Fn(&mut [f32], &mut [f32]) + Send + 'static>;
+
 pub struct AudioManager {
-    config: Arc<RwLock<AudioConfig>>,
-    status: Arc<RwLock<AudioStatus>>,
+    config:     Arc<RwLock<AudioConfig>>,
+    status:     Arc<RwLock<AudioStatus>>,
     last_update: Arc<RwLock<Instant>>,
-    monitoring: Mutex<Option<MonitoringStreams>>,
+    monitoring:  Mutex<Option<MonitoringStreams>>,
+    /// Plugin chain callback — set by lib.rs after AppState is built.
+    process_fn:  Arc<Mutex<Option<ProcessChainFn>>>,
 }
 
 impl AudioManager {
     pub fn new() -> Self {
         Self {
-            config: Arc::new(RwLock::new(AudioConfig::default())),
-            status: Arc::new(RwLock::new(AudioStatus::default())),
+            config:      Arc::new(RwLock::new(AudioConfig::default())),
+            status:      Arc::new(RwLock::new(AudioStatus::default())),
             last_update: Arc::new(RwLock::new(Instant::now())),
-            monitoring: Mutex::new(None),
+            monitoring:  Mutex::new(None),
+            process_fn:  Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Register the plugin-chain callback.
+    ///
+    /// Called from lib.rs after AppState is constructed so the CPAL audio
+    /// callback can route audio through the active plugin chain—matching
+    /// LightHost's AudioProcessorGraph mechanism.
+    pub fn set_process_callback<F>(&self, f: F)
+    where
+        F: Fn(&mut [f32], &mut [f32]) + Send + 'static,
+    {
+        *self.process_fn.lock().unwrap() = Some(Box::new(f));
     }
 
     /// Start audio engine
@@ -122,27 +142,56 @@ impl AudioManager {
             )
             .map_err(|e| anyhow::anyhow!("Failed to build input stream: {}", e))?;
 
-        // Build output stream — expand/contract channels as needed
-        let buf_read = Arc::clone(&shared);
+        // Build output stream — reads ring-buffer, processes through plugin chain,
+        // then writes to output.  Mirrors LightHost's JUCE AudioProcessorGraph:
+        //   INPUT node → plugin chain → OUTPUT node
+        let buf_read     = Arc::clone(&shared);
+        let process_fn   = Arc::clone(&self.process_fn);
+        // Pre-allocate L/R bounce buffers (max 4096 frames, grows if needed)
+        let mut left_buf  = vec![0.0f32; 4096];
+        let mut right_buf = vec![0.0f32; 4096];
         let out_stream = output_device
             .build_output_stream(
                 &out_cfg.config(),
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let mut buf = buf_read.lock().unwrap();
-                    let frames = data.len() / output_channels;
-                    for frame in 0..frames {
-                        // Read one input frame (or silence if buffer is empty)
-                        let in_frame: Vec<f32> = (0..input_channels)
-                            .map(|_| buf.pop_front().unwrap_or(0.0))
-                            .collect();
-                        // Write to output channels (mix down/up as needed)
-                        for ch in 0..output_channels {
-                            let src = if input_channels > 0 {
-                                in_frame[ch % input_channels]
+                    let frames = data.len() / output_channels.max(1);
+
+                    // Ensure bounce buffers are large enough (grows only, never shrinks).
+                    if left_buf.len()  < frames { left_buf.resize(frames,  0.0); }
+                    if right_buf.len() < frames { right_buf.resize(frames, 0.0); }
+
+                    // Step 1: De-interleave ring-buffer → L/R bounce buffers.
+                    {
+                        let mut buf = buf_read.lock().unwrap();
+                        for frame in 0..frames {
+                            if input_channels >= 2 {
+                                left_buf[frame]  = buf.pop_front().unwrap_or(0.0);
+                                right_buf[frame] = buf.pop_front().unwrap_or(0.0);
+                            } else if input_channels == 1 {
+                                let s = buf.pop_front().unwrap_or(0.0);
+                                left_buf[frame]  = s;
+                                right_buf[frame] = s;
                             } else {
-                                0.0
-                            };
-                            data[frame * output_channels + ch] = src;
+                                left_buf[frame]  = 0.0;
+                                right_buf[frame] = 0.0;
+                            }
+                        }
+                    }
+
+                    // Step 2: Run the plugin chain (non-blocking try_lock).
+                    // If the lock is contended the audio passes through unchanged —
+                    // same behaviour as LightHost when a bypassed plugin is removed.
+                    if let Ok(guard) = process_fn.try_lock() {
+                        if let Some(ref f) = *guard {
+                            f(&mut left_buf[..frames], &mut right_buf[..frames]);
+                        }
+                    }
+
+                    // Step 3: Re-interleave L/R → CPAL output buffer.
+                    for frame in 0..frames {
+                        for ch in 0..output_channels {
+                            data[frame * output_channels + ch] =
+                                if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] };
                         }
                     }
                 },

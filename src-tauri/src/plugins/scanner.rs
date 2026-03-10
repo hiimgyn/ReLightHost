@@ -79,7 +79,10 @@ impl PluginScanner {
 
         for path in &self.scan_paths {
             if path.exists() && path.is_dir() {
-                if let Ok(found) = self.scan_directory(path) {
+                // Always allow loose DLLs at the top level of any scan root.
+                // The DLL-skipping logic only activates when recursing into
+                // non-bundle subdirectories of a VST3/CLAP path (see scan_directory).
+                if let Ok(found) = self.scan_directory(path, true) {
                     plugins.extend(found);
                 }
             }
@@ -89,8 +92,24 @@ impl PluginScanner {
         Ok(plugins)
     }
 
-    /// Scan a specific directory for plugins
-    fn scan_directory(&self, dir: &Path) -> Result<Vec<PluginInfo>> {
+    /// Returns true when `path` is (or lives under) a VST3 or CLAP root directory.
+    /// Such directories should only yield bundle-style plugins, never loose DLLs.
+    fn path_is_vst3_or_clap_root(path: &Path) -> bool {
+        path.components().any(|c| {
+            c.as_os_str()
+                .to_str()
+                .map(|s| s.eq_ignore_ascii_case("VST3") || s.eq_ignore_ascii_case("CLAP"))
+                .unwrap_or(false)
+        })
+    }
+
+    /// Scan a specific directory for plugins.
+    ///
+    /// `allow_loose_dll`: when `false`, plain `.dll`/`.so`/`.dylib` files are
+    /// skipped. This is set to `false` only when recursing into non-bundle
+    /// subdirectories of a VST3/CLAP path, where DLLs are bundle-internal
+    /// shared libraries rather than standalone VST2 plugins.
+    fn scan_directory(&self, dir: &Path, allow_loose_dll: bool) -> Result<Vec<PluginInfo>> {
         let mut plugins = Vec::new();
 
         for entry in fs::read_dir(dir)? {
@@ -116,11 +135,31 @@ impl PluginScanner {
                         continue;
                     }
                 }
-                // Recursively scan other subdirectories
-                if let Ok(sub_plugins) = self.scan_directory(&path) {
+                // Recursively scan other subdirectories.
+                // If the current directory is inside a VST3/CLAP path, any non-bundle
+                // subdir may contain companion/internal DLLs that are not VST2 plugins.
+                // Suppress loose-DLL scanning for those subdirs only.
+                let child_allow_loose_dll = if Self::path_is_vst3_or_clap_root(dir) {
+                    false
+                } else {
+                    allow_loose_dll
+                };
+                if let Ok(sub_plugins) = self.scan_directory(&path, child_allow_loose_dll) {
                     plugins.extend(sub_plugins);
                 }
             } else if path.is_file() {
+                // In VST3/CLAP roots, skip bare native-library files.
+                // They are VST3 bundle components or helper DLLs, not VST2 plugins.
+                if !allow_loose_dll {
+                    let is_native_lib = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| matches!(e.to_lowercase().as_str(), "dll" | "so" | "dylib"))
+                        .unwrap_or(false);
+                    if is_native_lib {
+                        continue;
+                    }
+                }
                 if let Some(plugin) = self.scan_file(&path) {
                     plugins.push(plugin);
                 }

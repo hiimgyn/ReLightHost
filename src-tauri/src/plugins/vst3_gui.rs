@@ -25,7 +25,11 @@ pub mod win {
         IPlugView, IPlugViewTrait,
         ViewRect,
     };
-    use vst3::Steinberg::Vst::{IEditController, IEditControllerTrait};
+    use vst3::Steinberg::Vst::{
+        IComponent, IComponentTrait,
+        IConnectionPoint, IConnectionPointTrait,
+        IEditController, IEditControllerTrait,
+    };
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -37,11 +41,22 @@ pub mod win {
         /// Host HWND as isize. Used by IPlugFrame::resizeView().
         static TL_HWND: Cell<isize> = Cell::new(0);
         /// Closure that calls IPlugView::onSize() with new client dims.
-        /// Captures a live ComPtr<IPlugView> — IPlugViewTrait is only callable
-        /// via SmartPtr (ComPtr), NOT via raw *mut IPlugView.
         static TL_ON_SIZE: std::cell::RefCell<Option<Box<dyn Fn(i32, i32)>>> =
             std::cell::RefCell::new(None);
+        /// Initial (width, height) applied via WM_VST_ATTACH once the loop runs.
+        static TL_INITIAL_SIZE: Cell<(i32, i32)> = Cell::new((0, 0));
+        /// The IPlugView clone to be attached inside the message loop.
+        /// Stored by setup, consumed exactly once by the WM_VST_ATTACH handler.
+        static TL_PENDING_VIEW: std::cell::RefCell<Option<ComPtr<IPlugView>>> =
+            std::cell::RefCell::new(None);
     }
+
+    /// Posted BEFORE starting the message loop.
+    /// The handler calls IPlugView::attached(), onSize(), and ShowWindow() so
+    /// that these run while the pump is active — this prevents deadlocks caused
+    /// by plugins that SendMessage back to our HWND from their own threads
+    /// during attached() initialization (e.g. JUCE-based plugins).
+    const WM_VST_ATTACH: u32 = WM_USER + 1;
 
     // ── IPlugFrame host implementation ────────────────────────────────────────
     // Provided to the plugin via view.setFrame() so it can request window
@@ -97,11 +112,13 @@ pub mod win {
 
     pub fn open_gui_window(
         controller: &ComPtr<IEditController>,
+        component: &ComPtr<IComponent>,
         plugin_name: &str,
         gui_flag: Arc<AtomicBool>,
         gui_hwnd: Arc<AtomicIsize>,
     ) -> Result<()> {
         let controller_clone = controller.clone();
+        let component_clone  = component.clone();
         let name_owned = plugin_name.to_string();
 
         std::thread::Builder::new()
@@ -119,7 +136,7 @@ pub mod win {
                 }
                 let _guard = GuiFlagGuard(gui_flag, Arc::clone(&gui_hwnd));
 
-                if let Err(e) = run_gui_window_impl(&controller_clone, &name_owned, &gui_hwnd) {
+                if let Err(e) = run_gui_window_impl(&controller_clone, &component_clone, &name_owned, &gui_hwnd) {
                     log::error!("VST3 GUI error for '{}': {}", name_owned, e);
                 }
             })
@@ -132,6 +149,7 @@ pub mod win {
 
     fn run_gui_window_impl(
         controller: &ComPtr<IEditController>,
+        component:  &ComPtr<IComponent>,
         plugin_name: &str,
         gui_hwnd_arc: &Arc<AtomicIsize>,
     ) -> Result<()> {
@@ -149,6 +167,96 @@ pub mod win {
             let hr = unsafe { CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32) };
             hr == 0_i32 || hr == 1_i32
         });
+
+        // ── Pre-createView setup (VST3 hosting protocol) ─────────────────────
+        // 1. Connect component ↔ controller via IConnectionPoint so the plugin
+        //    can sync internal state.  Done here (lazily on the GUI thread)
+        //    rather than during load() to avoid racing with the audio callback,
+        //    which would corrupt the stack on non-thread-safe plugins.
+        if let (Some(comp_cp), Some(ctrl_cp)) = (
+            component.cast::<IConnectionPoint>(),
+            controller.cast::<IConnectionPoint>(),
+        ) {
+            unsafe {
+                let _ = comp_cp.connect(ctrl_cp.as_ptr());
+                let _ = ctrl_cp.connect(comp_cp.as_ptr());
+            }
+            log::debug!("'{}': IConnectionPoint connected (component ↔ controller)", plugin_name);
+        }
+
+        // 2. Sync controller parameters to the component's current state.
+        //    Many plugins (e.g. HY-Delay4) require this before createView.
+        {
+            use vst3::Steinberg::IBStream;
+            use vst3::ComWrapper;
+            // Reuse the same IBStream type from the outer module via a local alias.
+            // We just need something that writes into a Vec.
+            struct WriteBuf {
+                buf: std::cell::RefCell<Vec<u8>>,
+                pos: std::cell::Cell<usize>,
+            }
+            impl vst3::Class for WriteBuf {
+                type Interfaces = (IBStream,);
+            }
+            #[allow(non_snake_case)]
+            impl vst3::Steinberg::IBStreamTrait for WriteBuf {
+                unsafe fn read(&self, buffer: *mut std::ffi::c_void, numBytes: i32, numBytesRead: *mut i32) -> i32 {
+                    let borrow = self.buf.borrow();
+                    let n = (numBytes.max(0)) as usize;
+                    let avail = borrow.len().saturating_sub(self.pos.get());
+                    let to_read = n.min(avail);
+                    if to_read > 0 {
+                        std::ptr::copy_nonoverlapping(
+                            borrow[self.pos.get()..].as_ptr(),
+                            buffer as *mut u8,
+                            to_read,
+                        );
+                        self.pos.set(self.pos.get() + to_read);
+                    }
+                    if !numBytesRead.is_null() { *numBytesRead = to_read as i32; }
+                    0
+                }
+                unsafe fn write(&self, buffer: *mut std::ffi::c_void, numBytes: i32, numBytesWritten: *mut i32) -> i32 {
+                    let mut borrow = self.buf.borrow_mut();
+                    let n = (numBytes.max(0)) as usize;
+                    let pos = self.pos.get();
+                    let end = pos + n;
+                    if end > borrow.len() { borrow.resize(end, 0); }
+                    std::ptr::copy_nonoverlapping(buffer as *const u8, borrow[pos..end].as_mut_ptr(), n);
+                    self.pos.set(end);
+                    if !numBytesWritten.is_null() { *numBytesWritten = n as i32; }
+                    0
+                }
+                unsafe fn seek(&self, pos: i64, mode: i32, result: *mut i64) -> i32 {
+                    let len = self.buf.borrow().len();
+                    let new_pos = match mode {
+                        0 => pos.max(0) as usize,
+                        1 => (self.pos.get() as i64 + pos).max(0) as usize,
+                        2 => (len as i64 + pos).max(0) as usize,
+                        _ => return 0x80004005u32 as i32,
+                    };
+                    self.pos.set(new_pos);
+                    if !result.is_null() { *result = new_pos as i64; }
+                    0
+                }
+                unsafe fn tell(&self, pos: *mut i64) -> i32 {
+                    if !pos.is_null() { *pos = self.pos.get() as i64; }
+                    0
+                }
+            }
+            let ws = ComWrapper::new(WriteBuf {
+                buf: std::cell::RefCell::new(Vec::new()),
+                pos: std::cell::Cell::new(0),
+            });
+            if let Some(state_ptr) = ws.to_com_ptr::<IBStream>() {
+                unsafe { component.getState(state_ptr.as_ptr()); }
+                // Rewind for reading
+                ws.pos.set(0);
+                if let Some(read_ptr) = ws.to_com_ptr::<IBStream>() {
+                    unsafe { controller.setComponentState(read_ptr.as_ptr()); }
+                }
+            }
+        }
 
         // 1. Create the editor view
         let view_name = CString::new("editor").map_err(|_| anyhow!("CString error"))?;
@@ -182,15 +290,13 @@ pub mod win {
         };
         log::debug!("'{}': initial {}x{}, can_resize={}", plugin_name, width, height, can_resize);
 
-        // 5. Create the host Win32 window
+        // 5. Create the host Win32 window (hidden until the message loop fires).
         let hwnd = create_host_window(plugin_name, width, height, window_style)?;
         // Publish HWND so PluginInstance::drop can post WM_CLOSE before
         // Vst3Processor::terminate() runs, preventing STATUS_ACCESS_VIOLATION.
         gui_hwnd_arc.store(hwnd as isize, Ordering::Release);
 
-        // 6. Publish HWND for IPlugFrame and install the onSize callback.
-        // IPlugViewTrait requires SmartPtr (ComPtr), not raw *mut IPlugView,
-        // so capture a clone of the ComPtr in a closure.
+        // 6. Install the onSize callback and store initial dimensions.
         TL_HWND.set(hwnd as isize);
         let view_for_size = view.clone();
         TL_ON_SIZE.with(|cell| {
@@ -199,46 +305,37 @@ pub mod win {
                 unsafe { view_for_size.onSize(&mut rect); }
             }));
         });
+        TL_INITIAL_SIZE.with(|c| c.set((width, height)));
 
-        // 7. Attach IPlugFrame so plugin can call resizeView()
-        // Mirrors JUCE's PluginWindow passing itself as its ComponentListener.
+        // 7. Attach IPlugFrame so the plugin can call resizeView().
         let frame = ComWrapper::new(HostPlugFrame);
         if let Some(frame_ptr) = frame.to_com_ptr::<IPlugFrame>() {
             unsafe { view.setFrame(frame_ptr.as_ptr()); }
         }
 
-        // 8. Attach plugin view to our HWND
-        let attach_res = unsafe { view.attached(hwnd, kPlatformTypeHWND) };
-        if attach_res != kResultOk {
-            log::warn!("'{}': IPlugView::attached returned {}", plugin_name, attach_res);
-        }
+        // 8. Store a clone of the view for the WM_VST_ATTACH handler and post
+        //    the attach message.  The handler will call IPlugView::attached(),
+        //    onSize(), and ShowWindow() while the message pump is already active.
+        //    This prevents deadlocks: if the plugin spawns threads during
+        //    attached() that SendMessage to our HWND, those sends are serviced
+        //    by the running pump instead of blocking the GUI thread.
+        TL_PENDING_VIEW.with(|c| *c.borrow_mut() = Some(view.clone()));
+        unsafe { PostMessageW(hwnd, WM_VST_ATTACH, 0, 0); }
 
-        // 9. Confirm size — many plugins don't render until onSize() is called
-        let mut client_rect = ViewRect { left: 0, top: 0, right: width, bottom: height };
-        let size_res = unsafe { view.onSize(&mut client_rect) };
-        if size_res != kResultOk {
-            log::warn!("'{}': IPlugView::onSize returned {}", plugin_name, size_res);
-        }
+        log::info!("'{}' entering GUI loop ({}x{}, resizable={})", plugin_name, width, height, can_resize);
 
-        log::info!("'{}' GUI opened ({}x{}, resizable={})", plugin_name, width, height, can_resize);
-        unsafe {
-            ShowWindow(hwnd, SW_SHOW);
-            SetForegroundWindow(hwnd);
-        }
-        // Brief settle — some plugins create child windows during attached()
-        std::thread::sleep(std::time::Duration::from_millis(10));
-
-        // 10. Message loop — blocks until the window is closed
-        // Standard Win32 blocking loop, identical to JUCE on Windows.
-        // Plugin child windows receive WM_TIMER / WM_PAINT via DispatchMessageW.
-        // No explicit host idle callback is required for VST3 on Windows.
+        // 9. Message loop — blocks until WM_QUIT (posted on WM_DESTROY).
+        //    WM_VST_ATTACH fires first (attached → onSize → ShowWindow).
         run_message_loop();
 
-        // 11. Cleanup (window already destroyed by WM_CLOSE -> DefWindowProc)
+        // 10. Cleanup — window destroyed by WM_CLOSE → DefWindowProc.
         unsafe { view.setFrame(ptr::null_mut()); }
         let _ = unsafe { view.removed() };
-        // Clear thread-locals — releases the ComPtr clone before view drops
+        // Clear thread-locals — releases ComPtr clones before view drops.
+        // (TL_PENDING_VIEW may still hold a clone if WM_VST_ATTACH never fired.)
+        TL_PENDING_VIEW.with(|c| *c.borrow_mut() = None);
         TL_ON_SIZE.with(|cell| *cell.borrow_mut() = None);
+        TL_INITIAL_SIZE.with(|c| c.set((0, 0)));
         TL_HWND.set(0);
 
         log::debug!("'{}' GUI cleanup complete", plugin_name);
@@ -260,6 +357,37 @@ pub mod win {
         match msg {
             WM_DESTROY => {
                 PostQuitMessage(0);
+                0
+            }
+            // First message in the loop: call IPlugView::attached() while the
+            // pump is running, then apply initial size and reveal the window.
+            // Running attached() here (not before the loop) ensures any
+            // cross-thread SendMessage calls from the plugin's init threads are
+            // serviced without deadlocking the GUI thread.
+            m if m == WM_VST_ATTACH => {
+                let view_opt = TL_PENDING_VIEW.with(|c| c.borrow_mut().take());
+                if let Some(view) = view_opt {
+                    let attach_res = view.attached(hwnd, kPlatformTypeHWND);
+                    if attach_res != 0 {
+                        // kResultOk == 0; non-zero means failure.  Many plugins
+                        // still render correctly — warn and continue.
+                        log::warn!(
+                            "VST3 IPlugView::attached() returned {} (continuing)",
+                            attach_res
+                        );
+                    }
+                    let (w, h) = TL_INITIAL_SIZE.with(|c| c.get());
+                    if w > 0 && h > 0 {
+                        TL_ON_SIZE.with(|cell| {
+                            if let Some(ref f) = *cell.borrow() { f(w, h); }
+                        });
+                    }
+                } else {
+                    log::warn!("WM_VST_ATTACH fired but no pending view — closing");
+                    PostQuitMessage(1);
+                }
+                ShowWindow(hwnd, SW_SHOW);
+                SetForegroundWindow(hwnd);
                 0
             }
             WM_SIZE if wparam != 1 => {
@@ -297,13 +425,16 @@ pub mod win {
         unsafe {
             let hinstance = GetModuleHandleW(ptr::null());
 
+            // Load the app icon embedded in the exe by tauri_build (resource ID 1).
+            let hicon = LoadIconW(hinstance, 1 as _);
+
             let wc = WNDCLASSW {
                 style: CS_DBLCLKS,
                 lpfnWndProc: Some(host_wnd_proc),
                 cbClsExtra: 0,
                 cbWndExtra: 0,
                 hInstance: hinstance,
-                hIcon: ptr::null_mut(),
+                hIcon: hicon,
                 hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
                 hbrBackground: 6 as _, // COLOR_WINDOW + 1
                 lpszMenuName: ptr::null(),
@@ -333,6 +464,13 @@ pub mod win {
             if hwnd.is_null() {
                 return Err(anyhow!("CreateWindowExW failed for '{}'", title));
             }
+
+            // Set both the big (title bar) and small (taskbar) icons.
+            if !hicon.is_null() {
+                SendMessageW(hwnd, WM_SETICON, ICON_BIG as _, hicon as _);
+                SendMessageW(hwnd, WM_SETICON, ICON_SMALL as _, hicon as _);
+            }
+
             Ok(hwnd)
         }
     }

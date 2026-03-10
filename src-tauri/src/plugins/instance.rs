@@ -316,16 +316,24 @@ impl PluginInstance {
 
         let gui_flag = self.gui_open.clone();
         let crash_protection = self.crash_protection.clone();
-        
-        if let Some(guard) = self.vst3_processor.try_lock() {
+
+        // ── VST3 GUI ─────────────────────────────────────────────────────────
+        // Use try_lock_for with a short timeout so the Tauri command thread is
+        // never blocked indefinitely when the audio callback holds the mutex.
+        {
+            let guard = match self.vst3_processor.try_lock_for(std::time::Duration::from_millis(200)) {
+                Some(g) => g,
+                None => {
+                    gui_flag.store(false, Ordering::Release);
+                    return Err(anyhow::anyhow!("Plugin processor busy — try again"));
+                }
+            };
             if let Some(ref proc) = *guard {
-                // Wrap GUI opening with crash protection
                 let plugin_name = self.plugin_info.name.clone();
-                let gui_hwnd = self.gui_hwnd.clone();
+                let gui_hwnd    = self.gui_hwnd.clone();
                 let result = crash_protection::protected_call(|| {
                     proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd)
                 });
-                
                 match result {
                     Ok(Ok(())) => return Ok(()),
                     Ok(Err(e)) => {
@@ -334,8 +342,8 @@ impl PluginInstance {
                     }
                     Err(crash_msg) => {
                         log::error!("Plugin crashed during GUI opening: {}", crash_msg);
-                        if let Some(mut protection) = crash_protection.try_lock() {
-                            protection.mark_crashed(crash_msg.clone());
+                        if let Some(mut prot) = crash_protection.try_lock() {
+                            prot.mark_crashed(crash_msg.clone());
                         }
                         gui_flag.store(false, Ordering::Release);
                         return Err(anyhow::anyhow!("Plugin crashed: {}", crash_msg));
@@ -343,10 +351,26 @@ impl PluginInstance {
                 }
             }
         }
-        
-        // Failed to get processor - clear flag
+
+        // ── VST2 GUI ─────────────────────────────────────────────────────────
+        {
+            let guard = self.vst2_processor.lock();
+            if let Some(ref proc) = *guard {
+                let plugin_name = self.plugin_info.name.clone();
+                let gui_hwnd    = self.gui_hwnd.clone();
+                match proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        gui_flag.store(false, Ordering::Release);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        // No processor loaded for this plugin.
         self.gui_open.store(false, Ordering::Release);
-        Err(anyhow::anyhow!("VST3 processor not available for GUI"))
+        Err(anyhow::anyhow!("No audio processor available for GUI"))
     }
     
     /// Get crash protection status

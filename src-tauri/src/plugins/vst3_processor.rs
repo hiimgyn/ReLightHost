@@ -11,11 +11,10 @@ mod win {
         kResultOk, IBStream, IBStreamTrait, IPluginFactory, IPluginFactoryTrait,
         IPluginBaseTrait, PClassInfo,
     };
-    use vst3::Steinberg::Vst::{
-        BusDirections_::{kInput, kOutput},
+    use vst3::Steinberg::Vst::
+        {BusDirections_::{kInput, kOutput},
         IAudioProcessor, IAudioProcessorTrait,
         IComponent, IComponentTrait,
-        IConnectionPoint, IConnectionPointTrait,
         IEditController, IEditControllerTrait,
         MediaTypes_::{kAudio, kEvent},
         ProcessModes_::kRealtime,
@@ -129,11 +128,6 @@ mod win {
         /// Optional edit controller for parameter automation.
         /// Present for both single-component and separate-controller VST3 designs.
         controller: Option<ComPtr<IEditController>>,
-        /// IConnectionPoint peers for separate-controller plugins.
-        /// Connected in load(); disconnected on drop so the component and
-        /// controller can exchange IMessage notifications cleanly.
-        /// Must be before _lib so COM Release fires before DLL unload.
-        conn_pts:   Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
         in_l:       Vec<f32>,
         in_r:       Vec<f32>,
         /// MUST be last: DLL must outlive all COM interface pointers above so that
@@ -274,15 +268,15 @@ mod win {
             // Single-component design: IComponent itself implements IEditController.
             // Separate-controller design: ask the component for its controller CID.
             //
-            // For separate-controller plugins (e.g. HY-Delay4) we MUST connect the
-            // component and controller via IConnectionPoint before calling
-            // createView(); without this many plugins return null IPlugView.
-            let mut conn_pts: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)> = None;
+            // IConnectionPoint connection (component ↔ controller) is deferred
+            // to open_gui() and made on the GUI thread, AFTER audio processing
+            // is stable.  Connecting during load() while the audio callback is
+            // already running can trigger plugin-internal callbacks that corrupt
+            // the stack (STATUS_STACK_BUFFER_OVERRUN).
             let controller: Option<ComPtr<IEditController>> = {
                 // Single-component: QI directly on the component
                 if let Some(ec) = component.cast::<IEditController>() {
-                    // Component IS the controller — already initialised above.
-                    // No IConnectionPoint connection needed for self-referential objects.
+                    unsafe { ec.initialize(ptr::null_mut()) };
                     Some(ec)
                 } else {
                     // Separate-controller: getControllerClassId + createInstance
@@ -300,20 +294,6 @@ mod win {
                         if r == kResultOk && !ec_ptr.is_null() {
                             if let Some(ec) = unsafe { ComPtr::<IEditController>::from_raw(ec_ptr) } {
                                 unsafe { ec.initialize(ptr::null_mut()) };
-
-                                // Connect component ↔ controller via IConnectionPoint
-                                // (VST3 SDK §3.7 — required before createView()).
-                                let comp_cp = component.cast::<IConnectionPoint>();
-                                let ctrl_cp = ec.cast::<IConnectionPoint>();
-                                if let (Some(ccp), Some(tcp)) = (comp_cp, ctrl_cp) {
-                                    unsafe {
-                                        ccp.connect(tcp.as_ptr());
-                                        tcp.connect(ccp.as_ptr());
-                                    }
-                                    log::debug!("'{}': IConnectionPoint connected (component ↔ controller)", plugin_path);
-                                    conn_pts = Some((ccp, tcp));
-                                }
-
                                 Some(ec)
                             } else { None }
                         } else { None }
@@ -330,7 +310,6 @@ mod win {
                 component,
                 audio_proc,
                 controller,
-                conn_pts,
                 in_l: vec![0.0f32; block_size.max(4096)],
                 in_r: vec![0.0f32; block_size.max(4096)],
             })
@@ -405,28 +384,25 @@ mod win {
 
         /// Open the plugin's native editor GUI using the existing IEditController.
         ///
-        /// Spawns a new thread with a Win32 message loop. The window stays open until
-        /// the user closes it. This reuses the same VST3 instance used for audio processing,
-        /// ensuring parameter changes in the GUI automatically sync with audio.
+        /// The IConnectionPoint component↔controller handshake and parameter sync
+        /// (setComponentState) are performed on the dedicated GUI thread, just
+        /// before createView(), so that the audio callback is not disturbed.
         pub fn open_gui(&self, plugin_name: &str, gui_flag: std::sync::Arc<std::sync::atomic::AtomicBool>, gui_hwnd: std::sync::Arc<std::sync::atomic::AtomicIsize>) -> Result<()> {
             let controller = self.controller.as_ref()
                 .ok_or_else(|| anyhow!("Plugin '{}' has no IEditController (GUI not supported)", plugin_name))?;
 
-            // Use the new GUI module with IPlugFrame support
-            crate::plugins::vst3_gui::win::open_gui_window(controller, plugin_name, gui_flag, gui_hwnd)
+            // Clone the component so the GUI thread can:
+            //   1. connect it to the controller via IConnectionPoint
+            //   2. call controller.setComponentState(component.getState()) for sync
+            let component = self.component.clone();
+
+            crate::plugins::vst3_gui::win::open_gui_window(controller, &component, plugin_name, gui_flag, gui_hwnd)
         }
     }
 
     impl Drop for Vst3Processor {
         fn drop(&mut self) {
             unsafe {
-                // Disconnect IConnectionPoint peers before tearing down the
-                // component and controller so they don't fire callbacks into
-                // already-partially-destroyed objects.
-                if let Some(ref pts) = self.conn_pts {
-                    let _ = pts.0.disconnect(pts.1.as_ptr());
-                    let _ = pts.1.disconnect(pts.0.as_ptr());
-                }
                 self.audio_proc.setProcessing(0);
                 self.component.setActive(0);
                 if let Some(ref ctrl) = self.controller {

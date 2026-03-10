@@ -9,6 +9,8 @@ use std::ffi::c_void;
 use std::path::Path;
 use std::ptr;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicIsize};
+use vst::editor::Editor;
 use vst::host::{Host, PluginLoader};
 use vst::plugin::Plugin;
 
@@ -31,6 +33,14 @@ mod eff {
     pub const SET_SAMPLE_RATE:  i32 = 10; // opt = f32 rate
     pub const SET_BLOCK_SIZE:   i32 = 11; // value = block len
     pub const MAINS_CHANGED:    i32 = 12; // value: 1 = resume, 0 = suspend
+    #[allow(dead_code)]
+    pub const EDIT_GET_RECT:   i32 = 13; // ptr = *mut *mut ERect
+    #[allow(dead_code)]
+    pub const EDIT_OPEN:        i32 = 14; // ptr = HWND parent
+    #[allow(dead_code)]
+    pub const EDIT_CLOSE:       i32 = 15;
+    #[allow(dead_code)]
+    pub const EDIT_IDLE:        i32 = 19;
     pub const GET_CHUNK:        i32 = 23; // ptr = *mut *mut c_void, index = 1 (prog)
     pub const SET_CHUNK:        i32 = 24; // ptr = data, value = size, index = 1
     pub const GET_VENDOR_NAME:  i32 = 47; // ptr = char[64]
@@ -119,6 +129,15 @@ impl Drop for RawPlugin {
     }
 }
 
+// ── SendableEditor ─────────────────────────────────────────────────────────
+
+/// Wraps `Box<dyn Editor>` so it can be sent to a dedicated GUI thread.
+/// SAFETY: `EditorInstance` (the concrete type returned by vst-rs `get_editor()`)
+/// only contains `Arc<PluginParametersInstance>` (Send+Sync) + a bool.
+/// Trait object vtable calls are always safe to execute on any thread.
+pub struct SendableEditor(pub Box<dyn Editor>);
+unsafe impl Send for SendableEditor {}
+
 // ── Backend enum ─────────────────────────────────────────────────────────────
 
 enum Backend {
@@ -139,6 +158,11 @@ pub struct Vst2Processor {
     in_r:  Vec<f32>,
     out_l: Vec<f32>,
     out_r: Vec<f32>,
+    /// Persistent editor handle for GUI support (Backend::Vst only).
+    /// Stored separately behind Arc<Mutex> so the GUI thread can hold it
+    /// without contending the audio-processing lock on Vst2Processor itself.
+    /// None when the plugin has no editor or uses the legacy 'main' entry point.
+    pub editor: Arc<Mutex<Option<SendableEditor>>>,
 }
 
 // SAFETY: Backend::Vst holds Arc<Mutex<PluginInstance>> (raw pointer guarded by
@@ -174,12 +198,19 @@ impl Vst2Processor {
                 inst.set_block_size(block_size as i64);
                 inst.resume();
 
+                // Capture the editor handle now (sets is_editor_active = true).
+                // Stored persistently so we can reopen after close without
+                // calling get_editor() again (vst-rs returns None after first call).
+                let editor_opt = inst.get_editor().map(SendableEditor);
+                let editor = Arc::new(Mutex::new(editor_opt));
+
                 return Ok(Self {
                     backend: Backend::Vst(Arc::new(Mutex::new(inst))),
                     in_l:  vec![0.0f32; cap],
                     in_r:  vec![0.0f32; cap],
                     out_l: vec![0.0f32; cap],
                     out_r: vec![0.0f32; cap],
+                    editor,
                 });
             }
 
@@ -248,6 +279,8 @@ impl Vst2Processor {
         Ok(Self {
             backend: Backend::Raw(raw),
             in_l:  vec![0.0f32; cap],
+            // Legacy 'main' entry-point plugins don't have GUI support via our editor handle.
+            editor: Arc::new(Mutex::new(None)),
             in_r:  vec![0.0f32; cap],
             out_l: vec![0.0f32; cap],
             out_r: vec![0.0f32; cap],
@@ -283,7 +316,10 @@ impl Vst2Processor {
                         n,
                     )
                 };
-                if let Ok(mut inst) = arc.lock() {
+                // try_lock: non-blocking so the audio callback never stalls.
+                // If a UI thread holds the lock (e.g. get_state / set_state),
+                // we pass audio through unchanged for this block.
+                if let Ok(mut inst) = arc.try_lock() {
                     inst.process(&mut audio_buf);
                 }
             }
@@ -369,10 +405,52 @@ impl Vst2Processor {
             )),
         }
     }
+
+    /// Returns true if this plugin has a native GUI editor.
+    /// Only supported for VSTPluginMain-based plugins (Backend::Vst).
+    #[allow(dead_code)]
+    pub fn has_gui(&self) -> bool {
+        matches!(self.backend, Backend::Vst(_))
+            && self.editor.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
+    /// Open the plugin's native editor GUI on a dedicated thread.
+    /// Returns immediately; the GUI runs on its own thread.
+    pub fn open_gui(
+        &self,
+        plugin_name: &str,
+        gui_flag: std::sync::Arc<AtomicBool>,
+        gui_hwnd: std::sync::Arc<AtomicIsize>,
+    ) -> Result<()> {
+        match &self.backend {
+            Backend::Vst(_) => {
+                // Extract the editor from the persistent Arc<Mutex<Option<SendableEditor>>>.
+                let editor_arc = Arc::clone(&self.editor);
+                crate::plugins::vst2_gui::open_vst2_gui(
+                    editor_arc, plugin_name, gui_flag, gui_hwnd,
+                )
+            }
+            Backend::Raw(_) => {
+                Err(anyhow!(
+                    "'{}' uses the legacy VST2 'main' entry point; GUI is not supported",
+                    plugin_name
+                ))
+            }
+        }
+    }
 }
 
 impl Drop for Vst2Processor {
     fn drop(&mut self) {
+        // Close the editor before the plugin shuts down to avoid use-after-free
+        // in case the GUI thread has already been terminated by WM_CLOSE.
+        if let Ok(mut ed_guard) = self.editor.try_lock() {
+            if let Some(ref mut ed) = *ed_guard {
+                if ed.0.is_open() {
+                    ed.0.close();
+                }
+            }
+        }
         match &self.backend {
             Backend::Vst(arc) => {
                 if let Ok(mut inst) = arc.lock() {

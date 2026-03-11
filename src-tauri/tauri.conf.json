@@ -38,7 +38,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVEQjNENjlGRTc1QjA1REYKUldUZkJWdm5uOWF6N1dJR0ZtZVF2VGljOWFsajdMN0dmTm9SOWlraGxVY3ZXMFFrRTRBN2tEL0EK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJBMTZGOTlGMzM5NTNCQTEKUldTaE81VXpuL2tXdXQvc1lURFNSc3dQNExJZVVTUjk3cW9SUVBiNUxiSGFIUmJuSjN0M2xGU2EK",
       "endpoints": [
         "https://github.com/HiimGyn/ReLightHost/releases/latest/download/latest.json"
       ],

@@ -3,6 +3,34 @@
 version = 3
 
 [[package]]
+name = "ReLightHost"
+version = "1.1.0"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "dasp",
+ "dirs 5.0.1",
+ "libloading 0.8.9",
+ "log",
+ "midir",
+ "nnnoiseless",
+ "parking_lot",
+ "ringbuf",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-log",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "vst",
+ "vst3",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -102,34 +130,6 @@ name = "anymap3"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "170433209e817da6aae2c51aa0dd443009a613425dd041ebfb2492d1c4c11a25"
-
-[[package]]
-name = "app"
-version = "1.2.0"
-dependencies = [
- "anyhow",
- "cpal",
- "dasp",
- "dirs 5.0.1",
- "libloading 0.8.9",
- "log",
- "midir",
- "nnnoiseless",
- "parking_lot",
- "ringbuf",
- "serde",
- "serde_json",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-log",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "vst",
- "vst3",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "arbitrary"

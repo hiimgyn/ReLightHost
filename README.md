@@ -58,7 +58,7 @@ It ships two built-in processors (Compressor and RNNoise-based Noise Suppressor)
 
 ## Screenshots
 
-> *(Add screenshots here)*
+![Main window](Screenshot.png)
 
 ---
 

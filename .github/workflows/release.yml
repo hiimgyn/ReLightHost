@@ -5,30 +5,34 @@ on:
     tags:
       - 'v*'
 
+# Builds and publishes a GitHub release for each push to a v* tag.
+
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  publish-tauri:
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'windows-latest'
+            args: ''
 
+    runs-on: ${{ matrix.platform }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: lts/*
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
           version: latest
 
-      - name: Install frontend dependencies
-        run: pnpm install
-
-      - name: Install Rust (stable)
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -38,6 +42,9 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Install frontend dependencies
+        run: pnpm install
+
       - name: Check signing secrets
         run: |
           if ($env:TAURI_SIGNING_PRIVATE_KEY -eq $null -or $env:TAURI_SIGNING_PRIVATE_KEY -eq "") {
@@ -45,7 +52,7 @@ jobs:
           }
           Write-Host "TAURI_SIGNING_PRIVATE_KEY length: $($env:TAURI_SIGNING_PRIVATE_KEY.Length)"
           if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -eq $null -or $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -eq "") {
-            Write-Warning "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty (ok only if key was generated without password)"
+            Write-Warning "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty (ok only if key has no password)"
           } else {
             Write-Host "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is set (length: $($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD.Length))"
           }
@@ -53,19 +60,19 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Build and release
-        uses: tauri-apps/tauri-action@v1
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # CPAL_ASIO_DIR: ${{ secrets.ASIO_SDK_PATH }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: ReLightHost ${{ github.ref_name }}
-          releaseDraft: false
+          tagName: v__VERSION__ # tauri-action replaces __VERSION__ with the version from tauri.conf.json
+          releaseName: 'ReLightHost v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: true
           prerelease: false
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
 
       - name: Verify signature files
         run: |

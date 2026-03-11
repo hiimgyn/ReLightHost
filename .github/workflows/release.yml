@@ -51,3 +51,13 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
+      - name: Check signing key
+        run: |
+          if ($env:TAURI_SIGNING_PRIVATE_KEY -eq $null -or $env:TAURI_SIGNING_PRIVATE_KEY -eq "") {
+            Write-Error "TAURI_SIGNING_PRIVATE_KEY is NOT set!"
+            exit 1
+          } else {
+            Write-Host "TAURI_SIGNING_PRIVATE_KEY is set (length: $($env:TAURI_SIGNING_PRIVATE_KEY.Length))"
+          }
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

@@ -8,6 +8,7 @@ interface AudioStore {
   devices: AudioDeviceInfo[];
   selectedDevice: string | null;
   selectedInputDevice: string | null;
+  selectedVirtualOutputDevice: string | null;
   sampleRate: number;
   bufferSize: number;
   isMuted: boolean;
@@ -15,11 +16,14 @@ interface AudioStore {
   // Actions
   fetchStatus: () => Promise<void>;
   fetchDevices: () => Promise<void>;
+  /** Sync selectedDevice/Input/VirtualOutput/sampleRate/bufferSize from the backend config. */
+  syncFromBackend: () => Promise<void>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
   toggleMonitoring: (enabled: boolean) => Promise<void>;
   setOutputDevice: (deviceId: string) => Promise<void>;
   setInputDevice: (deviceId: string | null) => Promise<void>;
+  setVirtualOutputDevice: (deviceId: string | null) => Promise<void>;
   setSampleRate: (rate: number) => Promise<void>;
   setBufferSize: (size: number) => Promise<void>;
   setMuted: (muted: boolean) => Promise<void>;
@@ -36,6 +40,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   devices: [],
   selectedDevice: null,
   selectedInputDevice: null,
+  selectedVirtualOutputDevice: null,
   sampleRate: 48000,
   bufferSize: 1024,
   isMuted: false,
@@ -61,6 +66,21 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       }
     } catch (error) {
       console.error('Failed to fetch audio devices:', error);
+    }
+  },
+
+  syncFromBackend: async () => {
+    try {
+      const config = await tauri.getAudioConfig();
+      set({
+        selectedDevice:              config.output_device_id ?? null,
+        selectedInputDevice:         config.input_device_id ?? null,
+        selectedVirtualOutputDevice: config.virtual_output_device_id ?? null,
+        sampleRate:                  config.sample_rate,
+        bufferSize:                  config.buffer_size,
+      });
+    } catch (error) {
+      console.error('Failed to sync audio config from backend:', error);
     }
   },
 
@@ -110,6 +130,16 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       await tauri.setInputDevice(deviceId);
     } catch (error) {
       console.error('Failed to set input device:', error);
+      throw error;
+    }
+  },
+
+  setVirtualOutputDevice: async (deviceId: string | null) => {
+    set({ selectedVirtualOutputDevice: deviceId });
+    try {
+      await tauri.setVirtualOutputDevice(deviceId);
+    } catch (error) {
+      console.error('Failed to set virtual output device:', error);
       throw error;
     }
   },

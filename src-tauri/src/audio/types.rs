@@ -37,6 +37,11 @@ pub struct AudioConfig {
     pub buffer_size: u32,
     pub output_device_id: Option<String>,
     pub input_device_id: Option<String>,
+    /// Optional second output device (e.g. VB-Audio Virtual Cable / VAIO).
+    /// When set, processed audio is mirrored to this device simultaneously
+    /// with the primary output — useful for routing to OBS / Discord while
+    /// also monitoring through speakers.
+    pub virtual_output_device_id: Option<String>,
 }
 
 impl Default for AudioConfig {
@@ -46,6 +51,7 @@ impl Default for AudioConfig {
             buffer_size: 1024,
             output_device_id: None,
             input_device_id: None,
+            virtual_output_device_id: None,
         }
     }
 }

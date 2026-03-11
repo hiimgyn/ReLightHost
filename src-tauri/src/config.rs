@@ -3,10 +3,22 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use crate::audio::types::AudioConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub custom_scan_paths: Vec<String>,
+}
+
+/// Persisted per-session state: audio device config + mute.
+/// Saved to session.json alongside config.json whenever audio settings change.
+/// Plugin chain is persisted separately via the __autosave__ preset.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionState {
+    #[serde(default)]
+    pub audio: AudioConfig,
+    #[serde(default)]
+    pub muted: bool,
 }
 
 impl Default for AppConfig {
@@ -69,5 +81,33 @@ impl ConfigManager {
         let content = serde_json::to_string_pretty(config)?;
         fs::write(&self.config_path, content)?;
         Ok(())
+    }
+
+    // ── Session persistence (audio config + mute) ──────────────────────────
+
+    fn session_path(&self) -> PathBuf {
+        self.config_path
+            .parent()
+            .expect("config path must have a parent directory")
+            .join("session.json")
+    }
+
+    /// Persist the current audio configuration to session.json.
+    /// Called after every audio setting change so the state survives restarts.
+    pub fn save_session(&self, audio: &AudioConfig, muted: bool) -> Result<()> {
+        let state = SessionState { audio: audio.clone(), muted };
+        let content = serde_json::to_string_pretty(&state)?;
+        fs::write(self.session_path(), content)?;
+        Ok(())
+    }
+
+    /// Load the last saved session state, or None if none exists yet.
+    pub fn load_session(&self) -> Option<SessionState> {
+        let path = self.session_path();
+        if !path.exists() {
+            return None;
+        }
+        let content = fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&content).ok()
     }
 }

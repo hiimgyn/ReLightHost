@@ -16,6 +16,8 @@ use crate::audio::vu_meter::VUMeter;
 struct MonitoringStreams {
     _input: cpal::Stream,
     _output: cpal::Stream,
+    /// Optional virtual output (e.g. VB-Audio Virtual Cable / VAIO) — mirrors processed audio.
+    _virtual_output: Option<cpal::Stream>,
 }
 // SAFETY: cpal::Stream implements Send on all supported platforms
 unsafe impl Send for MonitoringStreams {}
@@ -57,6 +59,12 @@ impl AudioManager {
         F: Fn(&mut [f32], &mut [f32]) + Send + 'static,
     {
         *self.process_fn.lock().unwrap() = Some(Box::new(f));
+    }
+
+    /// Restore a previously saved AudioConfig without restarting any running streams.
+    /// Call this during startup before calling toggle_monitoring.
+    pub fn restore_config(&self, config: AudioConfig) {
+        *self.config.write() = config;
     }
 
     /// Start audio engine
@@ -248,6 +256,43 @@ impl AudioManager {
             .map_err(|e| anyhow::anyhow!("Failed to build input stream: {e}"))?;
 
         // -----------------------------------------------------------------
+        // Virtual output device (e.g. VB-Audio Virtual Cable / VAIO)
+        //
+        // Resolved before the output stream closure is built so the
+        // producer half of the virtual ring buffer can be moved into it.
+        // Processed audio is mirrored to this device after the plugin chain
+        // runs — independently of the primary output mute state, so that
+        // recording / streaming software always receives the full signal.
+        // -----------------------------------------------------------------
+        let virt_output_device: Option<cpal::Device> =
+            config.virtual_output_device_id.as_deref().and_then(|id| {
+                let dev = AudioDevice::find_output_device(id);
+                if dev.is_none() {
+                    log::warn!("Virtual output device '{}' not found; skipping", id);
+                }
+                dev
+            });
+        let virtual_is_asio = config.virtual_output_device_id.as_deref()
+            .map(|id| id.starts_with("asio_"))
+            .unwrap_or(false);
+        let (mut virt_producer_opt, virt_consumer_data) =
+            if let Some(ref dev) = virt_output_device {
+                match build_config(dev, false, virtual_is_asio) {
+                    Ok((virt_cfg, virt_ch)) => {
+                        let virt_rb = HeapRb::<f32>::new(buf_capacity);
+                        let (prod, cons) = virt_rb.split();
+                        (Some(prod), Some((virt_cfg, virt_ch, cons)))
+                    }
+                    Err(e) => {
+                        log::warn!("Virtual output config error: {e}; skipping");
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            };
+
+        // -----------------------------------------------------------------
         // Output stream — read ring buffer, process through plugin chain,
         //                 write to output.
         // Mirrors LightHost's AudioProcessorGraph:
@@ -289,6 +334,17 @@ impl AudioManager {
                     // Step 2.5: Update VU meter with processed audio
                     vu_meter.update(&left_buf[..frames], &right_buf[..frames]);
 
+                    // Step 2.75: Mirror processed audio to the virtual output ring buffer.
+                    // Not gated by mute — recording/streaming software always
+                    // receives the full processed signal regardless of the
+                    // monitoring speaker mute state.
+                    if let Some(ref mut vp) = virt_producer_opt {
+                        for frame in 0..frames {
+                            let _ = vp.try_push(left_buf[frame]);
+                            let _ = vp.try_push(right_buf[frame]);
+                        }
+                    }
+
                     // Step 3: Re-interleave L/R → CPAL output buffer.
                     // If muted, write silence so the VU meter still shows levels
                     // but speakers hear nothing.
@@ -313,12 +369,59 @@ impl AudioManager {
             .play()
             .map_err(|e| anyhow::anyhow!("Failed to start output stream: {e}"))?;
 
+        // -----------------------------------------------------------------
+        // Virtual output stream — consumes from the virtual ring buffer that
+        // the main output callback fills after plugin-chain processing.
+        // -----------------------------------------------------------------
+        let virtual_out_stream = if let (Some(dev), Some((virt_cfg, virt_ch, mut virt_cons))) =
+            (virt_output_device, virt_consumer_data)
+        {
+            match dev.build_output_stream(
+                &virt_cfg,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    let frames = data.len() / virt_ch.max(1);
+                    for frame in 0..frames {
+                        let l = virt_cons.try_pop().unwrap_or(0.0);
+                        let r = virt_cons.try_pop().unwrap_or(0.0);
+                        for ch in 0..virt_ch {
+                            data[frame * virt_ch + ch] = if ch % 2 == 0 { l } else { r };
+                        }
+                    }
+                },
+                |err| log::error!("Virtual output stream error: {err}"),
+                None,
+            ) {
+                Ok(stream) => {
+                    if let Err(e) = stream.play() {
+                        log::warn!("Failed to start virtual output stream: {e}");
+                        None
+                    } else {
+                        log::info!("Virtual output stream started");
+                        Some(stream)
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to build virtual output stream: {e}; continuing without it");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let has_virt = virtual_out_stream.is_some();
         *monitoring_guard = Some(MonitoringStreams {
             _input: in_stream,
             _output: out_stream,
+            _virtual_output: virtual_out_stream,
         });
         self.status.write().is_monitoring = true;
-        log::info!("Input monitoring started ({}Hz, {} samples)", config.sample_rate, config.buffer_size);
+        log::info!(
+            "Input monitoring started ({}Hz, {} samples{})",
+            config.sample_rate,
+            config.buffer_size,
+            if has_virt { " + virtual output" } else { "" },
+        );
         Ok(())
     }
 
@@ -365,6 +468,20 @@ impl AudioManager {
     pub fn set_input_device(&self, device_id: Option<String>) -> Result<()> {
         self.config.write().input_device_id = device_id;
         log::info!("Input device updated");
+        if self.status.read().is_monitoring {
+            self.toggle_monitoring(false)?;
+            self.toggle_monitoring(true)?;
+        }
+        Ok(())
+    }
+
+    /// Set virtual output device (e.g. VB-Audio Virtual Cable / VAIO).
+    /// When non-None, processed audio is mirrored to this device alongside
+    /// the primary output — useful for routing to OBS / Discord while still
+    /// monitoring through speakers or headphones.
+    pub fn set_virtual_output_device(&self, device_id: Option<String>) -> Result<()> {
+        self.config.write().virtual_output_device_id = device_id;
+        log::info!("Virtual output device updated");
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;

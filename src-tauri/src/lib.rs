@@ -5,6 +5,7 @@ mod config;
 
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 use audio::{AudioManager, AudioStatus, AudioDeviceInfo, AudioDevice, AudioConfig};
 use plugins::{PluginScanner, PluginInstanceManager, PluginInfo, PluginInstanceInfo};
@@ -19,6 +20,10 @@ struct AppState {
     preset_manager: Arc<RwLock<PresetManager>>,
     config_manager: Arc<RwLock<ConfigManager>>,
     sys_info: Arc<RwLock<sysinfo::System>>,
+    /// Set to true after the first successful restore_session call.
+    /// React StrictMode invokes effects twice in dev; this flag makes the
+    /// second call a fast no-op so the restored ASIO stream is not torn down.
+    session_restored: AtomicBool,
 }
 
 #[derive(serde::Serialize)]
@@ -93,7 +98,9 @@ fn set_output_device(state: tauri::State<AppState>, device_id: String) -> Result
     state.audio_manager
         .read()
         .set_output_device(Some(device_id))
-        .map_err(|e| format!("Failed to set output device: {}", e))
+        .map_err(|e| format!("Failed to set output device: {}", e))?;
+    save_audio_session_to_disk(&state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -101,7 +108,19 @@ fn set_input_device(state: tauri::State<AppState>, device_id: Option<String>) ->
     state.audio_manager
         .read()
         .set_input_device(device_id)
-        .map_err(|e| format!("Failed to set input device: {}", e))
+        .map_err(|e| format!("Failed to set input device: {}", e))?;
+    save_audio_session_to_disk(&state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_virtual_output_device(state: tauri::State<AppState>, device_id: Option<String>) -> Result<(), String> {
+    state.audio_manager
+        .read()
+        .set_virtual_output_device(device_id)
+        .map_err(|e| format!("Failed to set virtual output device: {}", e))?;
+    save_audio_session_to_disk(&state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -109,7 +128,9 @@ fn set_sample_rate(state: tauri::State<AppState>, sample_rate: u32) -> Result<()
     state.audio_manager
         .read()
         .set_sample_rate(sample_rate)
-        .map_err(|e| format!("Failed to set sample rate: {}", e))
+        .map_err(|e| format!("Failed to set sample rate: {}", e))?;
+    save_audio_session_to_disk(&state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -117,7 +138,9 @@ fn set_buffer_size(state: tauri::State<AppState>, buffer_size: u32) -> Result<()
     state.audio_manager
         .read()
         .set_buffer_size(buffer_size)
-        .map_err(|e| format!("Failed to set buffer size: {}", e))
+        .map_err(|e| format!("Failed to set buffer size: {}", e))?;
+    save_audio_session_to_disk(&state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -131,6 +154,7 @@ fn toggle_monitoring(state: tauri::State<AppState>, enabled: bool) -> Result<(),
 #[tauri::command]
 fn set_muted(state: tauri::State<AppState>, muted: bool) -> Result<(), String> {
     state.audio_manager.read().set_muted(muted);
+    save_audio_session_to_disk(&state);
     Ok(())
 }
 
@@ -161,10 +185,12 @@ fn scan_plugins(state: tauri::State<AppState>) -> Result<Vec<PluginInfo>, String
 #[tauri::command]
 fn load_plugin(state: tauri::State<AppState>, plugin_info: PluginInfo) -> Result<String, String> {
     let config = state.audio_manager.read().get_config();
-    state.plugin_manager
+    let instance_id = state.plugin_manager
         .read()
         .load_plugin(plugin_info, config.sample_rate as f64, config.buffer_size as usize)
-        .map_err(|e| format!("Failed to load plugin: {}", e))
+        .map_err(|e| format!("Failed to load plugin: {}", e))?;
+    auto_save_plugin_chain(&state);
+    Ok(instance_id)
 }
 
 #[tauri::command]
@@ -172,7 +198,9 @@ fn remove_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(
     state.plugin_manager
         .read()
         .remove_instance(&instance_id)
-        .map_err(|e| format!("Failed to remove plugin: {}", e))
+        .map_err(|e| format!("Failed to remove plugin: {}", e))?;
+    auto_save_plugin_chain(&state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -182,13 +210,16 @@ fn get_plugin_chain(state: tauri::State<AppState>) -> Result<Vec<PluginInstanceI
 
 #[tauri::command]
 fn set_plugin_bypass(state: tauri::State<AppState>, instance_id: String, bypassed: bool) -> Result<(), String> {
-    let manager = state.plugin_manager.read();
-    if let Some(instance) = manager.get_instance(&instance_id) {
-        instance.set_bypassed(bypassed);
-        Ok(())
-    } else {
-        Err(format!("Plugin instance not found: {}", instance_id))
+    {
+        let manager = state.plugin_manager.read();
+        if let Some(instance) = manager.get_instance(&instance_id) {
+            instance.set_bypassed(bypassed);
+        } else {
+            return Err(format!("Plugin instance not found: {}", instance_id));
+        }
     }
+    auto_save_plugin_chain(&state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -204,13 +235,16 @@ fn set_plugin_parameter(state: tauri::State<AppState>, instance_id: String, para
 
 #[tauri::command]
 fn rename_plugin(state: tauri::State<AppState>, instance_id: String, new_name: String) -> Result<(), String> {
-    let manager = state.plugin_manager.read();
-    if let Some(instance) = manager.get_instance(&instance_id) {
-        instance.rename(new_name);
-        Ok(())
-    } else {
-        Err(format!("Plugin instance not found: {}", instance_id))
+    {
+        let manager = state.plugin_manager.read();
+        if let Some(instance) = manager.get_instance(&instance_id) {
+            instance.rename(new_name);
+        } else {
+            return Err(format!("Plugin instance not found: {}", instance_id));
+        }
     }
+    auto_save_plugin_chain(&state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -218,7 +252,9 @@ fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to_ind
     state.plugin_manager
         .read()
         .reorder(from_index, to_index)
-        .map_err(|e| format!("Failed to reorder plugin chain: {}", e))
+        .map_err(|e| format!("Failed to reorder plugin chain: {}", e))?;
+    auto_save_plugin_chain(&state);
+    Ok(())
 }
 
 /// Get the full binary state of a plugin instance (via IComponent::getState).
@@ -577,6 +613,168 @@ fn toggle_startup(enable: bool) -> Result<(), String> {
     }
 }
 
+// ── Session persistence helpers ─────────────────────────────────────────────
+
+/// Persist current audio config + mute state to session.json.
+/// Called after any audio setting change so the next app launch can restore it.
+fn save_audio_session_to_disk(state: &AppState) {
+    let config = state.audio_manager.read().get_config();
+    let muted  = state.audio_manager.read().is_muted();
+    if let Err(e) = state.config_manager.read().save_session(&config, muted) {
+        log::warn!("Failed to save audio session: {e}");
+    }
+}
+
+/// Snapshot the current plugin chain to the __autosave__ preset.
+/// Called after any structural change to the chain (add/remove/reorder/bypass/rename).
+fn auto_save_plugin_chain(state: &AppState) {
+    let chain = state.plugin_manager.read().get_instances();
+    let mut preset = Preset::new("__autosave__".to_string(), chain.clone());
+    {
+        let manager = state.plugin_manager.read();
+        // Zip with the original info list to get instance_id for the binary-state lookup.
+        // (PresetPlugin.plugin_id is the plugin's format-ID, not the runtime instance_id.)
+        for (preset_plugin, info) in preset.plugin_chain.iter_mut().zip(chain.iter()) {
+            if let Some(instance) = manager.get_instance(&info.instance_id) {
+                let blob = instance.get_state_binary();
+                if !blob.is_empty() {
+                    preset_plugin.vst3_state = Some(blob);
+                }
+            }
+        }
+    }
+    if let Err(e) = state.preset_manager.read().save_preset(&preset) {
+        log::warn!("Failed to auto-save plugin chain: {e}");
+    }
+}
+
+/// Summary returned to the frontend so it can show a restore notification.
+#[derive(serde::Serialize)]
+struct SessionRestoreResult {
+    audio_restored: bool,
+    plugins_restored: usize,
+    /// True when the output device is a Voicemeeter ASIO Insert driver.
+    /// Voicemeeter needs to finish its own startup before our ASIO stream
+    /// connects — the frontend schedules `toggle_monitoring(true)` after a
+    /// delay rather than doing it here to keep the call on a COM-initialized
+    /// Tauri command thread (raw std::thread::spawn threads crash on ASIO).
+    needs_deferred_start: bool,
+}
+
+/// Restore the last saved session:
+///   1. Audio config (session.json) → AudioManager → start monitoring
+///   2. Plugin chain (__autosave__ preset) → PluginInstanceManager
+///
+/// Called once by the frontend on mount.  A guard prevents double-restore if
+/// the chain is already populated (e.g. React StrictMode double-effect).
+#[tauri::command]
+fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult, String> {
+    use plugins::PluginInfo;
+
+    // Guard: React StrictMode calls effects twice in development.
+    // The compare_exchange ensures only the first call does real work;
+    // the second is a fast no-op that returns the same shape of result.
+    if state.session_restored.compare_exchange(
+        false, true, Ordering::SeqCst, Ordering::SeqCst
+    ).is_err() {
+        log::info!("restore_session: already restored, skipping duplicate call");
+        let plugins_restored = state.plugin_manager.read().get_instances().len();
+        return Ok(SessionRestoreResult {
+            audio_restored: state.audio_manager.read().get_status().is_monitoring,
+            plugins_restored,
+            needs_deferred_start: false,
+        });
+    }
+
+    let mut audio_restored   = false;
+    let mut plugins_restored = 0usize;
+
+    // ── 1. Audio config (stop stream only — do NOT restart yet) ───────────
+    if let Some(session) = state.config_manager.read().load_session() {
+        // React child effects (Layout) fire before parent effects (App), so
+        // Layout's toggleMonitoring(true) may have already opened a stream
+        // using the default config.  Stop it unconditionally so we can swap
+        // in the saved config.
+        let _ = state.audio_manager.read().toggle_monitoring(false);
+
+        state.audio_manager.read().restore_config(session.audio);
+        state.audio_manager.read().set_muted(session.muted);
+        audio_restored = true;
+        log::info!("✅ Audio session restored");
+    }
+
+    // ── 2. Plugin chain (loaded while stream is stopped) ──────────────────
+    // Plugins are loaded BEFORE the audio stream starts so the very first
+    // buffer handed to Voicemeeter Insert already has the full chain active.
+    // Guard: do not reload if the chain already has items (StrictMode double-invoke).
+    let chain_empty = state.plugin_manager.read().get_instances().is_empty();
+    if chain_empty {
+        if let Ok(preset) = state.preset_manager.read().restore_auto_save() {
+            let config = state.audio_manager.read().get_config();
+            state.plugin_manager.read().clear();
+
+            for plugin_preset in &preset.plugin_chain {
+                if plugin_preset.plugin_path.is_some() && plugin_preset.plugin_format.is_some() {
+                    let plugin_info = PluginInfo {
+                        id:       plugin_preset.plugin_id.clone(),
+                        name:     plugin_preset.plugin_name.clone(),
+                        vendor:   plugin_preset.plugin_vendor.clone().unwrap_or_default(),
+                        version:  plugin_preset.plugin_version.clone().unwrap_or_default(),
+                        path:     plugin_preset.plugin_path.clone().unwrap(),
+                        format:   plugin_preset.plugin_format.clone().unwrap(),
+                        category: plugin_preset.plugin_category.clone().unwrap_or_default(),
+                    };
+
+                    if let Ok(instance_id) = state.plugin_manager.read().load_plugin(
+                        plugin_info,
+                        config.sample_rate as f64,
+                        config.buffer_size as usize,
+                    ) {
+                        if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
+                            instance.set_bypassed(plugin_preset.bypassed);
+                            if let Some(ref vst3_state) = plugin_preset.vst3_state {
+                                instance.set_state_binary(vst3_state);
+                            }
+                            for p in &plugin_preset.parameters {
+                                instance.set_parameter(p.id, p.value);
+                            }
+                        }
+                        plugins_restored += 1;
+                    }
+                }
+            }
+
+            if plugins_restored > 0 {
+                log::info!("✅ Plugin chain restored: {} plugins", plugins_restored);
+            }
+        }
+    }
+
+    // ── 3. Start stream (plugin chain is fully ready) ─────────────────────
+    //
+    // ASIO COM rule: toggle_monitoring must always be called from a thread
+    // that has COM initialized (i.e. a Tauri command handler thread).
+    // Raw std::thread::spawn threads are NOT COM-initialized and will crash
+    // with STATUS_ACCESS_VIOLATION on ASIO drivers.
+    //
+    // For Voicemeeter Insert ASIO, Voicemeeter must finish its own startup
+    // before our ASIO stream connects.  We signal the frontend to call
+    // toggle_monitoring(true) after a 2-second delay, keeping the call on
+    // the proper Tauri command thread.
+    let needs_deferred_start = audio_restored && state.audio_manager.read().get_config()
+        .output_device_id.as_deref()
+        .map(|id| id.to_lowercase().contains("voicemeeter"))
+        .unwrap_or(false);
+
+    if audio_restored && !needs_deferred_start {
+        if let Err(e) = state.audio_manager.read().toggle_monitoring(true) {
+            log::warn!("Failed to auto-start monitoring on session restore: {e}");
+        }
+    }
+
+    Ok(SessionRestoreResult { audio_restored, plugins_restored, needs_deferred_start })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let audio_manager  = Arc::new(RwLock::new(AudioManager::new()));
@@ -620,6 +818,7 @@ pub fn run() {
             preset_manager,
             config_manager,
             sys_info,
+            session_restored: AtomicBool::new(false),
         })
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -762,6 +961,7 @@ pub fn run() {
             get_audio_config,
             set_output_device,
             set_input_device,
+            set_virtual_output_device,
             set_sample_rate,
             set_buffer_size,
             toggle_monitoring,
@@ -797,6 +997,7 @@ pub fn run() {
             reset_plugin_crash_protection,
             midi_panic,
             get_noise_suppressor_vad,
+            restore_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -163,7 +163,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
           : token.colorPrimary,
         background: token.colorBgContainer,
       }}
-      bodyStyle={{ padding: '12px 14px' }}
+      styles={{ body: { padding: '12px 14px' } }}
     >
       <Space direction="vertical" size={6} style={{ width: '100%' }}>
 

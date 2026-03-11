@@ -5,6 +5,7 @@ use std::panic::AssertUnwindSafe;
 use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, PluginFormat};
 use crate::plugins::vst3_processor::Vst3Processor;
 use crate::plugins::vst2_processor::Vst2Processor;
+use crate::plugins::clap_processor::ClapProcessor;
 use crate::plugins::builtin::BuiltinProcessor;
 use crate::plugins::crash_protection::{self, SharedCrashProtection};
 use anyhow::Result;
@@ -26,6 +27,8 @@ pub struct PluginInstance {
     vst3_processor: Mutex<Option<Vst3Processor>>,
     /// VST2 audio processor (vst-rs) — present when format == VST.
     vst2_processor: Mutex<Option<Vst2Processor>>,
+    /// CLAP audio processor — present when format == CLAP.
+    clap_processor: Mutex<Option<ClapProcessor>>,
     /// Built-in processor — present when format == Builtin.
     builtin_processor: Mutex<Option<Box<dyn BuiltinProcessor>>>,
     /// Track if GUI window is currently open (prevents multiple windows)
@@ -82,6 +85,21 @@ impl PluginInstance {
             None
         };
 
+        let clap_processor = if plugin_info.format == PluginFormat::CLAP {
+            match ClapProcessor::load(&plugin_info.path, sample_rate, block_size) {
+                Ok(proc) => {
+                    log::info!("CLAP processor ready for '{}'", plugin_info.name);
+                    Some(proc)
+                }
+                Err(e) => {
+                    log::warn!("CLAP audio processor failed for '{}': {}", plugin_info.name, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let builtin_processor: Option<Box<dyn BuiltinProcessor>> =
             if plugin_info.format == PluginFormat::Builtin {
                 let mut proc = crate::plugins::builtin::create_builtin(
@@ -119,6 +137,7 @@ impl PluginInstance {
             parameters:        Arc::new(RwLock::new(initial_params)),
             vst3_processor:    Mutex::new(vst3_processor),
             vst2_processor:    Mutex::new(vst2_processor),
+            clap_processor:    Mutex::new(clap_processor),
             builtin_processor: Mutex::new(builtin_processor),
             gui_open:          Arc::new(AtomicBool::new(false)),
             gui_hwnd:          Arc::new(AtomicIsize::new(0)),
@@ -214,6 +233,23 @@ impl PluginInstance {
                     proc.process_stereo(left, right);
                 }
             }
+
+            // CLAP — try last (after VST2, before builtin fall-through).
+            if let Some(mut guard) = self.clap_processor.try_lock() {
+                if let Some(ref mut proc) = *guard {
+                    let result = crash_protection::protected_call(AssertUnwindSafe(|| {
+                        proc.process_stereo(left, right);
+                    }));
+                    if let Err(crash_msg) = result {
+                        log::error!("CLAP plugin crashed during processing: {}", crash_msg);
+                        if let Some(mut protection) = self.crash_protection.try_lock() {
+                            protection.mark_crashed(crash_msg);
+                        }
+                        left.fill(0.0);
+                        right.fill(0.0);
+                    }
+                }
+            }
             // Lock contended → pass through non-blocking (real-time safe)
         }
     }
@@ -230,6 +266,11 @@ impl PluginInstance {
                 return proc.get_state();
             }
         }
+        if let Some(guard) = self.clap_processor.try_lock() {
+            if let Some(ref proc) = *guard {
+                return proc.get_state();
+            }
+        }
         Vec::new()
     }
 
@@ -243,6 +284,12 @@ impl PluginInstance {
         }
         if let Some(mut guard) = self.vst2_processor.try_lock() {
             if let Some(ref mut proc) = *guard {
+                proc.set_state(data);
+                return;
+            }
+        }
+        if let Some(guard) = self.clap_processor.try_lock() {
+            if let Some(ref proc) = *guard {
                 proc.set_state(data);
             }
         }
@@ -393,7 +440,38 @@ impl PluginInstance {
                 }
             }
         }
-
+        // ── CLAP GUI ────────────────────────────────────────────────────────────────────
+        {
+            let guard = match self.clap_processor.try_lock_for(std::time::Duration::from_millis(200)) {
+                Some(g) => g,
+                None => {
+                    gui_flag.store(false, Ordering::Release);
+                    return Err(anyhow::anyhow!("CLAP plugin processor busy — try again"));
+                }
+            };
+            if let Some(ref proc) = *guard {
+                let plugin_name = self.plugin_info.name.clone();
+                let gui_hwnd    = self.gui_hwnd.clone();
+                let result = crash_protection::protected_call(|| {
+                    proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd)
+                });
+                match result {
+                    Ok(Ok(())) => return Ok(()),
+                    Ok(Err(e)) => {
+                        gui_flag.store(false, Ordering::Release);
+                        return Err(e);
+                    }
+                    Err(crash_msg) => {
+                        log::error!("CLAP plugin crashed during GUI opening: {}", crash_msg);
+                        if let Some(mut prot) = crash_protection.try_lock() {
+                            prot.mark_crashed(crash_msg.clone());
+                        }
+                        gui_flag.store(false, Ordering::Release);
+                        return Err(anyhow::anyhow!("CLAP plugin crashed: {}", crash_msg));
+                    }
+                }
+            }
+        }
         // No processor loaded for this plugin.
         self.gui_open.store(false, Ordering::Release);
         Err(anyhow::anyhow!("No audio processor available for GUI"))

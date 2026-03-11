@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AudioStatus, AudioDeviceInfo, PluginInfo, PluginInstanceInfo, Preset, SystemStats, PluginStatus, VUData } from './types';
+import type { AudioStatus, AudioDeviceInfo, AudioConfig, PluginInfo, PluginInstanceInfo, Preset, SystemStats, PluginStatus, VUData } from './types';
 
 // Audio Commands
 export async function startAudio(): Promise<void> {
@@ -14,6 +14,10 @@ export async function getAudioStatus(): Promise<AudioStatus> {
   return invoke('get_audio_status');
 }
 
+export async function getAudioConfig(): Promise<AudioConfig> {
+  return invoke('get_audio_config');
+}
+
 export async function listAudioDevices(): Promise<AudioDeviceInfo[]> {
   return invoke('list_audio_devices');
 }
@@ -24,6 +28,10 @@ export async function setOutputDevice(deviceId: string): Promise<void> {
 
 export async function setInputDevice(deviceId: string | null): Promise<void> {
   return invoke('set_input_device', { deviceId });
+}
+
+export async function setVirtualOutputDevice(deviceId: string | null): Promise<void> {
+  return invoke('set_virtual_output_device', { deviceId });
 }
 
 export async function setSampleRate(sampleRate: number): Promise<void> {

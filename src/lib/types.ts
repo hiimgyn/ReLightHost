@@ -7,6 +7,14 @@ export interface AudioStatus {
   latency_ms: number;
 }
 
+export interface AudioConfig {
+  sample_rate: number;
+  buffer_size: number;
+  output_device_id: string | null;
+  input_device_id: string | null;
+  virtual_output_device_id: string | null;
+}
+
 export interface AudioDeviceInfo {
   id: string;
   name: string;

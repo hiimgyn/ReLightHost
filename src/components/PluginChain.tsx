@@ -8,6 +8,8 @@ import {
   AudioOutlined,
   ExportOutlined,
   HolderOutlined,
+  LeftOutlined,
+  RightOutlined,
 } from '@ant-design/icons';
 import { usePluginStore } from '../stores/pluginStore';
 import PluginCard from './PluginCard';
@@ -51,6 +53,16 @@ export default function PluginChain() {
   const handleDragEnd = () => {
     setDraggedIndex(null);
     setInsertBefore(null);
+  };
+
+  const handleMovePlugin = async (from: number, to: number) => {
+    if (to < 0 || to >= pluginChain.length) return;
+    try {
+      await tauri.reorderPluginChain(from, to);
+      await fetchChain();
+    } catch {
+      message.error('Failed to reorder plugins');
+    }
   };
 
   // ── Drop targets: each full card is a drop target ─────────────────────────
@@ -129,7 +141,7 @@ export default function PluginChain() {
       {/* Plugin Chain Area */}
       <Card
         style={{ flex: 1, background: token.colorBgContainer }}
-        bodyStyle={{ height: '100%', padding: '24px', overflow: 'auto' }}
+        styles={{ body: { height: '100%', padding: '24px', overflow: 'auto' } }}
         onContextMenu={handleContextMenu}
       >
         {pluginChain.length > 0 ? (
@@ -145,12 +157,12 @@ export default function PluginChain() {
             <Tooltip title="Audio Input">
               <Card
                 style={{ width: 72, height: 110, flexShrink: 0 }}
-                bodyStyle={{
+                styles={{ body: {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   padding: 8, height: '100%',
                   background: 'linear-gradient(135deg,#15803d,#166534)',
                   borderRadius: 8,
-                }}
+                } }}
               >
                 <div style={{ textAlign: 'center', color: '#fff' }}>
                   <AudioOutlined style={{ fontSize: 22, display: 'block', marginBottom: 4 }} />
@@ -202,7 +214,7 @@ export default function PluginChain() {
                     style={{
                       position: 'absolute',
                       top: 0, left: 0, right: 0,
-                      height: 14,
+                      height: 24,
                       borderRadius: '8px 8px 0 0',
                       background: draggedIndex === index
                         ? token.colorPrimary
@@ -211,21 +223,59 @@ export default function PluginChain() {
                       zIndex: 5,
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'center',
+                      justifyContent: 'space-between',
+                      padding: '0 4px',
                       transition: 'background 0.15s ease',
                     }}
                   >
+                    {/* Move-left button */}
+                    <span
+                      draggable={false}
+                      onDragStart={e => e.stopPropagation()}
+                      style={{ display: 'flex' }}
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<LeftOutlined style={{ fontSize: 9 }} />}
+                        disabled={index === 0}
+                        onClick={() => handleMovePlugin(index, index - 1)}
+                        style={{
+                          height: 18, padding: '0 4px', minWidth: 22,
+                          color: draggedIndex === index ? '#fff' : token.colorTextSecondary,
+                        }}
+                      />
+                    </span>
+
+                    {/* Centre grip */}
                     <HolderOutlined style={{
-                      fontSize: 10,
-                      color: draggedIndex === index
-                        ? '#fff'
-                        : token.colorTextQuaternary,
+                      fontSize: 11,
+                      color: draggedIndex === index ? '#fff' : token.colorTextQuaternary,
                       pointerEvents: 'none',
                     }} />
+
+                    {/* Move-right button */}
+                    <span
+                      draggable={false}
+                      onDragStart={e => e.stopPropagation()}
+                      style={{ display: 'flex' }}
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<RightOutlined style={{ fontSize: 9 }} />}
+                        disabled={index === pluginChain.length - 1}
+                        onClick={() => handleMovePlugin(index, index + 1)}
+                        style={{
+                          height: 18, padding: '0 4px', minWidth: 22,
+                          color: draggedIndex === index ? '#fff' : token.colorTextSecondary,
+                        }}
+                      />
+                    </span>
                   </div>
 
                   {/* The card itself â€” not draggable, so buttons work normally */}
-                  <div style={{ paddingTop: 14 }}>
+                  <div style={{ paddingTop: 24 }}>
                     <PluginCard
                       plugin={plugin}
                       onRemove={() => removeFromChain(plugin.instance_id)}
@@ -257,12 +307,12 @@ export default function PluginChain() {
             <Tooltip title="Audio Output">
               <Card
                 style={{ width: 72, height: 110, flexShrink: 0 }}
-                bodyStyle={{
+                styles={{ body: {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   padding: 8, height: '100%',
                   background: 'linear-gradient(135deg,#1d4ed8,#1e3a8a)',
                   borderRadius: 8,
-                }}
+                } }}
               >
                 <div style={{ textAlign: 'center', color: '#fff' }}>
                   <AudioOutlined style={{ fontSize: 22, display: 'block', marginBottom: 4 }} />

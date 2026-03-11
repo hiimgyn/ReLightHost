@@ -5,6 +5,8 @@ pub mod vst3_processor;
 pub mod vst3_gui;
 pub mod vst2_processor;
 pub mod vst2_gui;
+pub mod clap_processor;
+pub mod clap_gui;
 pub mod crash_protection;
 pub mod builtin;
 

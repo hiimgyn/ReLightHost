@@ -214,15 +214,23 @@ impl PluginScanner {
             bundle_path.to_string_lossy().to_string()
         };
 
-        // Try to read real metadata: moduleInfo.json first (no DLL load), then
-        // factory API (requires loading the DLL briefly for IPluginFactory2).
-        let (name, vendor, version, category) =
-            read_vst3_module_info(bundle_path)
-                .or_else(|| if dll_path.exists() { read_vst3_dll_info(&dll_path) } else { None })
-                .unwrap_or_else(|| (
-                    plugin_name.to_string(),
-                    String::new(),
-                    String::new(),
+        // Try to read real metadata with no code execution first:
+        //   1. moduleInfo.json — Steinberg SDK ≥ 3.7, static JSON in the bundle.
+        //   2. PE VERSIONINFO resource (Windows) — LOAD_LIBRARY_AS_DATAFILE so
+        //      DllMain never runs; extracts FileDescription / CompanyName / FileVersion.
+        //   3. IPluginFactory2 — loads the DLL as a last resort (executes DllMain).
+        #[cfg(target_os = "windows")]
+        let static_meta = read_vst3_module_info(bundle_path)
+            .or_else(|| if dll_path.exists() { read_vst3_pe_version_info(&dll_path) } else { None });
+        #[cfg(not(target_os = "windows"))]
+        let static_meta = read_vst3_module_info(bundle_path);
+
+        let (name, vendor, version, category) = static_meta
+            .or_else(|| if dll_path.exists() { read_vst3_dll_info(&dll_path) } else { None })
+            .unwrap_or_else(|| (
+                plugin_name.to_string(),
+                String::new(),
+                String::new(),
                     "Effect".to_string(),
                 ));
 
@@ -262,11 +270,26 @@ impl PluginScanner {
         let id = format!("{}::{}", format!("{:?}", format).to_lowercase(), filename);
 
         // For VST2, try to read real name/vendor/version from the binary.
-        let (name, vendor, version) = if matches!(format, PluginFormat::VST) {
-            read_vst2_metadata(&path)
-                .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()))
+        // For CLAP, briefly load the DLL to read the plugin descriptor.
+        // For single-file VST3 (.vst3 files that are PE DLLs), try VERSIONINFO
+        // resource first (no code execution), then IPluginFactory2 as fallback.
+        let (name, vendor, version, category) = if matches!(format, PluginFormat::VST) {
+            let (n, v, ver) = read_vst2_metadata(&path)
+                .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
+            (n, v, ver, "Effect".to_string())
+        } else if matches!(format, PluginFormat::CLAP) {
+            let (n, v, ver) = crate::plugins::clap_processor::read_clap_metadata(&path)
+                .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
+            (n, v, ver, "Effect".to_string())
+        } else if matches!(format, PluginFormat::VST3) {
+            #[cfg(target_os = "windows")]
+            let meta = read_vst3_pe_version_info(path)
+                .or_else(|| read_vst3_dll_info(path));
+            #[cfg(not(target_os = "windows"))]
+            let meta = read_vst3_dll_info(path);
+            meta.unwrap_or_else(|| (filename.to_string(), String::new(), String::new(), "Effect".to_string()))
         } else {
-            (filename.to_string(), String::new(), String::new())
+            (filename.to_string(), String::new(), String::new(), "Effect".to_string())
         };
 
         Some(PluginInfo {
@@ -276,7 +299,7 @@ impl PluginScanner {
             version,
             path: path.to_string_lossy().to_string(),
             format,
-            category: "Effect".to_string(),
+            category,
         })
     }
 }
@@ -397,6 +420,193 @@ fn read_vst3_module_info(bundle_path: &Path) -> Option<(String, String, String, 
         return Some((name, vendor, version, category));
     }
     None
+}
+
+// ── PE VERSIONINFO reader (Windows; zero code execution) ─────────────────────
+
+/// Reads the `VERSIONINFO` resource embedded in a VST3 DLL without executing
+/// any plugin code.  The DLL is memory-mapped as a data file
+/// (`LOAD_LIBRARY_AS_DATAFILE`, flags = 0x2) so `DllMain` is never called.
+/// Falls back gracefully on any error. Returns `(name, vendor, version, category)`.
+#[cfg(target_os = "windows")]
+fn read_vst3_pe_version_info(dll_path: &Path) -> Option<(String, String, String, String)> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{FreeLibrary, HGLOBAL, HMODULE, HRSRC};
+    use windows_sys::Win32::System::LibraryLoader::{
+        FindResourceW, LoadLibraryExW, LoadResource, LockResource, SizeofResource,
+        LOAD_LIBRARY_AS_DATAFILE,
+    };
+
+    let path_wide: Vec<u16> = OsStr::new(dll_path).encode_wide().chain(Some(0u16)).collect();
+
+    // LOAD_LIBRARY_AS_DATAFILE: maps file as read-only data, DllMain never called.
+    let hmod: HMODULE = unsafe {
+        LoadLibraryExW(path_wide.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_AS_DATAFILE)
+    };
+    if hmod.is_null() {
+        return None;
+    }
+
+    // RAII guard — FreeLibrary is in Win32_Foundation in windows-sys 0.61.
+    struct LibGuard(HMODULE);
+    impl Drop for LibGuard {
+        fn drop(&mut self) {
+            unsafe { FreeLibrary(self.0); }
+        }
+    }
+    let _guard = LibGuard(hmod);
+
+    // MAKEINTRESOURCEW(n) = n as *const u16 (Win32 API contract: low 16-bit ID).
+    // Resource name = 1 (first VERSIONINFO), resource type = RT_VERSION = 16.
+    let hrsrc: HRSRC = unsafe { FindResourceW(hmod, 1u16 as *const u16, 16u16 as *const u16) };
+    if hrsrc.is_null() {
+        return None;
+    }
+
+    let size = unsafe { SizeofResource(hmod, hrsrc) } as usize;
+    if size < 40 {
+        return None;
+    }
+
+    let hdata: HGLOBAL = unsafe { LoadResource(hmod, hrsrc) };
+    if hdata.is_null() {
+        return None;
+    }
+
+    let ptr = unsafe { LockResource(hdata) } as *const u8;
+    if ptr.is_null() {
+        return None;
+    }
+
+    let data = unsafe { std::slice::from_raw_parts(ptr, size) };
+    let (name, vendor, version) = vi_parse(data)?;
+    if name.is_empty() {
+        return None;
+    }
+    // Category cannot be derived from VERSIONINFO strings; default to "Effect".
+    Some((name, vendor, version, "Effect".to_string()))
+}
+
+// ── VS_VERSION_INFO binary parser (pure Rust; no platform dependencies) ───────
+
+#[cfg(target_os = "windows")]
+fn vi_u16(data: &[u8], off: usize) -> Option<u16> {
+    Some(u16::from_le_bytes([*data.get(off)?, *data.get(off + 1)?]))
+}
+
+#[cfg(target_os = "windows")]
+fn vi_align4(n: usize) -> usize {
+    (n + 3) & !3
+}
+
+/// Read a null-terminated UTF-16LE string from `data` starting at byte `off`.
+/// Returns `(decoded_string, byte_offset_after_null_terminator)`.
+#[cfg(target_os = "windows")]
+fn vi_wstr(data: &[u8], mut off: usize) -> Option<(String, usize)> {
+    let mut chars = Vec::new();
+    loop {
+        let c = vi_u16(data, off)?;
+        off += 2;
+        if c == 0 {
+            break;
+        }
+        chars.push(c);
+    }
+    Some((String::from_utf16_lossy(&chars).to_string(), off))
+}
+
+/// Parse a raw `VS_VERSION_INFO` resource block.
+/// Extracts the best available name, vendor, and version from `StringFileInfo`.
+/// Name priority: InternalName → ProductName → FileDescription.
+/// All structures follow the VS_VERSION_INFO wire format (DWORD-aligned blocks).
+#[cfg(target_os = "windows")]
+fn vi_parse(data: &[u8]) -> Option<(String, String, String)> {
+    if data.len() < 6 {
+        return None;
+    }
+
+    // ── Root: VS_VERSION_INFO ─────────────────────────────────────────────────
+    let root_len     = vi_u16(data, 0)? as usize;
+    let root_val_len = vi_u16(data, 2)? as usize; // VS_FIXEDFILEINFO byte count (usually 52)
+    let (root_key, root_key_end) = vi_wstr(data, 6)?;
+    if root_key != "VS_VERSION_INFO" {
+        return None;
+    }
+
+    // Skip key (DWORD-aligned), skip Value (VS_FIXEDFILEINFO), DWORD-align again.
+    let children_start = vi_align4(vi_align4(root_key_end) + root_val_len);
+    let root_end       = root_len.min(data.len());
+
+    // ── Iterate root children looking for "StringFileInfo" ────────────────────
+    let mut child_off = children_start;
+    let mut file_desc     = String::new();
+    let mut product_name  = String::new();
+    let mut internal_name = String::new();
+    let mut company       = String::new();
+    let mut file_ver      = String::new();
+
+    while child_off + 6 <= root_end {
+        let block_len = vi_u16(data, child_off)? as usize;
+        if block_len == 0 {
+            break;
+        }
+
+        let (block_key, block_key_end) = vi_wstr(data, child_off + 6)?;
+
+        if block_key == "StringFileInfo" {
+            let sf_end    = (child_off + block_len).min(root_end);
+            let mut tbl_off = vi_align4(block_key_end); // first StringTable
+
+            // ── StringTable loop ─────────────────────────────────────────────
+            while tbl_off + 6 <= sf_end {
+                let tbl_len = vi_u16(data, tbl_off)? as usize;
+                if tbl_len == 0 {
+                    break;
+                }
+                let tbl_end = (tbl_off + tbl_len).min(sf_end);
+                // Skip StringTable lang+codepage key (e.g. "040904B0\0").
+                let (_, tbl_key_end) = vi_wstr(data, tbl_off + 6)?;
+                let mut str_off = vi_align4(tbl_key_end);
+
+                // ── String entry loop ────────────────────────────────────────
+                while str_off + 6 <= tbl_end {
+                    let str_len = vi_u16(data, str_off)? as usize;
+                    if str_len == 0 {
+                        break;
+                    }
+                    let (entry_key, entry_key_end) = vi_wstr(data, str_off + 6)?;
+                    let val_start = vi_align4(entry_key_end);
+                    // Read value to null terminator (avoids wValueLength bytes-vs-WORDs ambiguity).
+                    let value = vi_wstr(data, val_start)
+                        .map(|(s, _)| s.trim().to_string())
+                        .unwrap_or_default();
+
+                    match entry_key.as_str() {
+                        "FileDescription" => file_desc     = value,
+                        "ProductName"     => product_name  = value,
+                        "InternalName"    => internal_name = value,
+                        "CompanyName"     => company       = value,
+                        "FileVersion"     => file_ver      = value,
+                        _ => {}
+                    }
+
+                    str_off = vi_align4(str_off + str_len);
+                }
+
+                tbl_off = vi_align4(tbl_off + tbl_len);
+            }
+        }
+        // VarFileInfo or unknown block — skip.
+        child_off = vi_align4(child_off + block_len);
+    }
+
+    // Pick best name: InternalName is cleanest, then ProductName, then FileDescription.
+    let name = [internal_name, product_name, file_desc]
+        .into_iter()
+        .find(|s| !s.is_empty())
+        .unwrap_or_default();
+    if name.is_empty() { None } else { Some((name, company, file_ver)) }
 }
 
 /// Briefly load a VST3 DLL and query `IPluginFactory2` for real metadata.

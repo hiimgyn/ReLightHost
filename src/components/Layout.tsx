@@ -16,29 +16,25 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const { theme } = useThemeStore();
-  const { status, toggleMonitoring, fetchStatus } = useAudioStore();
+  const { status, fetchStatus } = useAudioStore();
   const { pluginChain } = usePluginStore();
+
+  // Keep the dark CSS class in sync with the persisted theme value.
+  // Runs on mount (so the initial persisted theme is applied) and
+  // whenever the user toggles the theme at runtime.
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
 
   // Poll audio status for real footer data
   useEffect(() => {
     const id = setInterval(fetchStatus, 2000);
     return () => clearInterval(id);
   }, [fetchStatus]);
-
-  // Auto-start the audio stream on app launch.
-  // The stream stays running until the window closes.
-  useEffect(() => {
-    const start = async () => {
-      try {
-        await toggleMonitoring(true);
-        await fetchStatus();
-      } catch (e) {
-        console.error('Failed to auto-start audio stream:', e);
-      }
-    };
-    start();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   return (
     <ConfigProvider

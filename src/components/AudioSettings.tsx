@@ -43,16 +43,20 @@ function DeviceOption({ device }: { device: AudioDeviceInfo }) {
 
 export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   const {
-    devices, selectedDevice, selectedInputDevice,
+    devices, selectedDevice, selectedInputDevice, selectedVirtualOutputDevice,
     sampleRate, bufferSize,
-    setOutputDevice, setInputDevice, setSampleRate, setBufferSize,
+    setOutputDevice, setInputDevice, setVirtualOutputDevice, setSampleRate, setBufferSize,
     toggleMonitoring, fetchDevices, fetchStatus,
   } = useAudioStore();
   const [form] = Form.useForm();
   const [selectedHostType, setSelectedHostType] = useState<string>('');
 
   const hostTypes = Array.from(new Set(devices.map(d => d.host_type))).sort();
-  const asioMode  = isAsioHost(selectedHostType);
+  // If no host type has been selected in the UI yet, infer from the stored
+  // device ID — "asio_*" devices are always ASIO regardless of the dropdown.
+  // This ensures the ASIO section is shown immediately on first render rather
+  // than waiting for the async setSelectedHostType state update.
+  const asioMode  = isAsioHost(selectedHostType) || (!selectedHostType && isAsioId(selectedDevice));
 
   // Partition devices for the current host type
   const filteredDevices = selectedHostType
@@ -72,22 +76,37 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
     // Re-enumerating ASIO hosts while a stream is active kills the running driver.
     if (devices.length === 0) fetchDevices();
 
-    // Auto-detect host type from the currently stored device
-    const currentIsAsio = isAsioId(selectedDevice);
-    if (currentIsAsio && !selectedHostType) {
-      const stored = devices.find(d => d.id === selectedDevice);
-      if (stored) setSelectedHostType(stored.host_type);
+    // Auto-detect host type from the currently stored device (runs immediately if
+    // the devices list is already populated; otherwise the effect below will catch it).
+    if (selectedDevice && devices.length > 0) {
+      const found = devices.find(d => d.id === selectedDevice);
+      if (found && !selectedHostType) {
+        setSelectedHostType(found.host_type);
+      }
     }
 
+    const currentIsAsio = isAsioId(selectedDevice);
     form.setFieldsValue({
-      asioDevice:   currentIsAsio ? selectedDevice : undefined,
-      outputDevice: !currentIsAsio ? (selectedDevice ?? undefined) : undefined,
-      inputDevice:  !currentIsAsio ? (selectedInputDevice || '') : '',
+      asioDevice:           currentIsAsio ? selectedDevice : undefined,
+      outputDevice:         !currentIsAsio ? (selectedDevice ?? undefined) : undefined,
+      inputDevice:          !currentIsAsio ? (selectedInputDevice || '') : '',
+      virtualOutputDevice:  !currentIsAsio ? (selectedVirtualOutputDevice || '') : '',
       sampleRate:   String(sampleRate),
       bufferSize:   String(bufferSize),
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
+
+  // When devices finish loading (async) while the modal is already open,
+  // re-detect the host type so the Audio API dropdown shows the correct entry.
+  useEffect(() => {
+    if (!isOpen || !selectedDevice || !devices.length || selectedHostType) return;
+    const found = devices.find(d => d.id === selectedDevice);
+    if (found) {
+      setSelectedHostType(found.host_type);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devices]);
 
   const handleHostTypeChange = (ht: string) => {
     setSelectedHostType(ht);
@@ -113,6 +132,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       } else {
         if (values.outputDevice) tasks.push(setOutputDevice(values.outputDevice));
         tasks.push(setInputDevice(values.inputDevice || null));
+        tasks.push(setVirtualOutputDevice(values.virtualOutputDevice || null));
       }
 
       tasks.push(setSampleRate(parseInt(values.sampleRate)));
@@ -238,6 +258,23 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
                   <span>None (No Input)</span>
                 </Select.Option>
                 {inputDevices.map(device => (
+                  <Select.Option key={device.id} value={device.id} label={device.name}>
+                    <DeviceOption device={device} />
+                  </Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
+
+            <Form.Item
+              label="Virtual Output (Optional)"
+              name="virtualOutputDevice"
+              extra="Mirror processed audio to a second output (e.g. VB-Audio Virtual Cable / VAIO) for OBS, Discord, etc."
+            >
+              <Select size="large" placeholder="None (disabled)" allowClear optionLabelProp="label">
+                <Select.Option value="" label="None (disabled)">
+                  <span>None (disabled)</span>
+                </Select.Option>
+                {outputDevices.map(device => (
                   <Select.Option key={device.id} value={device.id} label={device.name}>
                     <DeviceOption device={device} />
                   </Select.Option>

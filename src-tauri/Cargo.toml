@@ -25,6 +25,7 @@ tauri = { version = "2.10.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-single-instance = "2"
 
 # Audio Engine
 # ASIO support: requires ASIO SDK (https://www.steinberg.net/asiosdk) and env var CPAL_ASIO_DIR

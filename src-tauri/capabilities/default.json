@@ -10,6 +10,7 @@
     "core:window:allow-hide",
     "core:window:allow-show",
     "dialog:allow-open",
-    "updater:default"
+    "updater:default",
+    "single-instance:default"
   ]
 }

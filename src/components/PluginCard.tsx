@@ -17,6 +17,7 @@ import { useState, useEffect, useRef } from 'react';
 import type { PluginInstanceInfo, PluginStatus } from '../lib/types';
 import * as tauri from '../lib/tauri';
 import NoiseSuppressorGui from './NoiseSuppressorGui';
+import CompressorGui from './CompressorGui';
 
 interface PluginCardProps {
   plugin: PluginInstanceInfo;
@@ -310,8 +311,15 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
       </Space>
     </Card>
 
-    {plugin.format === 'builtin' && (
+    {plugin.format === 'builtin' && plugin.plugin_id === 'builtin::noise_suppressor' && (
       <NoiseSuppressorGui
+        plugin={plugin}
+        isOpen={showBuiltinGui}
+        onClose={() => setShowBuiltinGui(false)}
+      />
+    )}
+    {plugin.format === 'builtin' && plugin.plugin_id === 'builtin::compressor' && (
+      <CompressorGui
         plugin={plugin}
         isOpen={showBuiltinGui}
         onClose={() => setShowBuiltinGui(false)}

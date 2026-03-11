@@ -6,7 +6,7 @@ pub mod vst3_gui;
 pub mod vst2_processor;
 pub mod vst2_gui;
 pub mod crash_protection;
-pub mod builtin_processor;
+pub mod builtin;
 
 pub use scanner::PluginScanner;
 pub use instance::PluginInstanceManager;

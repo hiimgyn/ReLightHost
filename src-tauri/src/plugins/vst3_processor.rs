@@ -128,6 +128,14 @@ mod win {
         /// Optional edit controller for parameter automation.
         /// Present for both single-component and separate-controller VST3 designs.
         controller: Option<ComPtr<IEditController>>,
+        /// True when `controller` is a *separate* instance from `component`
+        /// (dual-component design).  False when the controller was obtained by
+        /// casting the component itself (single-component design, i.e. IComponent
+        /// and IEditController are implemented by the same C++ object).
+        ///
+        /// Only a separate controller needs its own `terminate()` call in Drop.
+        /// Calling terminate() twice on the same object →  STATUS_ACCESS_VIOLATION.
+        separate_controller: bool,
         in_l:       Vec<f32>,
         in_r:       Vec<f32>,
         /// MUST be last: DLL must outlive all COM interface pointers above so that
@@ -273,10 +281,14 @@ mod win {
             // is stable.  Connecting during load() while the audio callback is
             // already running can trigger plugin-internal callbacks that corrupt
             // the stack (STATUS_STACK_BUFFER_OVERRUN).
+            let mut separate_controller = false;
             let controller: Option<ComPtr<IEditController>> = {
-                // Single-component: QI directly on the component
+                // Single-component: IComponent itself implements IEditController.
+                // Obtain via QI — do NOT call initialize() again (component was
+                // already initialized above) and do NOT terminate() this separately
+                // in Drop (component.terminate() covers both interfaces).
                 if let Some(ec) = component.cast::<IEditController>() {
-                    unsafe { ec.initialize(ptr::null_mut()) };
+                    // separate_controller stays false
                     Some(ec)
                 } else {
                     // Separate-controller: getControllerClassId + createInstance
@@ -294,6 +306,7 @@ mod win {
                         if r == kResultOk && !ec_ptr.is_null() {
                             if let Some(ec) = unsafe { ComPtr::<IEditController>::from_raw(ec_ptr) } {
                                 unsafe { ec.initialize(ptr::null_mut()) };
+                                separate_controller = true;
                                 Some(ec)
                             } else { None }
                         } else { None }
@@ -310,6 +323,7 @@ mod win {
                 component,
                 audio_proc,
                 controller,
+                separate_controller,
                 in_l: vec![0.0f32; block_size.max(4096)],
                 in_r: vec![0.0f32; block_size.max(4096)],
             })
@@ -405,8 +419,17 @@ mod win {
             unsafe {
                 self.audio_proc.setProcessing(0);
                 self.component.setActive(0);
-                if let Some(ref ctrl) = self.controller {
-                    ctrl.terminate();
+                // Only terminate the edit controller separately if it is a
+                // DIFFERENT C++ object from the component (dual-component design).
+                // For single-component plugins the same object implements both
+                // IComponent and IEditController via QI; calling terminate() through
+                // both interface pointers invokes it twice → STATUS_ACCESS_VIOLATION
+                // (the second call accesses freed internal memory on complex plugins
+                // such as Auto-Tune and BL-Denoiser).
+                if self.separate_controller {
+                    if let Some(ref ctrl) = self.controller {
+                        ctrl.terminate();
+                    }
                 }
                 self.component.terminate();
             }

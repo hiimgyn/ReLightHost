@@ -292,16 +292,25 @@ impl PluginScanner {
     /// These are always available and do not need file scanning.
     pub fn builtin_plugins() -> Vec<PluginInfo> {
         use crate::plugins::types::PluginFormat;
-        use crate::plugins::builtin_processor::NoiseSuppressor;
+        use crate::plugins::builtin::{noise_suppressor, compressor};
         vec![
             PluginInfo {
-                id:       NoiseSuppressor::ID.to_string(),
+                id:       noise_suppressor::ID.to_string(),
                 name:     "Noise Suppressor (RNNoise)".to_string(),
                 vendor:   "Built-in".to_string(),
                 version:  env!("CARGO_PKG_VERSION").to_string(),
-                path:     NoiseSuppressor::ID.to_string(),
+                path:     noise_suppressor::ID.to_string(),
                 format:   PluginFormat::Builtin,
                 category: "Noise Reduction".to_string(),
+            },
+            PluginInfo {
+                id:       compressor::ID.to_string(),
+                name:     "Compressor".to_string(),
+                vendor:   "Built-in".to_string(),
+                version:  env!("CARGO_PKG_VERSION").to_string(),
+                path:     compressor::ID.to_string(),
+                format:   PluginFormat::Builtin,
+                category: "Dynamics".to_string(),
             },
         ]
     }

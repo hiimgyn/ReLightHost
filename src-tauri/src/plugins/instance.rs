@@ -5,7 +5,7 @@ use std::panic::AssertUnwindSafe;
 use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, PluginFormat};
 use crate::plugins::vst3_processor::Vst3Processor;
 use crate::plugins::vst2_processor::Vst2Processor;
-use crate::plugins::builtin_processor::NoiseSuppressor;
+use crate::plugins::builtin::BuiltinProcessor;
 use crate::plugins::crash_protection::{self, SharedCrashProtection};
 use anyhow::Result;
 
@@ -27,7 +27,7 @@ pub struct PluginInstance {
     /// VST2 audio processor (vst-rs) — present when format == VST.
     vst2_processor: Mutex<Option<Vst2Processor>>,
     /// Built-in processor — present when format == Builtin.
-    builtin_processor: Mutex<Option<NoiseSuppressor>>,
+    builtin_processor: Mutex<Option<Box<dyn BuiltinProcessor>>>,
     /// Track if GUI window is currently open (prevents multiple windows)
     gui_open:       Arc<AtomicBool>,
     /// HWND (as isize) of the open GUI window; 0 when none.
@@ -82,25 +82,31 @@ impl PluginInstance {
             None
         };
 
-        let builtin_processor = if plugin_info.format == PluginFormat::Builtin {
-            log::info!("Built-in processor ready for '{}'", plugin_info.name);
-            Some(NoiseSuppressor::new())
-        } else {
-            None
-        };
+        let builtin_processor: Option<Box<dyn BuiltinProcessor>> =
+            if plugin_info.format == PluginFormat::Builtin {
+                let mut proc = crate::plugins::builtin::create_builtin(
+                    &plugin_info.path, sample_rate as f32,
+                );
+                if proc.is_some() {
+                    log::info!("Built-in processor ready for '{}'", plugin_info.name);
+                } else {
+                    log::warn!("Unknown built-in ID '{}' for '{}'", plugin_info.path, plugin_info.name);
+                }
+                // Apply default parameter values to the processor so its internal
+                // state matches what the frontend shows from the first frame.
+                if let Some(ref mut p) = proc {
+                    for param in crate::plugins::builtin::builtin_initial_params(&plugin_info.path) {
+                        p.set_parameter(param.id, param.value as f32);
+                    }
+                }
+                proc
+            } else {
+                None
+            };
 
         // Pre-populate parameters for built-in plugins.
         let initial_params = if plugin_info.format == PluginFormat::Builtin {
-            vec![
-                PluginParameter {
-                    id:      0,
-                    name:    "Mix".to_string(),
-                    value:   1.0,
-                    min:     0.0,
-                    max:     1.0,
-                    default: 1.0,
-                },
-            ]
+            crate::plugins::builtin::builtin_initial_params(&plugin_info.path)
         } else {
             Vec::new()
         };
@@ -293,12 +299,16 @@ impl PluginInstance {
                 proc.set_param_normalized(param_id, normalized);
             }
         }
-        // Forward to built-in processor (param 0 = Mix).
+        // Built-ins receive the raw (clamped) value; internal unit conversion is per-processor.
         if let Some(mut guard) = self.builtin_processor.try_lock() {
             if let Some(ref mut proc) = *guard {
-                if param_id == 0 {
-                    proc.set_mix(normalized as f32);
-                }
+                // Re-read raw value from the now-updated parameters list.
+                let raw = self.parameters.read()
+                    .iter()
+                    .find(|p| p.id == param_id)
+                    .map(|p| p.value as f32)
+                    .unwrap_or(0.0);
+                proc.set_parameter(param_id, raw);
             }
         }
     }
@@ -467,14 +477,28 @@ impl PluginInstanceManager {
 
     /// Remove a plugin instance
     pub fn remove_instance(&self, instance_id: &str) -> Result<()> {
-        let mut instances = self.instances.write();
-        if let Some(pos) = instances.iter().position(|i| i.instance_id() == instance_id) {
-            instances.remove(pos);
+        // Extract the Arc while holding the write lock, but do NOT drop it
+        // inside the lock.  PluginInstance::drop() will block waiting for the
+        // GUI thread to finish (sends WM_CLOSE, spins until gui_open = false).
+        // Holding the write lock during that spin starves the audio callback
+        // (which needs instances.read()) for up to 3 seconds — and on some
+        // plugins (Auto-Tune) the write guard itself being live when the GUI
+        // cleanup callbacks fire can cause STATUS_ACCESS_VIOLATION.
+        let instance = {
+            let mut instances = self.instances.write();
+            let pos = instances
+                .iter()
+                .position(|i| i.instance_id() == instance_id)
+                .ok_or_else(|| anyhow::anyhow!("Instance not found: {}", instance_id))?;
+            let inst = instances.remove(pos);
             log::info!("Removed plugin instance: {}", instance_id);
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("Instance not found: {}", instance_id))
-        }
+            inst
+            // write lock drops here — audio thread can iterate again immediately
+        };
+        // PluginInstance::drop() runs here, outside the lock.
+        // If a GUI is open it blocks until the GUI thread finishes cleanup.
+        drop(instance);
+        Ok(())
     }
 
     /// Get all instances

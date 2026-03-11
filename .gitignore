@@ -31,3 +31,18 @@ lerna-debug.log*
 src-tauri/target/
 src-tauri/WixTools/
 .cargo/
+
+# Tauri signing keys — NEVER commit private keys
+*.key
+*.key.pub
+.tauri/
+
+# VST log dumps
+src-tauri/vst_log.txt
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# pnpm
+.pnpm-store/

@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Modal, Switch, Descriptions, Divider, Space, Typography, Card } from 'antd';
+import { Modal, Switch, Descriptions, Divider, Space, Typography, Card, Button } from 'antd';
 import { 
   SettingOutlined, 
   RocketOutlined, 
-  InfoCircleOutlined 
+  InfoCircleOutlined,
+  SyncOutlined,
+  CloudDownloadOutlined,
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
@@ -19,6 +21,9 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   const [runOnStartup, setRunOnStartup] = useState(false);
   const [minimizeToTray, setMinimizeToTray] = useState(false);
   const [appVersion, setAppVersion] = useState('');
+  const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version?: string; notes?: string } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [installing, setInstalling] = useState(false);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => {});
@@ -32,10 +37,11 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
 
   const loadSettings = async () => {
     try {
-      const startupEnabled = await invoke<boolean>('is_startup_enabled');
+      const [startupEnabled, minimizeEnabled] = await Promise.all([
+        invoke<boolean>('is_startup_enabled'),
+        invoke<boolean>('get_minimize_to_tray'),
+      ]);
       setRunOnStartup(startupEnabled);
-
-      const minimizeEnabled = await invoke<boolean>('get_minimize_to_tray');
       setMinimizeToTray(minimizeEnabled);
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -58,6 +64,30 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
       localStorage.setItem('minimizeToTray', String(checked));
     } catch (error) {
       console.error('Failed to save minimize_to_tray:', error);
+    }
+  };
+
+  const handleCheckUpdate = async () => {
+    setChecking(true);
+    setUpdateInfo(null);
+    try {
+      const info = await invoke<{ available: boolean; version?: string; notes?: string }>('check_for_update');
+      setUpdateInfo(info);
+    } catch (error) {
+      console.error('Failed to check for updates:', error);
+      setUpdateInfo({ available: false });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    setInstalling(true);
+    try {
+      await invoke('install_update');
+    } catch (error) {
+      console.error('Failed to install update:', error);
+      setInstalling(false);
     }
   };
 
@@ -149,6 +179,43 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
           </Descriptions.Item>
           <Descriptions.Item label="Author">
             <Text strong>HiimGyn</Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="Updates">
+            <Space direction="vertical" size={4}>
+              {updateInfo?.available ? (
+                <Space direction="vertical" size={4}>
+                  <Space>
+                    <Text type="success">v{updateInfo.version} available</Text>
+                    <Button
+                      size="small"
+                      type="primary"
+                      icon={<CloudDownloadOutlined />}
+                      loading={installing}
+                      onClick={handleInstallUpdate}
+                    >
+                      Install &amp; Restart
+                    </Button>
+                  </Space>
+                  {updateInfo.notes && (
+                    <Text type="secondary" style={{ fontSize: 11 }}>{updateInfo.notes}</Text>
+                  )}
+                </Space>
+              ) : (
+                <Space>
+                  {updateInfo !== null && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>You're up to date</Text>
+                  )}
+                  <Button
+                    size="small"
+                    icon={<SyncOutlined />}
+                    loading={checking}
+                    onClick={handleCheckUpdate}
+                  >
+                    Check for updates
+                  </Button>
+                </Space>
+              )}
+            </Space>
           </Descriptions.Item>
           <Descriptions.Item label="Description">
             <Paragraph style={{ marginBottom: 0 }} type="secondary">

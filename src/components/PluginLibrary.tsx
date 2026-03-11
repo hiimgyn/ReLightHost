@@ -93,7 +93,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
       <Drawer
         title={
           <Space>
-            <AppstoreOutlined style={{ fontSize: 20, color: '#1677ff' }} />
+            <AppstoreOutlined style={{ fontSize: 20, color: '#9b72cf' }} />
             <span>Plugin Library</span>
           </Space>
         }

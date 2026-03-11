@@ -8,6 +8,8 @@ use crate::audio::types::AudioConfig;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub custom_scan_paths: Vec<String>,
+    #[serde(default)]
+    pub minimize_to_tray: bool,
 }
 
 /// Persisted per-session state: audio device config + mute.
@@ -25,6 +27,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             custom_scan_paths: Vec::new(),
+            minimize_to_tray: false,
         }
     }
 }
@@ -73,6 +76,17 @@ impl ConfigManager {
     pub fn remove_custom_path(&self, path: &str) -> Result<()> {
         let mut config = self.config.write().unwrap();
         config.custom_scan_paths.retain(|p| p != path);
+        self.save_config(&config)?;
+        Ok(())
+    }
+
+    pub fn get_minimize_to_tray(&self) -> bool {
+        self.config.read().unwrap().minimize_to_tray
+    }
+
+    pub fn set_minimize_to_tray(&self, enabled: bool) -> Result<()> {
+        let mut config = self.config.write().unwrap();
+        config.minimize_to_tray = enabled;
         self.save_config(&config)?;
         Ok(())
     }

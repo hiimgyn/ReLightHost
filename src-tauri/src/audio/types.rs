@@ -11,12 +11,14 @@ pub struct AudioStatus {
 
 impl Default for AudioStatus {
     fn default() -> Self {
+        let sample_rate = 48000u32;
+        let buffer_size = 1024u32;
         Self {
             is_monitoring: false,
-            sample_rate: 48000,
-            buffer_size: 1024,
+            sample_rate,
+            buffer_size,
             cpu_usage: 0.0,
-            latency_ms: 0.0,
+            latency_ms: (buffer_size as f32 / sample_rate as f32) * 1000.0,
         }
     }
 }

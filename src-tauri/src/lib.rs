@@ -26,6 +26,11 @@ struct AppState {
     session_restored: AtomicBool,
 }
 
+/// Holds the mute menu item so it can be updated from commands.
+struct TrayState {
+    mute_item: tauri::menu::MenuItem<tauri::Wry>,
+}
+
 #[derive(serde::Serialize)]
 struct SystemStats {
     cpu_percent: f32,
@@ -44,12 +49,16 @@ fn get_system_stats(state: tauri::State<AppState>) -> Result<SystemStats, String
         true,
         ProcessRefreshKind::new().with_cpu().with_memory(),
     );
+    let num_cpus = sys.cpus().len().max(1) as f32;
     if let Some(proc) = sys.process(pid) {
         let total_mem = sys.total_memory();
         let proc_mem = proc.memory();
+        // cpu_usage() on Windows returns usage across all cores combined,
+        // so divide by core count to get a 0–100% per-process percentage.
+        let cpu_pct = (proc.cpu_usage() / num_cpus).min(100.0);
         let ram_pct = if total_mem > 0 { (proc_mem as f32 / total_mem as f32) * 100.0 } else { 0.0 };
         Ok(SystemStats {
-            cpu_percent: proc.cpu_usage(),
+            cpu_percent: cpu_pct,
             ram_percent: ram_pct,
             ram_used_mb: proc_mem / 1024 / 1024,
             ram_total_mb: total_mem / 1024 / 1024,
@@ -152,9 +161,21 @@ fn toggle_monitoring(state: tauri::State<AppState>, enabled: bool) -> Result<(),
 }
 
 #[tauri::command]
-fn set_muted(state: tauri::State<AppState>, muted: bool) -> Result<(), String> {
+fn set_muted(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    tray_state: tauri::State<TrayState>,
+    muted: bool,
+) -> Result<(), String> {
     state.audio_manager.read().set_muted(muted);
     save_audio_session_to_disk(&state);
+    // Sync tray menu item text and tooltip
+    let new_text = if muted { "Unmute Audio" } else { "Mute Audio" };
+    let _ = tray_state.mute_item.set_text(new_text);
+    if let Some(tray) = app.tray_by_id("main") {
+        let tooltip = if muted { "ReLightHost (Muted)" } else { "ReLightHost" };
+        let _ = tray.set_tooltip(Some(tooltip));
+    }
     Ok(())
 }
 
@@ -527,6 +548,19 @@ fn remove_custom_scan_path(state: tauri::State<AppState>, path: String) -> Resul
         .map_err(|e| format!("Failed to remove custom path: {}", e))
 }
 
+#[tauri::command]
+fn get_minimize_to_tray(state: tauri::State<AppState>) -> bool {
+    state.config_manager.read().get_minimize_to_tray()
+}
+
+#[tauri::command]
+fn set_minimize_to_tray(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+    state.config_manager
+        .read()
+        .set_minimize_to_tray(enabled)
+        .map_err(|e| format!("Failed to save minimize_to_tray: {}", e))
+}
+
 // Startup Commands
 
 #[tauri::command]
@@ -836,7 +870,7 @@ pub fn run() {
                 use tauri::Manager;
 
                 let show_item   = MenuItem::with_id(app, "show",          "Show ReLightHost",      true, None::<&str>)?;
-                let mute_item   = MenuItem::with_id(app, "toggle_mute",   "Mute / Unmute Audio",   true, None::<&str>)?;
+                let mute_item   = MenuItem::with_id(app, "toggle_mute",   "Mute Audio",            true, None::<&str>)?;
                 let audio_item  = MenuItem::with_id(app, "audio_settings","Audio Settings…",       true, None::<&str>)?;
                 let app_item    = MenuItem::with_id(app, "app_settings",  "Application Settings…", true, None::<&str>)?;
                 let quit_item   = MenuItem::with_id(app, "quit",          "Exit",                  true, None::<&str>)?;
@@ -880,6 +914,14 @@ pub fn run() {
                                 if let Some(win) = app.get_webview_window("main") {
                                     let _ = win.emit("tray-mute-changed", new_muted);
                                 }
+                                // Sync tray menu item text and tooltip
+                                let tray_state = app.state::<TrayState>();
+                                let new_text = if new_muted { "Unmute Audio" } else { "Mute Audio" };
+                                let _ = tray_state.mute_item.set_text(new_text);
+                                if let Some(tray) = app.tray_by_id("main") {
+                                    let tooltip = if new_muted { "ReLightHost (Muted)" } else { "ReLightHost" };
+                                    let _ = tray.set_tooltip(Some(tooltip));
+                                }
                             }
                             "audio_settings" => {
                                 if let Some(win) = app.get_webview_window("main") {
@@ -919,6 +961,7 @@ pub fn run() {
                     })
                     .build(app)?;
                 let _ = tray; // keep alive
+                app.manage(TrayState { mute_item });
             }
 
             // Set initial window size proportional to the primary monitor,
@@ -989,6 +1032,8 @@ pub fn run() {
             get_custom_scan_paths,
             add_custom_scan_path,
             remove_custom_scan_path,
+            get_minimize_to_tray,
+            set_minimize_to_tray,
             is_startup_enabled,
             toggle_startup,
             launch_plugin,

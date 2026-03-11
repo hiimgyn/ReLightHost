@@ -1,183 +1,105 @@
-import { useEffect, useState, useRef } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import * as tauri from '../lib/tauri';
-import './VUMeter.css';
+import type { VUData } from '../lib/types';
 
-interface VUChannel {
-  peak: number;      // 0.0 - 1.0
-  peak_hold: number; // 0.0 - 1.0
-  rms: number;       // 0.0 - 1.0
+function toDb(v: number) { return v <= 0.01 ? -40 : Math.min(0, Math.max(20 * Math.log10(v), -40)); }
+function toFrac(db: number) { return Math.min(1, Math.max(0, (db + 40) / 40)); }
+
+const BAR_GRAD = 'linear-gradient(to right, #9b72cf 0%, #b08ee0 45%, #e478a8 75%, #ff4d4f 100%)';
+const BAR_GRAD_CLIP = 'linear-gradient(to right, #f97316 0%, #ef4444 60%, #ff4d4f 100%)';
+
+function HBar({ peak, rms, peak_hold, clip }: {
+  peak: number; rms: number; peak_hold: number; clip: boolean;
+}) {
+  const peakPct = toFrac(toDb(peak)) * 100;
+  const rmsPct  = toFrac(toDb(rms))  * 100;
+  const holdPct = toFrac(toDb(peak_hold)) * 100;
+
+  return (
+    <div style={{
+      position: 'relative', flex: 1, height: 5, borderRadius: 3,
+      background: 'rgba(255,255,255,0.05)',
+      border: '1px solid rgba(255,255,255,0.07)',
+    }}>
+      {/* RMS ghost */}
+      <div style={{
+        position: 'absolute', top: 0, left: 0, bottom: 0,
+        width: rmsPct + '%', borderRadius: 3,
+        background: 'rgba(155,114,207,0.2)',
+      }} />
+      {/* Peak fill */}
+      <div style={{
+        position: 'absolute', top: 0, left: 0, bottom: 0,
+        width: peakPct + '%', borderRadius: 3,
+        background: clip ? BAR_GRAD_CLIP : BAR_GRAD,
+        transition: 'width 35ms linear',
+        boxShadow: peakPct > 5 ? (clip ? '0 0 6px rgba(255,77,79,.5)' : '0 0 6px rgba(155,114,207,.5)') : undefined,
+      }} />
+      {/* Peak-hold tick */}
+      {peak_hold > 0.001 && holdPct < 99 && (
+        <div style={{
+          position: 'absolute', top: -1, bottom: -1,
+          left: 'calc(' + holdPct + '% - 1px)',
+          width: 2, borderRadius: 1,
+          background: 'rgba(255,255,255,0.8)',
+          boxShadow: '0 0 4px rgba(255,255,255,0.5)',
+        }} />
+      )}
+    </div>
+  );
 }
 
-interface VUData {
-  left: VUChannel;
-  right: VUChannel;
-}
-
-interface VUMeterProps {
-  updateInterval?: number;
-  compact?: boolean;
-}
-
-/** Convert linear amplitude → dB, clamped to [-60, +∞) */
-function toDb(linear: number): number {
-  if (linear <= 0.00001) return -Infinity;
-  return Math.max(20 * Math.log10(linear), -60);
-}
-
-/** Normalize dB [-60…0] → [0…100] */
-function normalize(db: number): number {
-  if (!isFinite(db)) return 0;
-  return ((db + 60) / 60) * 100;
-}
-
-function dbLabel(db: number): string {
-  if (!isFinite(db)) return '-∞';
-  return db.toFixed(1);
-}
-
-/**
- * VU Meter — segmented PPM-style with peak hold, RMS, and dB readout.
- * compact=true → slim dual-bar for the header toolbar.
- */
-export function VUMeter({ updateInterval = 50, compact = false }: VUMeterProps) {
-  const [vuData, setVuData] = useState<VUData>({
+export function VUMeter({ updateInterval = 50, isDark = true }: { updateInterval?: number; isDark?: boolean }) {
+  const [vu, setVu] = useState<VUData>({
     left:  { peak: 0, peak_hold: 0, rms: 0 },
     right: { peak: 0, peak_hold: 0, rms: 0 },
   });
-
-  // track clip state independently so it stays visible briefly
-  const clipTimerL = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clipTimerR = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [clipL, setClipL] = useState(false);
   const [clipR, setClipR] = useState(false);
+  const timerL = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerR = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const fetch = async () => {
+    const poll = async () => {
       try {
-        const data = await tauri.getVUData();
-        setVuData(data);
-        // Clip detection (> -0.1 dB ≈ 0.989)
-        if (data.left.peak > 0.989) {
-          setClipL(true);
-          if (clipTimerL.current) clearTimeout(clipTimerL.current);
-          clipTimerL.current = setTimeout(() => setClipL(false), 1500);
-        }
-        if (data.right.peak > 0.989) {
-          setClipR(true);
-          if (clipTimerR.current) clearTimeout(clipTimerR.current);
-          clipTimerR.current = setTimeout(() => setClipR(false), 1500);
-        }
-      } catch { /* engine not started yet */ }
+        const d = await tauri.getVUData();
+        setVu(d);
+        if (d.left.peak  > 0.989) { setClipL(true); if (timerL.current) clearTimeout(timerL.current); timerL.current = setTimeout(() => setClipL(false), 1500); }
+        if (d.right.peak > 0.989) { setClipR(true); if (timerR.current) clearTimeout(timerR.current); timerR.current = setTimeout(() => setClipR(false), 1500); }
+      } catch { /* not started */ }
     };
-    fetch();
-    const id = setInterval(fetch, updateInterval);
+    poll();
+    const id = setInterval(poll, updateInterval);
     return () => {
       clearInterval(id);
-      if (clipTimerL.current) clearTimeout(clipTimerL.current);
-      if (clipTimerR.current) clearTimeout(clipTimerR.current);
+      if (timerL.current) clearTimeout(timerL.current);
+      if (timerR.current) clearTimeout(timerR.current);
     };
   }, [updateInterval]);
 
-  if (compact) {
-    return (
-      <div className="vum-compact">
-        <CompactBar label="L" channel={vuData.left} clip={clipL} />
-        <CompactBar label="R" channel={vuData.right} clip={clipR} />
-      </div>
-    );
-  }
+  const labelCss: React.CSSProperties = {
+    fontSize: 8, fontWeight: 700, letterSpacing: 0.8, width: 8, flexShrink: 0,
+    color: isDark ? 'rgba(176,142,224,0.8)' : 'rgba(109,40,217,0.7)', textTransform: 'uppercase',
+  };
+
 
   return (
-    <div className="vum-full">
-      <FullBar label="L" channel={vuData.left} clip={clipL} />
-      <FullBar label="R" channel={vuData.right} clip={clipR} />
-      {/* dB scale ticks */}
-      <div className="vum-scale-row">
-        {['-60','-48','-36','-24','-18','-12','-6','-3','0'].map(db => (
-          <span key={db} className="vum-scale-tick"
-            style={{ left: `${normalize(parseFloat(db))}%` }}
-          >{db}</span>
-        ))}
-      </div>
+    <div style={{
+      display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6,
+      padding: '3px 10px',
+      minWidth: 320,
+      width: 420,
+    }}>
+      {/* L channel */}
+      <span style={labelCss}>L</span>
+      <HBar peak={vu.left.peak} rms={vu.left.rms} peak_hold={vu.left.peak_hold} clip={clipL} />
+
+      {/* divider */}
+      <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.1)', flexShrink: 0 }} />
+
+      {/* R channel */}
+      <span style={labelCss}>R</span>
+      <HBar peak={vu.right.peak} rms={vu.right.rms} peak_hold={vu.right.peak_hold} clip={clipR} />
     </div>
   );
 }
-
-/* ---- Compact bar (header) ---- */
-function CompactBar({ label, channel, clip }: { label: string; channel: VUChannel; clip: boolean }) {
-  const peakDb  = toDb(channel.peak);
-  const rmsDb   = toDb(channel.rms);
-  const holdDb  = toDb(channel.peak_hold);
-  const peakPct = normalize(peakDb);
-  const rmsPct  = normalize(rmsDb);
-  const holdPct = normalize(holdDb);
-
-  return (
-    <div className="vum-compact-channel">
-      <span className="vum-compact-label">{label}</span>
-      <div className="vum-bar-wrap">
-        {/* ghost gradient background */}
-        <div className="vum-ghost" />
-        {/* RMS underlay */}
-        <div className="vum-rms-bar" style={{ width: `${rmsPct}%` }} />
-        {/* Peak fill */}
-        <div className="vum-peak-bar" style={{ width: `${peakPct}%` }} />
-        {/* Peak-hold tick */}
-        {channel.peak_hold > 0.001 && (
-          <div className="vum-hold-tick" style={{ left: `calc(${holdPct}% - 1px)` }} />
-        )}
-      </div>
-      <span className="vum-compact-db" style={{ color: clip ? '#e74c3c' : peakDb > -12 ? '#f39c12' : '#8ec86e' }}>
-        {clip ? 'CLIP' : dbLabel(peakDb)}
-      </span>
-    </div>
-  );
-}
-
-/* ---- Full bar (standalone) ---- */
-function FullBar({ label, channel, clip }: { label: string; channel: VUChannel; clip: boolean }) {
-  const peakDb  = toDb(channel.peak);
-  const rmsDb   = toDb(channel.rms);
-  const holdDb  = toDb(channel.peak_hold);
-  const peakPct = normalize(peakDb);
-  const rmsPct  = normalize(rmsDb);
-  const holdPct = normalize(holdDb);
-
-  return (
-    <div className="vum-full-channel">
-      <span className="vum-full-label">{label}</span>
-      <div className="vum-full-bar-wrap">
-        <div className="vum-ghost" />
-        <div className="vum-rms-bar" style={{ width: `${rmsPct}%` }} />
-        <div className="vum-peak-bar" style={{ width: `${peakPct}%` }} />
-        {channel.peak_hold > 0.001 && (
-          <div className="vum-hold-tick" style={{ left: `calc(${holdPct}% - 1px)` }} />
-        )}
-      </div>
-      <span className="vum-full-db" style={{ color: clip ? '#e74c3c' : peakDb > -12 ? '#f39c12' : '#8ec86e' }}>
-        {clip ? '▲CLIP' : `${dbLabel(peakDb)} dB`}
-      </span>
-    </div>
-  );
-}
-
-interface VUChannel {
-  peak: number;      // 0.0 - 1.0
-  peak_hold: number; // 0.0 - 1.0
-  rms: number;       // 0.0 - 1.0
-}
-
-interface VUData {
-  left: VUChannel;
-  right: VUChannel;
-}
-
-interface VUMeterProps {
-  /** Update interval in milliseconds (default: 50ms = 20 FPS) */
-  updateInterval?: number;
-  /** Show RMS levels in addition to peak (default: false) */
-  showRMS?: boolean;
-  /** Compact mode (smaller height, no labels) */
-  compact?: boolean;
-}
-

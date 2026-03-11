@@ -180,8 +180,8 @@ mod win {
 
             // ── Register Win32 class (idempotent) ─────────────────────────────
             let hinstance = GetModuleHandleW(std::ptr::null());
-            // Load the app icon embedded in the exe by tauri_build (resource ID 1).
-            let hicon = LoadIconW(hinstance, 1usize as *const u16);
+            // Load the app icon embedded in the exe by tauri_build (resource ID 32512).
+            let hicon = LoadIconW(hinstance, 32512 as _);
             let wc = WNDCLASSW {
                 style         : CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc   : Some(wnd_proc),

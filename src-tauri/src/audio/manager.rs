@@ -64,6 +64,12 @@ impl AudioManager {
     /// Restore a previously saved AudioConfig without restarting any running streams.
     /// Call this during startup before calling toggle_monitoring.
     pub fn restore_config(&self, config: AudioConfig) {
+        {
+            let mut status = self.status.write();
+            status.sample_rate = config.sample_rate;
+            status.buffer_size = config.buffer_size;
+            status.latency_ms = (config.buffer_size as f32 / config.sample_rate as f32) * 1000.0;
+        }
         *self.config.write() = config;
     }
 
@@ -492,6 +498,11 @@ impl AudioManager {
     /// Set sample rate
     pub fn set_sample_rate(&self, rate: u32) -> Result<()> {
         self.config.write().sample_rate = rate;
+        {
+            let mut status = self.status.write();
+            status.sample_rate = rate;
+            status.latency_ms = (status.buffer_size as f32 / rate as f32) * 1000.0;
+        }
         log::info!("Sample rate set to {}Hz", rate);
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
@@ -503,6 +514,11 @@ impl AudioManager {
     /// Set buffer size
     pub fn set_buffer_size(&self, size: u32) -> Result<()> {
         self.config.write().buffer_size = size;
+        {
+            let mut status = self.status.write();
+            status.buffer_size = size;
+            status.latency_ms = (size as f32 / status.sample_rate as f32) * 1000.0;
+        }
         log::info!("Buffer size set to {} samples", size);
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;

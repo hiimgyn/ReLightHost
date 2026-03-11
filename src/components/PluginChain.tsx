@@ -166,7 +166,7 @@ export default function PluginChain() {
               >
                 <div style={{ textAlign: 'center', color: '#fff' }}>
                   <AudioOutlined style={{ fontSize: 22, display: 'block', marginBottom: 4 }} />
-                  <div style={{ fontWeight: 700, fontSize: 12 }}>IN</div>
+                  <div style={{ fontWeight: 700, fontSize: 10 }}>IN</div>
                 </div>
               </Card>
             </Tooltip>
@@ -316,7 +316,7 @@ export default function PluginChain() {
               >
                 <div style={{ textAlign: 'center', color: '#fff' }}>
                   <AudioOutlined style={{ fontSize: 22, display: 'block', marginBottom: 4 }} />
-                  <div style={{ fontWeight: 700, fontSize: 12 }}>OUT</div>
+                  <div style={{ fontWeight: 700, fontSize: 10 }}>OUT</div>
                 </div>
               </Card>
             </Tooltip>

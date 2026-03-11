@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { message } from 'antd';
-import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import Layout from './components/Layout'
 import PluginChain from './components/PluginChain'
 import AudioSettings from './components/AudioSettings'
 import { useAudioStore } from './stores/audioStore';
-
-const ASPECT_RATIO = 900 / 600; // 1.5  –  16:10 aspect ratio (width / height)
 
 function App() {
   const [showFirstTimeAudio, setShowFirstTimeAudio] = useState(false);
@@ -84,31 +82,22 @@ function App() {
   // ── Window resize / close listeners ──────────────────────────────────────
   useEffect(() => {
     const appWindow = getCurrentWindow();
-    let pending = false;
-
-    const resizePromise = appWindow.onResized(async ({ payload }) => {
-      if (pending) return;
-      pending = true;
-      try {
-        const { width, height } = payload;
-        const expectedH = Math.round(width / ASPECT_RATIO);
-        if (Math.abs(height - expectedH) > 4) {
-          await appWindow.setSize(new LogicalSize(width, expectedH));
-        }
-      } finally {
-        pending = false;
-      }
-    });
+    // Sync minimizeToTray from persisted config into localStorage on startup.
+    invoke<boolean>('get_minimize_to_tray').then(val => {
+      localStorage.setItem('minimizeToTray', String(val));
+    }).catch(() => {});
 
     const closePromise = appWindow.onCloseRequested(async (event) => {
+      // Always prevent default in async handlers — then decide explicitly.
+      event.preventDefault();
       if (localStorage.getItem('minimizeToTray') === 'true') {
-        event.preventDefault();
         await appWindow.hide();
+      } else {
+        await appWindow.destroy();
       }
     });
 
     return () => {
-      resizePromise.then(fn => fn());
       closePromise.then(fn => fn());
     };
   }, []);

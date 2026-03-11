@@ -212,8 +212,8 @@ mod win {
         unsafe {
             let hinstance = GetModuleHandleW(ptr::null());
 
-            // Load the app icon embedded in the exe by tauri_build (resource ID 1).
-            let hicon = LoadIconW(hinstance, 1 as _);
+            // Load the app icon embedded in the exe by tauri_build (resource ID 32512).
+            let hicon = LoadIconW(hinstance, 32512 as _);
 
             let wc = WNDCLASSW {
                 style: CS_DBLCLKS,

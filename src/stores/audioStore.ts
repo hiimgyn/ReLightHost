@@ -148,6 +148,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     set({ sampleRate: rate });
     try {
       await tauri.setSampleRate(rate);
+      await get().fetchStatus();
     } catch (error) {
       console.error('Failed to set sample rate:', error);
       throw error;
@@ -158,6 +159,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     set({ bufferSize: size });
     try {
       await tauri.setBufferSize(size);
+      await get().fetchStatus();
     } catch (error) {
       console.error('Failed to set buffer size:', error);
       throw error;

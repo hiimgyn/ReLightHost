@@ -6,6 +6,7 @@ import {
   InfoCircleOutlined 
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 
 const { Text, Paragraph } = Typography;
 
@@ -17,6 +18,11 @@ interface AppSettingsProps {
 export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   const [runOnStartup, setRunOnStartup] = useState(false);
   const [minimizeToTray, setMinimizeToTray] = useState(false);
+  const [appVersion, setAppVersion] = useState('');
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (isOpen) {
@@ -28,8 +34,8 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     try {
       const startupEnabled = await invoke<boolean>('is_startup_enabled');
       setRunOnStartup(startupEnabled);
-      
-      const minimizeEnabled = localStorage.getItem('minimizeToTray') === 'true';
+
+      const minimizeEnabled = await invoke<boolean>('get_minimize_to_tray');
       setMinimizeToTray(minimizeEnabled);
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -45,16 +51,21 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     }
   };
 
-  const handleMinimizeToggle = (checked: boolean) => {
-    setMinimizeToTray(checked);
-    localStorage.setItem('minimizeToTray', String(checked));
+  const handleMinimizeToggle = async (checked: boolean) => {
+    try {
+      await invoke('set_minimize_to_tray', { enabled: checked });
+      setMinimizeToTray(checked);
+      localStorage.setItem('minimizeToTray', String(checked));
+    } catch (error) {
+      console.error('Failed to save minimize_to_tray:', error);
+    }
   };
 
   return (
     <Modal
       title={
         <Space>
-          <SettingOutlined style={{ color: '#1677ff' }} />
+          <SettingOutlined style={{ color: '#9b72cf ' }} />
           <span>Application Settings</span>
         </Space>
       }
@@ -134,7 +145,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
             <Text strong>ReLightHost</Text>
           </Descriptions.Item>
           <Descriptions.Item label="Version">
-            <Text strong>Beta</Text>
+            <Text strong>{appVersion ? `v${appVersion}` : 'Beta'}</Text>
           </Descriptions.Item>
           <Descriptions.Item label="Author">
             <Text strong>HiimGyn</Text>

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Button, Space, Tooltip, Typography, theme, Badge } from 'antd';
 import { listen } from '@tauri-apps/api/event';
+import { getVersion } from '@tauri-apps/api/app';
 
 const { Text } = Typography;
 import {
@@ -16,7 +17,6 @@ import { useThemeStore } from '../stores/themeStore';
 import { useAudioStore } from '../stores/audioStore';
 import AudioSettings from './AudioSettings';
 import AppSettings from './AppSettings';
-import { VUMeter } from './VUMeter';
 
 export default function Header() {
   const { theme: appTheme, toggleTheme } = useThemeStore();
@@ -24,6 +24,11 @@ export default function Header() {
   const { status, isMuted, setMuted } = useAudioStore();
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
+  const [appVersion, setAppVersion] = useState('');
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
 
   // Listen for tray context-menu events
   useEffect(() => {
@@ -52,8 +57,7 @@ export default function Header() {
       >
         {/* Logo */}
         <Space size="small">
-          <img src="/logo.png" alt="ReLightHost" style={{ width: 22, height: 22 }} />
-          <Text strong style={{ fontSize: 18 }}>ReLightHost</Text>
+          <img src="/logo.png" alt="ReLightHost" style={{ width: 64, height: 64 }} />
           <Text
             style={{
               fontSize: 11,
@@ -63,11 +67,9 @@ export default function Header() {
               color: token.colorTextSecondary,
             }}
           >
-            Beta
+            {appVersion ? `v${appVersion}` : 'Beta'}
           </Text>
         </Space>
-        {/* VU Meter */}
-        <VUMeter compact />
         {/* Controls */}
         <Space size="middle">
           {/* Stream status badge — read-only */}
@@ -87,9 +89,10 @@ export default function Header() {
           {/* Mute toggle */}
           <Tooltip title={isMuted ? 'Unmute output' : 'Mute output'}>
             <Button
-              type={isMuted ? 'primary' : 'text'}
-              danger={isMuted}
-              icon={isMuted ? <MutedOutlined /> : <SoundOutlined />}
+              type="text"
+              icon={isMuted
+                ? <MutedOutlined style={{ color: '#ff4d4f' }} />
+                : <SoundOutlined style={{ color: '#52c41a' }} />}
               onClick={() => setMuted(!isMuted)}
             />
           </Tooltip>
@@ -97,7 +100,9 @@ export default function Header() {
           <Tooltip title={appTheme === 'dark' ? 'Switch to Light' : 'Switch to Dark'}>
             <Button
               type="text"
-              icon={appTheme === 'dark' ? <BulbFilled /> : <BulbOutlined />}
+              icon={appTheme === 'dark'
+                ? <BulbFilled style={{ color: '#faad14' }} />
+                : <BulbOutlined style={{ color: '#faad14' }} />}
               onClick={toggleTheme}
             />
           </Tooltip>
@@ -106,7 +111,7 @@ export default function Header() {
           <Tooltip title="Audio Settings">
             <Button
               type="text"
-              icon={<AudioOutlined />}
+              icon={<AudioOutlined style={{ color: '#1677ff' }} />}
               onClick={() => setShowAudioSettings(true)}
             />
           </Tooltip>
@@ -115,7 +120,7 @@ export default function Header() {
           <Tooltip title="Application Settings">
             <Button
               type="text"
-              icon={<SettingOutlined />}
+              icon={<SettingOutlined style={{ color: '#9b72cf' }} />}
               onClick={() => setShowAppSettings(true)}
             />
           </Tooltip>

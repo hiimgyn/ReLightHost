@@ -40,9 +40,11 @@ jobs:
 
       - name: Build Tauri app
         run: pnpm tauri build
-        # If you use ASIO, uncomment and set the secret in repo Settings → Secrets:
-        # env:
-        #   CPAL_ASIO_DIR: ${{ secrets.ASIO_SDK_PATH }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Uncomment if using ASIO SDK:
+          # CPAL_ASIO_DIR: ${{ secrets.ASIO_SDK_PATH }}
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -54,5 +56,10 @@ jobs:
           files: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.nsis.zip
+            src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+            src-tauri/target/release/bundle/msi/*.msi.zip
+            src-tauri/target/release/bundle/msi/*.msi.zip.sig
+            latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

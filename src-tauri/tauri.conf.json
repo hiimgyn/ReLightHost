@@ -37,7 +37,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "PLACEHOLDER_REPLACE_WITH_YOUR_PUBLIC_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdBNzZBQjg5MTEwMkQyOEEKUldTSzBnSVJpYXQyZWgvT1ZWMzNWRnQ0ellqVjViZTkxZ1BoOWptZ2JHZ2VLVGsrYmR3bGZZK08K",
       "endpoints": [
         "https://github.com/HiimGyn/ReLightHost/releases/latest/download/latest.json"
       ],

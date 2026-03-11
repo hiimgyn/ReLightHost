@@ -38,6 +38,21 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Check signing secrets
+        run: |
+          if ($env:TAURI_SIGNING_PRIVATE_KEY -eq $null -or $env:TAURI_SIGNING_PRIVATE_KEY -eq "") {
+            Write-Error "TAURI_SIGNING_PRIVATE_KEY is NOT set!"; exit 1
+          }
+          Write-Host "TAURI_SIGNING_PRIVATE_KEY length: $($env:TAURI_SIGNING_PRIVATE_KEY.Length)"
+          if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -eq $null -or $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -eq "") {
+            Write-Warning "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty (ok only if key was generated without password)"
+          } else {
+            Write-Host "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is set (length: $($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD.Length))"
+          }
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -51,13 +66,13 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-      - name: Check signing key
+
+      - name: Verify signature files
         run: |
-          if ($env:TAURI_SIGNING_PRIVATE_KEY -eq $null -or $env:TAURI_SIGNING_PRIVATE_KEY -eq "") {
-            Write-Error "TAURI_SIGNING_PRIVATE_KEY is NOT set!"
+          $sigs = Get-ChildItem -Recurse src-tauri/target/release/bundle -Filter "*.sig" -ErrorAction SilentlyContinue
+          if ($sigs.Count -eq 0) {
+            Write-Error "No .sig files found! Signing failed — check TAURI_SIGNING_PRIVATE_KEY_PASSWORD."
             exit 1
-          } else {
-            Write-Host "TAURI_SIGNING_PRIVATE_KEY is set (length: $($env:TAURI_SIGNING_PRIVATE_KEY.Length))"
           }
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          Write-Host "Found $($sigs.Count) signature file(s):"
+          $sigs | ForEach-Object { Write-Host "  $($_.FullName)" }

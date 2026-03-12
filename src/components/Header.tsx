@@ -34,9 +34,10 @@ export default function Header() {
   // Listen for tray context-menu events
   useEffect(() => {
     const unlistens = [
-      listen<boolean>('tray-mute-changed', (e) => setMuted(e.payload)),
-      listen('tray-open-audio-settings',   ()    => setShowAudioSettings(true)),
-      listen('tray-open-app-settings',     ()    => setShowAppSettings(true)),
+      listen<boolean>('tray-mute-changed',     (e) => setMuted(e.payload)),
+      listen<boolean>('tray-loopback-changed', (e) => setLoopback(e.payload)),
+      listen('tray-open-audio-settings',       ()  => setShowAudioSettings(true)),
+      listen('tray-open-app-settings',         ()  => setShowAppSettings(true)),
     ];
     return () => { unlistens.forEach(p => p.then(fn => fn())); };
   // eslint-disable-next-line react-hooks/exhaustive-deps

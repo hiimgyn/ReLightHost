@@ -1,6 +1,6 @@
 [package]
 name = "ReLightHost"
-version = "1.3.0"
+version = "1.3.5"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
 license = ""
@@ -38,12 +38,6 @@ parking_lot = "0.12"
 # Plugin hosting
 vst3 = "0.3"                                              # vst3-rs: VST3 plugin hosting
 vst = "0.3"                                               # vst-rs: VST2 plugin hosting
-
-# MIDI I/O
-midir = "0.10"
-
-# DSP framework — Stereo<f32> frames in the audio pipeline
-dasp = { version = "0.11", features = ["signal"] }
 
 # Built-in DSP — noise suppression via RNNoise (pure Rust)
 nnnoiseless = "0.5"

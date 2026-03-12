@@ -150,12 +150,6 @@ impl PluginInstance {
         &self.instance_id
     }
 
-    /// Get plugin info
-    #[allow(dead_code)]
-    pub fn plugin_info(&self) -> &PluginInfo {
-        &self.plugin_info
-    }
-
     /// Set bypass state
     pub fn set_bypassed(&self, bypassed: bool) {
         *self.bypassed.write() = bypassed;
@@ -231,10 +225,11 @@ impl PluginInstance {
             if let Some(mut guard) = self.builtin_processor.try_lock() {
                 if let Some(ref mut proc) = *guard {
                     proc.process_stereo(left, right);
+                    return;
                 }
             }
 
-            // CLAP — try last (after VST2, before builtin fall-through).
+            // CLAP
             if let Some(mut guard) = self.clap_processor.try_lock() {
                 if let Some(ref mut proc) = *guard {
                     let result = crash_protection::protected_call(AssertUnwindSafe(|| {

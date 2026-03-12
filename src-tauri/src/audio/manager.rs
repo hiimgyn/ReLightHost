@@ -458,7 +458,6 @@ impl AudioManager {
     }
 
     /// Get current loopback state.
-    #[allow(dead_code)]
     pub fn is_loopback_enabled(&self) -> bool {
         self.loopback_enabled.load(Ordering::Relaxed)
     }

@@ -175,21 +175,9 @@ impl Default for PresetManager {
     }
 }
 impl PresetManager {
-    /// Check if an auto-saved session exists
-    pub fn has_auto_save(&self) -> bool {
-        let filename = format!("{}.json", AUTO_SAVE_PRESET_NAME);
-        self.presets_dir.join(filename).exists()
-    }
-
     /// Restore the last auto-saved session
     pub fn restore_auto_save(&self) -> Result<Preset> {
         self.load_preset(AUTO_SAVE_PRESET_NAME)
-    }
-
-    /// Clear the auto-save file
-    #[allow(dead_code)]
-    pub fn clear_auto_save(&self) -> Result<()> {
-        self.delete_preset(AUTO_SAVE_PRESET_NAME)
     }
 }
 

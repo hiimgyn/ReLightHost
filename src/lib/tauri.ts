@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AudioStatus, AudioDeviceInfo, AudioConfig, PluginInfo, PluginInstanceInfo, Preset, SystemStats, PluginStatus, VUData } from './types';
+import type { AudioStatus, AudioDeviceInfo, AudioConfig, PluginInfo, PluginInstanceInfo, SystemStats, PluginStatus, VUData } from './types';
 
 // Audio Commands
 export async function startAudio(): Promise<void> {
@@ -112,10 +112,6 @@ export async function savePreset(name: string): Promise<string> {
   return invoke('save_preset', { name });
 }
 
-export async function loadPreset(name: string): Promise<Preset> {
-  return invoke('load_preset', { name });
-}
-
 export async function listPresets(): Promise<string[]> {
   return invoke('list_presets');
 }
@@ -135,10 +131,6 @@ export async function getPluginCrashStatus(instanceId: string): Promise<PluginSt
 
 export async function resetPluginCrashProtection(instanceId: string): Promise<void> {
   return invoke('reset_plugin_crash_protection', { instanceId });
-}
-
-export async function midiPanic(): Promise<void> {
-  return invoke('midi_panic');
 }
 
 export async function getNoiseSuppressorVad(instanceId: string): Promise<number> {

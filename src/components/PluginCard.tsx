@@ -284,7 +284,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
 
           <Tooltip title={plugin.gui_open ? 'GUI already open' : launchButtonProps.label}>
             <Button
-              type={plugin.gui_open ? 'default' : 'default'}
+              type="default"
               size="small"
               icon={launchButtonProps.icon}
               onClick={launchButtonProps.onClick}

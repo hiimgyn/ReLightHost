@@ -33,14 +33,6 @@ mod eff {
     pub const SET_SAMPLE_RATE:  i32 = 10; // opt = f32 rate
     pub const SET_BLOCK_SIZE:   i32 = 11; // value = block len
     pub const MAINS_CHANGED:    i32 = 12; // value: 1 = resume, 0 = suspend
-    #[allow(dead_code)]
-    pub const EDIT_GET_RECT:   i32 = 13; // ptr = *mut *mut ERect
-    #[allow(dead_code)]
-    pub const EDIT_OPEN:        i32 = 14; // ptr = HWND parent
-    #[allow(dead_code)]
-    pub const EDIT_CLOSE:       i32 = 15;
-    #[allow(dead_code)]
-    pub const EDIT_IDLE:        i32 = 19;
     pub const GET_CHUNK:        i32 = 23; // ptr = *mut *mut c_void, index = 1 (prog)
     pub const SET_CHUNK:        i32 = 24; // ptr = data, value = size, index = 1
     pub const GET_VENDOR_NAME:  i32 = 47; // ptr = char[64]
@@ -372,46 +364,6 @@ impl Vst2Processor {
             }
             Backend::Raw(raw) => raw.set_chunk(data),
         }
-    }
-
-    /// Set a normalised parameter value ([0.0, 1.0]).
-    #[allow(dead_code)]
-    pub fn set_param_normalized(&self, index: u32, normalized: f32) {
-        match &self.backend {
-            Backend::Vst(arc) => {
-                if let Ok(mut inst) = arc.lock() {
-                    inst.get_parameter_object().set_parameter(index as i32, normalized);
-                }
-            }
-            Backend::Raw(raw) => unsafe {
-                ((*raw.effect).setParameter)(raw.effect, index as i32, normalized);
-            },
-        }
-    }
-
-    /// Return basic plugin metadata for the UI.
-    #[allow(dead_code)]
-    pub fn get_info(&self) -> Option<(String, String)> {
-        match &self.backend {
-            Backend::Vst(arc) => {
-                arc.lock().ok().map(|inst| {
-                    let info = inst.get_info();
-                    (info.name, info.vendor)
-                })
-            }
-            Backend::Raw(raw) => Some((
-                raw.read_string(eff::GET_PRODUCT_NAME),
-                raw.read_string(eff::GET_VENDOR_NAME),
-            )),
-        }
-    }
-
-    /// Returns true if this plugin has a native GUI editor.
-    /// Only supported for VSTPluginMain-based plugins (Backend::Vst).
-    #[allow(dead_code)]
-    pub fn has_gui(&self) -> bool {
-        matches!(self.backend, Backend::Vst(_))
-            && self.editor.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
     /// Open the plugin's native editor GUI on a dedicated thread.

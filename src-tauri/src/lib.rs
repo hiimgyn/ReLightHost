@@ -26,9 +26,10 @@ struct AppState {
     session_restored: AtomicBool,
 }
 
-/// Holds the mute menu item so it can be updated from commands.
+/// Holds dynamic menu items so they can be updated from commands and tray events.
 struct TrayState {
-    mute_item: tauri::menu::MenuItem<tauri::Wry>,
+    mute_item:     tauri::menu::MenuItem<tauri::Wry>,
+    loopback_item: tauri::menu::MenuItem<tauri::Wry>,
 }
 
 #[derive(serde::Serialize)]
@@ -180,11 +181,20 @@ fn set_muted(
 }
 
 #[tauri::command]
-fn set_loopback(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+fn set_loopback(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    tray_state: tauri::State<TrayState>,
+    enabled: bool,
+) -> Result<(), String> {
     state.audio_manager
         .read()
         .set_loopback(enabled)
-        .map_err(|e| format!("Failed to set loopback: {}", e))
+        .map_err(|e| format!("Failed to set loopback: {}", e))?;
+    let text = if enabled { "Disable Hardware Out" } else { "Enable Hardware Out" };
+    let _ = tray_state.loopback_item.set_text(text);
+    let _ = app; // keep handle in scope
+    Ok(())
 }
 
 #[tauri::command]
@@ -284,30 +294,6 @@ fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to_ind
         .map_err(|e| format!("Failed to reorder plugin chain: {}", e))?;
     auto_save_plugin_chain(&state);
     Ok(())
-}
-
-/// Get the full binary state of a plugin instance (via IComponent::getState).
-/// Returns the state as a byte array (JSON array of u8 integers).
-#[tauri::command]
-fn get_plugin_state(state: tauri::State<AppState>, instance_id: String) -> Result<Vec<u8>, String> {
-    let manager = state.plugin_manager.read();
-    if let Some(instance) = manager.get_instance(&instance_id) {
-        Ok(instance.get_state_binary())
-    } else {
-        Err(format!("Plugin instance not found: {}", instance_id))
-    }
-}
-
-/// Restore the full binary state of a plugin instance (via IComponent::setState).
-#[tauri::command]
-fn set_plugin_state(state: tauri::State<AppState>, instance_id: String, plugin_state: Vec<u8>) -> Result<(), String> {
-    let manager = state.plugin_manager.read();
-    if let Some(instance) = manager.get_instance(&instance_id) {
-        instance.set_state_binary(&plugin_state);
-        Ok(())
-    } else {
-        Err(format!("Plugin instance not found: {}", instance_id))
-    }
 }
 
 #[tauri::command]
@@ -432,19 +418,6 @@ fn reset_plugin_crash_protection(state: tauri::State<AppState>, instance_id: Str
     }
 }
 
-#[tauri::command]
-fn midi_panic(state: tauri::State<AppState>) -> Result<(), String> {
-    log::info!("🚨 MIDI Panic - Sending All Notes Off to all channels");
-
-    let manager = state.plugin_manager.read();
-    let count = manager.get_instances().len();
-
-    // TODO: Implement MIDI CC sending when VST3 MIDI support is added
-    log::info!("✅ MIDI Panic placeholder - affected {} plugins", count);
-    Ok(())
-}
-
-
 // Preset Commands
 
 #[tauri::command]
@@ -471,14 +444,6 @@ fn save_preset(state: tauri::State<AppState>, name: String) -> Result<String, St
         .save_preset(&preset)
         .map(|path| path.to_string_lossy().to_string())
         .map_err(|e| format!("Failed to save preset: {}", e))
-}
-
-#[tauri::command]
-fn load_preset(state: tauri::State<AppState>, name: String) -> Result<Preset, String> {
-    state.preset_manager
-        .read()
-        .load_preset(&name)
-        .map_err(|e| format!("Failed to load preset: {}", e))
 }
 
 #[tauri::command]
@@ -518,19 +483,6 @@ fn auto_save_preset(state: tauri::State<AppState>) -> Result<(), String> {
         .save_preset(&preset)
         .map(|_| ())
         .map_err(|e| format!("Failed to auto-save: {}", e))
-}
-
-#[tauri::command]
-fn has_auto_save(state: tauri::State<AppState>) -> Result<bool, String> {
-    Ok(state.preset_manager.read().has_auto_save())
-}
-
-#[tauri::command]
-fn restore_auto_save(state: tauri::State<AppState>) -> Result<Preset, String> {
-    state.preset_manager
-        .read()
-        .restore_auto_save()
-        .map_err(|e| format!("Failed to restore auto-save: {}", e))
 }
 
 // Config Commands
@@ -923,11 +875,12 @@ pub fn run() {
                 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
                 use tauri::Manager;
 
-                let show_item   = MenuItem::with_id(app, "show",          "Show ReLightHost",      true, None::<&str>)?;
-                let mute_item   = MenuItem::with_id(app, "toggle_mute",   "Mute Audio",            true, None::<&str>)?;
-                let audio_item  = MenuItem::with_id(app, "audio_settings","Audio Settings…",       true, None::<&str>)?;
-                let app_item    = MenuItem::with_id(app, "app_settings",  "Application Settings…", true, None::<&str>)?;
-                let quit_item   = MenuItem::with_id(app, "quit",          "Exit",                  true, None::<&str>)?;
+                let show_item      = MenuItem::with_id(app, "show",            "Show ReLightHost",      true, None::<&str>)?;
+                let mute_item      = MenuItem::with_id(app, "toggle_mute",     "Mute Audio",            true, None::<&str>)?;
+                let loopback_item  = MenuItem::with_id(app, "toggle_loopback", "Enable Hardware Out",   true, None::<&str>)?;
+                let audio_item     = MenuItem::with_id(app, "audio_settings",  "Audio Settings…",       true, None::<&str>)?;
+                let app_item       = MenuItem::with_id(app, "app_settings",    "Application Settings…", true, None::<&str>)?;
+                let quit_item      = MenuItem::with_id(app, "quit",            "Exit",                  true, None::<&str>)?;
                 let sep1 = PredefinedMenuItem::separator(app)?;
                 let sep2 = PredefinedMenuItem::separator(app)?;
                 let sep3 = PredefinedMenuItem::separator(app)?;
@@ -936,6 +889,7 @@ pub fn run() {
                     &show_item,
                     &sep1,
                     &mute_item,
+                    &loopback_item,
                     &sep2,
                     &audio_item,
                     &app_item,
@@ -977,6 +931,18 @@ pub fn run() {
                                     let _ = tray.set_tooltip(Some(tooltip));
                                 }
                             }
+                            "toggle_loopback" => {
+                                let state = app.state::<AppState>();
+                                let manager = state.audio_manager.read();
+                                let new_enabled = !manager.is_loopback_enabled();
+                                let _ = manager.set_loopback(new_enabled);
+                                if let Some(win) = app.get_webview_window("main") {
+                                    let _ = win.emit("tray-loopback-changed", new_enabled);
+                                }
+                                let tray_state = app.state::<TrayState>();
+                                let new_text = if new_enabled { "Disable Hardware Out" } else { "Enable Hardware Out" };
+                                let _ = tray_state.loopback_item.set_text(new_text);
+                            }
                             "audio_settings" => {
                                 if let Some(win) = app.get_webview_window("main") {
                                     let _ = win.show();
@@ -1015,7 +981,7 @@ pub fn run() {
                     })
                     .build(app)?;
                 let _ = tray; // keep alive
-                app.manage(TrayState { mute_item });
+                app.manage(TrayState { mute_item, loopback_item });
             }
 
             // Set initial window size proportional to the primary monitor,
@@ -1071,19 +1037,14 @@ pub fn run() {
             get_plugin_chain,
             set_plugin_bypass,
             set_plugin_parameter,
-            get_plugin_state,
-            set_plugin_state,
             reorder_plugin_chain,
             rename_plugin,
             apply_preset,
             play_test_sound,
             save_preset,
-            load_preset,
             list_presets,
             delete_preset,
             auto_save_preset,
-            has_auto_save,
-            restore_auto_save,
             get_custom_scan_paths,
             add_custom_scan_path,
             remove_custom_scan_path,
@@ -1095,7 +1056,6 @@ pub fn run() {
             get_system_stats,
             get_plugin_crash_status,
             reset_plugin_crash_protection,
-            midi_panic,
             get_noise_suppressor_vad,
             restore_session,
             check_for_update,

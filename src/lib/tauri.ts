@@ -50,6 +50,10 @@ export async function setMuted(muted: boolean): Promise<void> {
   return invoke('set_muted', { muted });
 }
 
+export async function setLoopback(enabled: boolean): Promise<void> {
+  return invoke('set_loopback', { enabled });
+}
+
 export async function getVUData(): Promise<VUData> {
   return invoke('get_vu_data');
 }

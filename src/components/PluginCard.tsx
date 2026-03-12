@@ -18,6 +18,7 @@ import type { PluginInstanceInfo, PluginStatus } from '../lib/types';
 import * as tauri from '../lib/tauri';
 import NoiseSuppressorGui from './NoiseSuppressorGui';
 import CompressorGui from './CompressorGui';
+import VoiceGui from './VoiceGui';
 
 interface PluginCardProps {
   plugin: PluginInstanceInfo;
@@ -320,6 +321,13 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
     )}
     {plugin.format === 'builtin' && plugin.plugin_id === 'builtin::compressor' && (
       <CompressorGui
+        plugin={plugin}
+        isOpen={showBuiltinGui}
+        onClose={() => setShowBuiltinGui(false)}
+      />
+    )}
+    {plugin.format === 'builtin' && plugin.plugin_id === 'builtin::voice' && (
+      <VoiceGui
         plugin={plugin}
         isOpen={showBuiltinGui}
         onClose={() => setShowBuiltinGui(false)}

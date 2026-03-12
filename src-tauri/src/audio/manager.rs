@@ -16,7 +16,8 @@ use crate::audio::vu_meter::VUMeter;
 struct MonitoringStreams {
     _input: cpal::Stream,
     _output: cpal::Stream,
-    /// Optional virtual output (e.g. VB-Audio Virtual Cable / VAIO) — mirrors processed audio.
+    /// Optional Hardware Out stream — feeds processed audio to speakers/headphones for monitoring.
+    /// Gated by `loopback_enabled`; only audible when the loopback button is ON.
     _virtual_output: Option<cpal::Stream>,
 }
 // SAFETY: cpal::Stream implements Send on all supported platforms
@@ -38,18 +39,21 @@ pub struct AudioManager {
     vu_meter:    Arc<VUMeter>,
     /// Output mute — when true the output callback writes silence.
     muted:       Arc<AtomicBool>,
+    /// Loopback — when true, captures system output and mixes into the output.
+    loopback_enabled: Arc<AtomicBool>,
 }
 
 impl AudioManager {
     pub fn new() -> Self {
         Self {
-            config:      Arc::new(RwLock::new(AudioConfig::default())),
-            status:      Arc::new(RwLock::new(AudioStatus::default())),
-            last_update: Arc::new(RwLock::new(Instant::now())),
-            monitoring:  Mutex::new(None),
-            process_fn:  Arc::new(Mutex::new(None)),
-            vu_meter:    Arc::new(VUMeter::new()),
-            muted:       Arc::new(AtomicBool::new(false)),
+            config:           Arc::new(RwLock::new(AudioConfig::default())),
+            status:           Arc::new(RwLock::new(AudioStatus::default())),
+            last_update:      Arc::new(RwLock::new(Instant::now())),
+            monitoring:       Mutex::new(None),
+            process_fn:       Arc::new(Mutex::new(None)),
+            vu_meter:         Arc::new(VUMeter::new()),
+            muted:            Arc::new(AtomicBool::new(false)),
+            loopback_enabled: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -307,6 +311,7 @@ impl AudioManager {
         let process_fn = Arc::clone(&self.process_fn);
         let vu_meter = Arc::clone(&self.vu_meter);
         let muted = Arc::clone(&self.muted);
+        let loopback_flag = Arc::clone(&self.loopback_enabled);
         let mut left_buf  = vec![0.0f32; config.buffer_size as usize];
         let mut right_buf = vec![0.0f32; config.buffer_size as usize];
 
@@ -340,14 +345,15 @@ impl AudioManager {
                     // Step 2.5: Update VU meter with processed audio
                     vu_meter.update(&left_buf[..frames], &right_buf[..frames]);
 
-                    // Step 2.75: Mirror processed audio to the virtual output ring buffer.
-                    // Not gated by mute — recording/streaming software always
-                    // receives the full processed signal regardless of the
-                    // monitoring speaker mute state.
-                    if let Some(ref mut vp) = virt_producer_opt {
-                        for frame in 0..frames {
-                            let _ = vp.try_push(left_buf[frame]);
-                            let _ = vp.try_push(right_buf[frame]);
+                    // Step 2.75: Mirror processed audio to Hardware Out (monitoring).
+                    // Gated by loopback_enabled — when the loopback button is OFF the
+                    // Hardware Out ring buffer is left empty so speakers hear silence.
+                    if loopback_flag.load(Ordering::Relaxed) {
+                        if let Some(ref mut vp) = virt_producer_opt {
+                            for frame in 0..frames {
+                                let _ = vp.try_push(left_buf[frame]);
+                                let _ = vp.try_push(right_buf[frame]);
+                            }
                         }
                     }
 
@@ -426,7 +432,7 @@ impl AudioManager {
             "Input monitoring started ({}Hz, {} samples{})",
             config.sample_rate,
             config.buffer_size,
-            if has_virt { " + virtual output" } else { "" },
+            if has_virt { " + hardware out" } else { "" },
         );
         Ok(())
     }
@@ -440,6 +446,21 @@ impl AudioManager {
     /// Get current mute state.
     pub fn is_muted(&self) -> bool {
         self.muted.load(Ordering::Relaxed)
+    }
+
+    /// Enable or disable monitoring through Hardware Out.
+    /// Takes effect immediately — the output callback is gated by this flag,
+    /// so no stream restart is needed and toggling is glitch-free.
+    pub fn set_loopback(&self, enabled: bool) -> Result<()> {
+        self.loopback_enabled.store(enabled, Ordering::Relaxed);
+        log::info!("Hardware Out monitoring {}", if enabled { "enabled" } else { "disabled" });
+        Ok(())
+    }
+
+    /// Get current loopback state.
+    #[allow(dead_code)]
+    pub fn is_loopback_enabled(&self) -> bool {
+        self.loopback_enabled.load(Ordering::Relaxed)
     }
 
     /// Get current audio status

@@ -180,6 +180,14 @@ fn set_muted(
 }
 
 #[tauri::command]
+fn set_loopback(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+    state.audio_manager
+        .read()
+        .set_loopback(enabled)
+        .map_err(|e| format!("Failed to set loopback: {}", e))
+}
+
+#[tauri::command]
 fn get_vu_data(state: tauri::State<AppState>) -> Result<audio::VUData, String> {
     Ok(state.audio_manager.read().get_vu_data())
 }
@@ -1055,6 +1063,7 @@ pub fn run() {
             set_buffer_size,
             toggle_monitoring,
             set_muted,
+            set_loopback,
             get_vu_data,
             scan_plugins,
             load_plugin,

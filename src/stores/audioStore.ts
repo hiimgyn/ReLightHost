@@ -12,6 +12,7 @@ interface AudioStore {
   sampleRate: number;
   bufferSize: number;
   isMuted: boolean;
+  isLoopbackEnabled: boolean;
   
   // Actions
   fetchStatus: () => Promise<void>;
@@ -27,6 +28,7 @@ interface AudioStore {
   setSampleRate: (rate: number) => Promise<void>;
   setBufferSize: (size: number) => Promise<void>;
   setMuted: (muted: boolean) => Promise<void>;
+  setLoopback: (enabled: boolean) => Promise<void>;
 }
 
 export const useAudioStore = create<AudioStore>((set, get) => ({
@@ -44,6 +46,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   sampleRate: 48000,
   bufferSize: 1024,
   isMuted: false,
+  isLoopbackEnabled: false,
 
   fetchStatus: async () => {
     try {
@@ -173,6 +176,17 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     } catch (error) {
       console.error('Failed to set mute:', error);
       set({ isMuted: !muted }); // revert on error
+      throw error;
+    }
+  },
+
+  setLoopback: async (enabled: boolean) => {
+    set({ isLoopbackEnabled: enabled });
+    try {
+      await tauri.setLoopback(enabled);
+    } catch (error) {
+      console.error('Failed to set loopback:', error);
+      set({ isLoopbackEnabled: !enabled }); // revert on error
       throw error;
     }
   },

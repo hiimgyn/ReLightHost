@@ -315,7 +315,7 @@ impl PluginScanner {
     /// These are always available and do not need file scanning.
     pub fn builtin_plugins() -> Vec<PluginInfo> {
         use crate::plugins::types::PluginFormat;
-        use crate::plugins::builtin::{noise_suppressor, compressor};
+        use crate::plugins::builtin::{noise_suppressor, compressor, voice};
         vec![
             PluginInfo {
                 id:       noise_suppressor::ID.to_string(),
@@ -334,6 +334,15 @@ impl PluginScanner {
                 path:     compressor::ID.to_string(),
                 format:   PluginFormat::Builtin,
                 category: "Dynamics".to_string(),
+            },
+            PluginInfo {
+                id:       voice::ID.to_string(),
+                name:     "Voice Designer".to_string(),
+                vendor:   "Built-in".to_string(),
+                version:  env!("CARGO_PKG_VERSION").to_string(),
+                path:     voice::ID.to_string(),
+                format:   PluginFormat::Builtin,
+                category: "Voice".to_string(),
             },
         ]
     }

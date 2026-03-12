@@ -12,6 +12,7 @@ import {
   LoadingOutlined,
   SoundOutlined,
   MutedOutlined,
+  RetweetOutlined,
 } from '@ant-design/icons';
 import { useThemeStore } from '../stores/themeStore';
 import { useAudioStore } from '../stores/audioStore';
@@ -21,7 +22,7 @@ import AppSettings from './AppSettings';
 export default function Header() {
   const { theme: appTheme, toggleTheme } = useThemeStore();
   const { token } = theme.useToken();
-  const { status, isMuted, setMuted } = useAudioStore();
+  const { status, isMuted, setMuted, isLoopbackEnabled, setLoopback } = useAudioStore();
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
   const [appVersion, setAppVersion] = useState('');
@@ -94,6 +95,18 @@ export default function Header() {
                 ? <MutedOutlined style={{ color: '#ff4d4f' }} />
                 : <SoundOutlined style={{ color: '#52c41a' }} />}
               onClick={() => setMuted(!isMuted)}
+            />
+          </Tooltip>
+          {/* Loopback toggle — routes processed audio to Hardware Out for monitoring */}
+          <Tooltip title={isLoopbackEnabled ? 'Turn off monitoring (Hardware Out silent)' : 'Turn on monitoring (hear output through Hardware Out)'}>
+            <Button
+              type="text"
+              icon={
+                <RetweetOutlined
+                  style={{ color: isLoopbackEnabled ? token.colorPrimary : token.colorTextSecondary }}
+                />
+              }
+              onClick={() => setLoopback(!isLoopbackEnabled)}
             />
           </Tooltip>
           {/* Theme toggle */}

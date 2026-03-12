@@ -5,9 +5,11 @@
 
 pub mod noise_suppressor;
 pub mod compressor;
+pub mod voice;
 
 pub use noise_suppressor::NoiseSuppressor;
 pub use compressor::Compressor;
+pub use voice::Voice;
 
 use crate::plugins::types::PluginParameter;
 
@@ -38,6 +40,7 @@ pub fn create_builtin(id: &str, sample_rate: f32) -> Option<Box<dyn BuiltinProce
     match id {
         noise_suppressor::ID => Some(Box::new(NoiseSuppressor::new())),
         compressor::ID       => Some(Box::new(Compressor::new(sample_rate))),
+        voice::ID            => Some(Box::new(Voice::new(sample_rate))),
         _                    => None,
     }
 }
@@ -63,6 +66,14 @@ pub fn builtin_initial_params(id: &str) -> Vec<PluginParameter> {
             PluginParameter { id: 4, name: "Makeup Gain".into(), value:   0.0, min:   0.0, max:   30.0, default:   0.0 },
             PluginParameter { id: 5, name: "Knee".into(),        value:   3.0, min:   0.0, max:   12.0, default:   3.0 },
             PluginParameter { id: 6, name: "Mix".into(),         value:   1.0, min:   0.0, max:    1.0, default:   1.0 },
+        ],
+        voice::ID => vec![
+            PluginParameter { id: 0, name: "Low".into(),     value:  0.0, min: -12.0, max: 12.0, default:  0.0 },
+            PluginParameter { id: 1, name: "Mid".into(),     value:  0.0, min: -12.0, max: 12.0, default:  0.0 },
+            PluginParameter { id: 2, name: "High".into(),    value:  0.0, min: -12.0, max: 12.0, default:  0.0 },
+            PluginParameter { id: 3, name: "Drive".into(),   value:  0.0, min:   0.0, max:  1.0, default:  0.0 },
+            PluginParameter { id: 4, name: "Width".into(),   value:  0.0, min:   0.0, max:  1.0, default:  0.0 },
+            PluginParameter { id: 5, name: "Ceiling".into(), value:  0.0, min: -12.0, max:  0.0, default:  0.0 },
         ],
         _ => vec![],
     }

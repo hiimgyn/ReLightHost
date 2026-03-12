@@ -266,9 +266,9 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
             </Form.Item>
 
             <Form.Item
-              label="Virtual Output (Optional)"
+              label="Hardware Out (Loopback Source)"
               name="virtualOutputDevice"
-              extra="Mirror processed audio to a second output (e.g. VB-Audio Virtual Cable / VAIO) for OBS, Discord, etc."
+              extra="Physical output device (speakers / headphones) used for monitoring. When the loopback button is ON, processed audio is sent here so you can hear it. When OFF, this device is silent."
             >
               <Select size="large" placeholder="None (disabled)" allowClear optionLabelProp="label">
                 <Select.Option value="" label="None (disabled)">

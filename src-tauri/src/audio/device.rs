@@ -212,6 +212,29 @@ impl AudioDevice {
         None
     }
 
+    /// Find a WASAPI output device by raw name to be used as a loopback capture source.
+    ///
+    /// On Windows/WASAPI, cpal automatically enables `AUDCLNT_STREAMFLAGS_LOOPBACK`
+    /// when `build_input_stream` is called on a render (output) endpoint, giving a
+    /// real-time tap of all audio the system is playing on that device.
+    ///
+    /// `device_name` is the raw device name without any `"out_"` prefix.
+    pub fn find_loopback_device(device_name: &str) -> Option<cpal::Device> {
+        for host_id in cpal::available_hosts() {
+            if is_asio_host(host_id) { continue; }
+            let Ok(host) = cpal::host_from_id(host_id) else { continue };
+            if let Ok(outputs) = host.output_devices() {
+                for dev in outputs {
+                    if dev.name().ok().as_deref() == Some(device_name) {
+                        return Some(dev);
+                    }
+                }
+            }
+        }
+        // Fallback: default output device
+        cpal::default_host().default_output_device()
+    }
+
     /// For ASIO full-duplex insert (e.g. Voicemeeter insert): find BOTH the input
     /// and output `cpal::Device` for the same ASIO driver from a **single host
     /// instance**.  This is required because cpal's ASIO backend keys the

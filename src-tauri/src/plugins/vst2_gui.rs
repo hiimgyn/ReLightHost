@@ -63,6 +63,7 @@ pub fn open_vst2_gui(
                 fn drop(&mut self) {
                     self.1.store(0, Ordering::Release);
                     self.0.store(false, Ordering::Release);
+                    crate::app_events::emit_plugin_chain_changed("gui_close", None);
                     log::debug!("VST2 GUI flag cleared");
                 }
             }
@@ -84,7 +85,6 @@ mod win {
     use super::SendableEditor;
     use anyhow::{anyhow, Result};
     use std::ptr;
-    use std::ffi::c_void;
     use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicIsize, Ordering};
     #[allow(unused_imports)] // Method dispatch on Box<dyn Editor> vtable works without the trait in scope
@@ -119,7 +119,7 @@ mod win {
 
         // Open the VST2 editor inside our window (effEditOpen).
         // The plugin creates a child window at coords (0, 0) inside hwnd.
-        let opened = editor.0.open(hwnd as *mut c_void);
+        let opened = editor.0.open(hwnd);
         if !opened {
             unsafe { DestroyWindow(hwnd); }
             return Err(anyhow!("'{}': VST2 effEditOpen returned false", plugin_name));

@@ -8,7 +8,6 @@
 ///   - WM_SIZE → IPlugView::onSize() for host-driven resizes
 ///
 /// VST3 SDK reference: pluginterfaces/gui/iplugview.h
-
 #[cfg(target_os = "windows")]
 pub mod win {
     use anyhow::{anyhow, Result};
@@ -40,6 +39,7 @@ pub mod win {
     use windows_sys::Win32::Graphics::Gdi::{RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE};
 
     static GLOBAL_VST3_GUI_OPEN: AtomicBool = AtomicBool::new(false);
+    type OnSizeCallback = Box<dyn Fn(i32, i32)>;
 
     // Thread-local state shared between GUI setup, WndProc, and IPlugFrame.
     // Safe because the GUI runs on a single dedicated thread.
@@ -47,30 +47,30 @@ pub mod win {
         /// Host HWND as isize. Used by WM_SIZE → onSize callback.
         /// NOTE: NOT used by IPlugFrame::resizeView — that uses the HWND stored
         /// in HostPlugFrame directly, so it works from any thread.
-        static TL_HWND: Cell<isize> = Cell::new(0);
+        static TL_HWND: Cell<isize> = const { Cell::new(0) };
         /// Closure that calls IPlugView::onSize() with new client dims.
-        static TL_ON_SIZE: std::cell::RefCell<Option<Box<dyn Fn(i32, i32)>>> =
-            std::cell::RefCell::new(None);
+        static TL_ON_SIZE: std::cell::RefCell<Option<OnSizeCallback>> =
+            const { std::cell::RefCell::new(None) };
         /// Initial (width, height) applied via WM_VST_ATTACH once the loop runs.
-        static TL_INITIAL_SIZE: Cell<(i32, i32)> = Cell::new((0, 0));
+        static TL_INITIAL_SIZE: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
         /// View clone passed to the attach helper thread.
         static TL_PENDING_VIEW: std::cell::RefCell<Option<ComPtr<IPlugView>>> =
-            std::cell::RefCell::new(None);
+            const { std::cell::RefCell::new(None) };
         /// JoinHandle for the background attach thread.
         /// Joined before view.removed() to prevent data-race on the ComPtr.
         static TL_ATTACH_THREAD: std::cell::RefCell<Option<std::thread::JoinHandle<()>>> =
-            std::cell::RefCell::new(None);
+            const { std::cell::RefCell::new(None) };
         /// Win32 thread ID of the attach thread (wrapped in Arc so WM_CLOSE can
         /// send it WM_QUIT before PluginInstance::drop calls view.removed()).
         static TL_ATTACH_TID: std::cell::RefCell<Option<Arc<AtomicU32>>> =
-            std::cell::RefCell::new(None);
+            const { std::cell::RefCell::new(None) };
         /// Attachment-ready flag shared from Vst3Processor. Set to true after
         /// IPlugView::attached() succeeds, signaling the audio thread that the
         /// plugin is fully initialized and ready for process() calls.
         static TL_ATTACHMENT_READY: std::cell::RefCell<Option<Arc<AtomicBool>>> =
-            std::cell::RefCell::new(None);
+            const { std::cell::RefCell::new(None) };
         /// Whether component and controller are separate objects.
-        static TL_SEPARATE_CONTROLLER: Cell<bool> = Cell::new(true);
+        static TL_SEPARATE_CONTROLLER: Cell<bool> = const { Cell::new(true) };
     }
 
     /// Posted to self just before the message loop starts.
@@ -206,6 +206,7 @@ pub mod win {
                         // Editor is no longer in attach phase; allow process().
                         self.attachment_ready.store(true, Ordering::Release);
                         GLOBAL_VST3_GUI_OPEN.store(false, Ordering::Release);
+                        crate::app_events::emit_plugin_chain_changed("gui_close", None);
                         log::debug!("GUI flag cleared");
                     }
                 }

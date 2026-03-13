@@ -1,15 +1,18 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { message } from 'antd';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import Layout from './components/Layout'
-import PluginChain from './components/PluginChain'
-import AudioSettings from './components/AudioSettings'
 import { useAudioStore } from './stores/audioStore';
+import { usePluginStore } from './stores/pluginStore';
+
+const Layout = lazy(() => import('./components/Layout'));
+const PluginChain = lazy(() => import('./components/PluginChain'));
+const AudioSettings = lazy(() => import('./components/AudioSettings'));
 
 function App() {
   const [showFirstTimeAudio, setShowFirstTimeAudio] = useState(false);
   const { syncFromBackend, fetchStatus, fetchDevices, toggleMonitoring } = useAudioStore();
+  const forceCloseRef = useRef(false);
 
   // ── Session restore on mount ──────────────────────────────────────────────
   useEffect(() => {
@@ -20,6 +23,11 @@ function App() {
           plugins_restored: number;
           needs_deferred_start: boolean;
         }>('restore_session');
+
+        // Startup race guard: ensure chain store is refreshed even if
+        // plugin-chain-changed event was emitted before listener attached.
+        await usePluginStore.getState().fetchChain();
+        await usePluginStore.getState().fetchCrashStatuses();
 
         // Sync the frontend store so AudioSettings shows the restored values.
         await syncFromBackend();
@@ -85,11 +93,17 @@ function App() {
     }).catch(() => {});
 
     const closePromise = appWindow.onCloseRequested(async (event) => {
+      // Let the second close event pass through when we intentionally destroy.
+      if (forceCloseRef.current) {
+        return;
+      }
+
       // Always prevent default in async handlers — then decide explicitly.
       event.preventDefault();
       if (localStorage.getItem('minimizeToTray') === 'true') {
         await appWindow.hide();
       } else {
+        forceCloseRef.current = true;
         await appWindow.destroy();
       }
     });
@@ -100,17 +114,21 @@ function App() {
   }, []);
 
   return (
-    <Layout>
-      <div className="h-full p-6">
-        <PluginChain />
-      </div>
-      {showFirstTimeAudio && (
-        <AudioSettings
-          isOpen
-          onClose={() => setShowFirstTimeAudio(false)}
-        />
-      )}
-    </Layout>
+    <Suspense fallback={<div className="h-screen" />}>
+      <Layout>
+        <div className="h-full p-6">
+          <PluginChain />
+        </div>
+        {showFirstTimeAudio && (
+          <Suspense fallback={null}>
+            <AudioSettings
+              isOpen
+              onClose={() => setShowFirstTimeAudio(false)}
+            />
+          </Suspense>
+        )}
+      </Layout>
+    </Suspense>
   )
 }
 

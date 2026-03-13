@@ -13,6 +13,7 @@ pub struct PluginInfo {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum PluginFormat {
     #[serde(rename = "clap")]
     CLAP,

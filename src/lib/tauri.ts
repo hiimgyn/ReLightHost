@@ -1,5 +1,15 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AudioStatus, AudioDeviceInfo, AudioConfig, PluginInfo, PluginInstanceInfo, SystemStats, PluginStatus, VUData } from './types';
+import type {
+  AudioStatus,
+  AudioDeviceInfo,
+  AudioConfig,
+  PluginInfo,
+  PluginInstanceInfo,
+  SystemStats,
+  PluginStatus,
+  VUData,
+  PluginCrashStatusItem,
+} from './types';
 
 // Audio Commands
 export async function startAudio(): Promise<void> {
@@ -127,6 +137,10 @@ export async function autoSavePreset(): Promise<void> {
 // Crash Protection Commands
 export async function getPluginCrashStatus(instanceId: string): Promise<PluginStatus> {
   return invoke('get_plugin_crash_status', { instanceId });
+}
+
+export async function getPluginCrashStatuses(): Promise<PluginCrashStatusItem[]> {
+  return invoke('get_plugin_crash_statuses');
 }
 
 export async function resetPluginCrashProtection(instanceId: string): Promise<void> {

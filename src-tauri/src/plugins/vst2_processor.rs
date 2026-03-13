@@ -326,7 +326,7 @@ impl Vst2Processor {
                 unsafe {
                     ((*raw.effect).processReplacing)(
                         raw.effect,
-                        in_ptrs.as_ptr()  as *const *const f32,
+                        in_ptrs.as_ptr(),
                         out_ptrs.as_ptr() as *mut   *mut   f32,
                         n as i32,
                     );

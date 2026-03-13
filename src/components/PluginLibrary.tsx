@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Drawer, Input, Button, Tabs, List, Tag, Space, Typography, Tooltip, Empty, Spin } from 'antd';
 import { 
   SearchOutlined, 
@@ -10,8 +10,9 @@ import {
 } from '@ant-design/icons';
 import { usePluginStore } from '../stores/pluginStore';
 import type { PluginInfo } from '../lib/types';
-import PluginSettings from './PluginSettings';
-import PluginInfoModal from './PluginInfoModal';
+
+const PluginSettings = lazy(() => import('./PluginSettings'));
+const PluginInfoModal = lazy(() => import('./PluginInfoModal'));
 
 const { Text } = Typography;
 
@@ -21,7 +22,15 @@ interface PluginLibraryProps {
 }
 
 export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
-  const { availablePlugins, isScanning, scanPlugins, addToChain } = usePluginStore();
+  const {
+    availablePlugins,
+    isScanning,
+    isMutating,
+    isChainInitializing,
+    scanPlugins,
+    addToChain,
+  } = usePluginStore();
+  const addLocked = isMutating || isChainInitializing;
   const [searchQuery, setSearchQuery] = useState('');
   const [filterFormat, setFilterFormat] = useState<'all' | 'vst3' | 'vst' | 'clap' | 'builtin'>('all');
   const [showSettings, setShowSettings] = useState(false);
@@ -41,6 +50,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   });
 
   const handleAddPlugin = async (plugin: PluginInfo) => {
+    if (addLocked) return;
     try {
       await addToChain(plugin);
       // Optional: close drawer after adding plugin
@@ -172,6 +182,8 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
                       type="primary"
                       size="small"
                       icon={<PlusCircleOutlined />}
+                      loading={isMutating}
+                      disabled={addLocked}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleAddPlugin(plugin);
@@ -230,12 +242,18 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           backdropFilter: 'blur(10px)',
           borderTop: '1px solid rgba(255, 255, 255, 0.1)'
         }}>
+          {isChainInitializing && (
+            <div style={{ textAlign: 'center', marginBottom: 8, color: '#999', fontSize: 12 }}>
+              Initial chain is loading, adding plugins is temporarily locked.
+            </div>
+          )}
           <Button
             block
             size="large"
             icon={<ReloadOutlined />}
             onClick={scanPlugins}
             loading={isScanning}
+            disabled={isMutating}
           >
             {isScanning ? 'Scanning...' : 'Scan for Plugins'}
           </Button>
@@ -246,16 +264,25 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
       </Drawer>
 
       {/* Plugin Settings Modal */}
-      <PluginSettings isOpen={showSettings} onClose={() => setShowSettings(false)} />
+      {showSettings && (
+        <Suspense fallback={null}>
+          <PluginSettings isOpen={showSettings} onClose={() => setShowSettings(false)} />
+        </Suspense>
+      )}
 
       {/* Plugin Info Modal */}
       {selectedPlugin && (
-        <PluginInfoModal
-          plugin={selectedPlugin}
-          isOpen={true}
-          onClose={() => setSelectedPlugin(null)}
-          onLoad={() => handleAddPlugin(selectedPlugin)}
-        />
+        <Suspense fallback={null}>
+          <PluginInfoModal
+            plugin={selectedPlugin}
+            isOpen={true}
+            onClose={() => setSelectedPlugin(null)}
+            onLoad={() => {
+              if (addLocked) return;
+              handleAddPlugin(selectedPlugin);
+            }}
+          />
+        </Suspense>
       )}
     </>
   );

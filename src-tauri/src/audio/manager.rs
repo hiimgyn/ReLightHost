@@ -271,8 +271,7 @@ impl AudioManager {
         // Resolved before the output stream closure is built so the
         // producer half of the virtual ring buffer can be moved into it.
         // Processed audio is mirrored to this device after the plugin chain
-        // runs — independently of the primary output mute state, so that
-        // recording / streaming software always receives the full signal.
+        // runs when loopback is enabled and global mute is off.
         // -----------------------------------------------------------------
         let virt_output_device: Option<cpal::Device> =
             config.virtual_output_device_id.as_deref().and_then(|id| {
@@ -345,10 +344,13 @@ impl AudioManager {
                     // Step 2.5: Update VU meter with processed audio
                     vu_meter.update(&left_buf[..frames], &right_buf[..frames]);
 
+                    // Read mute flag once so both output paths use the same state.
+                    let is_muted = muted.load(Ordering::Relaxed);
+
                     // Step 2.75: Mirror processed audio to Hardware Out (monitoring).
                     // Gated by loopback_enabled — when the loopback button is OFF the
                     // Hardware Out ring buffer is left empty so speakers hear silence.
-                    if loopback_flag.load(Ordering::Relaxed) {
+                    if loopback_flag.load(Ordering::Relaxed) && !is_muted {
                         if let Some(ref mut vp) = virt_producer_opt {
                             for frame in 0..frames {
                                 let _ = vp.try_push(left_buf[frame]);
@@ -360,7 +362,6 @@ impl AudioManager {
                     // Step 3: Re-interleave L/R → CPAL output buffer.
                     // If muted, write silence so the VU meter still shows levels
                     // but speakers hear nothing.
-                    let is_muted = muted.load(Ordering::Relaxed);
                     for frame in 0..frames {
                         for ch in 0..output_channels {
                             data[frame * output_channels + ch] = if is_muted { 0.0 } else {

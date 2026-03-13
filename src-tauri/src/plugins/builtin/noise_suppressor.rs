@@ -11,7 +11,6 @@
 /// Gate: when `last_vad < vad_gate_threshold`, output is attenuated by
 /// `gate_attenuation` (0 = no reduction, 1 = full silence).  Smoothed with a
 /// ~70 ms time constant to prevent audible clicks.
-
 use std::collections::VecDeque;
 use nnnoiseless::DenoiseState;
 use super::BuiltinProcessor;

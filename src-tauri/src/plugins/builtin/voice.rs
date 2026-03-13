@@ -11,7 +11,6 @@
 /// | 3  | Drive    |  0.0 … 1.0   |   0.0   | Saturation  |
 /// | 4  | Width    |  0.0 … 1.0   |   0.0   | Doubler     |
 /// | 5  | Ceiling  | −12 … 0 dB   |   0.0   | Limiter     |
-
 use std::f64::consts::PI;
 use super::BuiltinProcessor;
 

@@ -25,19 +25,10 @@ impl Default for VUChannel {
 }
 
 /// VU Meter state for stereo audio
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VUData {
     pub left: VUChannel,
     pub right: VUChannel,
-}
-
-impl Default for VUData {
-    fn default() -> Self {
-        Self {
-            left: VUChannel::default(),
-            right: VUChannel::default(),
-        }
-    }
 }
 
 /// Peak hold with timestamp

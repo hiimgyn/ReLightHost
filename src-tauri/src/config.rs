@@ -5,11 +5,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use crate::audio::types::AudioConfig;
 
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub custom_scan_paths: Vec<String>,
     #[serde(default)]
     pub minimize_to_tray: bool,
+    #[serde(default = "default_true")]
+    pub show_app_on_startup: bool,
 }
 
 /// Persisted per-session state: audio device config + mute.
@@ -28,6 +32,7 @@ impl Default for AppConfig {
         Self {
             custom_scan_paths: Vec::new(),
             minimize_to_tray: false,
+            show_app_on_startup: true,
         }
     }
 }
@@ -87,6 +92,17 @@ impl ConfigManager {
     pub fn set_minimize_to_tray(&self, enabled: bool) -> Result<()> {
         let mut config = self.config.write().unwrap();
         config.minimize_to_tray = enabled;
+        self.save_config(&config)?;
+        Ok(())
+    }
+
+    pub fn get_show_app_on_startup(&self) -> bool {
+        self.config.read().unwrap().show_app_on_startup
+    }
+
+    pub fn set_show_app_on_startup(&self, enabled: bool) -> Result<()> {
+        let mut config = self.config.write().unwrap();
+        config.show_app_on_startup = enabled;
         self.save_config(&config)?;
         Ok(())
     }

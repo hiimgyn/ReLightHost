@@ -13,17 +13,21 @@ import {
   CheckOutlined,
   CloseCircleOutlined,
 } from '@ant-design/icons';
-import { useState, useEffect, useRef } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import type { PluginInstanceInfo, PluginStatus } from '../lib/types';
 import * as tauri from '../lib/tauri';
-import NoiseSuppressorGui from './NoiseSuppressorGui';
-import CompressorGui from './CompressorGui';
-import VoiceGui from './VoiceGui';
+
+const NoiseSuppressorGui = lazy(() => import('./NoiseSuppressorGui'));
+const CompressorGui = lazy(() => import('./CompressorGui'));
+const VoiceGui = lazy(() => import('./VoiceGui'));
 
 interface PluginCardProps {
   plugin: PluginInstanceInfo;
+  crashStatus?: PluginStatus;
+  interactionLocked?: boolean;
   onRemove: () => void;
   onToggleBypass: () => void;
+  onCrashStatusChanged?: () => Promise<void> | void;
   onLaunch?: () => void;
 }
 
@@ -34,9 +38,16 @@ function getFormatColor(format: string) {
   return 'green';
 }
 
-export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch }: PluginCardProps) {
+export default function PluginCard({
+  plugin,
+  crashStatus,
+  interactionLocked = false,
+  onRemove,
+  onToggleBypass,
+  onCrashStatusChanged,
+  onLaunch,
+}: PluginCardProps) {
   const { token } = theme.useToken();
-  const [crashStatus, setCrashStatus] = useState<PluginStatus>({ type: 'Ok' });
   const [checkingStatus, setCheckingStatus] = useState(false);
   const [showBuiltinGui, setShowBuiltinGui] = useState(false);
 
@@ -46,6 +57,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
 
   // Inline rename state
   const [isRenaming, setIsRenaming] = useState(false);
+  const [isRenamingBusy, setIsRenamingBusy] = useState(false);
   const [editName, setEditName] = useState(plugin.name);
   const renameInputRef = useRef<InputRef | null>(null);
 
@@ -72,24 +84,12 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
     }
   }, [isRenaming]);
 
-  // Check crash status periodically
-  useEffect(() => {
-    const checkStatus = async () => {
-      try {
-        const status = await tauri.getPluginCrashStatus(plugin.instance_id);
-        setCrashStatus(status);
-      } catch { /* silent */ }
-    };
-    checkStatus();
-    const interval = setInterval(checkStatus, 2000);
-    return () => clearInterval(interval);
-  }, [plugin.instance_id]);
-
   const handleResetCrash = async () => {
+    if (interactionLocked) return;
     try {
       setCheckingStatus(true);
       await tauri.resetPluginCrashProtection(plugin.instance_id);
-      setCrashStatus({ type: 'Ok' });
+      await onCrashStatusChanged?.();
       message.success('Plugin crash protection reset');
     } catch (err) {
       message.error(`Failed to reset: ${err}`);
@@ -99,6 +99,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
   };
 
   const handleLaunch = async () => {
+    if (interactionLocked) return;
     if (isLaunching) return;
     if (plugin.gui_open) return; // already open — do nothing
     setIsLaunching(true);
@@ -113,13 +114,17 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
   };
 
   const handleRenameConfirm = async () => {
+    if (interactionLocked || isRenamingBusy) return;
     const trimmed = editName.trim();
     if (trimmed && trimmed !== plugin.name) {
       try {
+        setIsRenamingBusy(true);
         await tauri.renamePlugin(plugin.instance_id, trimmed);
       } catch (err) {
         message.error(`Rename failed: ${err}`);
         setEditName(plugin.name);
+      } finally {
+        setIsRenamingBusy(false);
       }
     } else if (!trimmed) {
       setEditName(plugin.name);
@@ -128,11 +133,14 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
   };
 
   const handleRenameCancel = () => {
+    if (isRenamingBusy) return;
     setEditName(plugin.name);
     setIsRenaming(false);
   };
 
-  const isCrashed = crashStatus.type !== 'Ok';
+  const effectiveCrashStatus = crashStatus ?? { type: 'Ok' };
+  const isCrashed = effectiveCrashStatus.type !== 'Ok';
+  const isControlLocked = interactionLocked || isLaunching || checkingStatus || isRenamingBusy;
 
   // Determine launch button appearance
   const launchButtonProps = (() => {
@@ -152,9 +160,10 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
     <>
     <Card
       size="small"
-      className={`transition-all shadow-lg ${plugin.bypassed ? 'opacity-60' : ''}`}
+      className={`transition-all ${plugin.bypassed ? 'opacity-70' : ''}`}
       style={{
-        borderWidth: 2,
+        borderWidth: 1,
+        borderRadius: 10,
         borderColor: isCrashed
           ? token.colorError
           : plugin.gui_open
@@ -163,10 +172,15 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
           ? token.colorBorderSecondary
           : token.colorPrimary,
         background: token.colorBgContainer,
+        boxShadow: isCrashed
+          ? `0 0 0 1px ${token.colorErrorBorder}, 0 8px 18px ${token.colorErrorBg}`
+          : plugin.gui_open
+          ? `0 0 0 1px ${token.colorSuccessBorder}, 0 8px 18px rgba(82,196,26,0.12)`
+          : `0 6px 14px ${token.colorFillSecondary}`,
       }}
-      styles={{ body: { padding: '12px 14px' } }}
+      styles={{ body: { padding: '10px 12px' } }}
     >
-      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
 
         {/* ── Name row ────────────────────────────────────────────── */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -174,6 +188,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
             <Input
               ref={renameInputRef}
               size="small"
+              disabled={isControlLocked}
               value={editName}
               onChange={e => setEditName(e.target.value)}
               onPressEnter={handleRenameConfirm}
@@ -205,10 +220,29 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
               }}>
                 {plugin.name}
               </span>
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                  background: isCrashed
+                    ? token.colorError
+                    : plugin.bypassed
+                    ? token.colorTextQuaternary
+                    : plugin.gui_open
+                    ? token.colorSuccess
+                    : token.colorPrimary,
+                }}
+              />
               <Tooltip title="Rename">
                 <EditOutlined
                   style={{ fontSize: 12, color: token.colorTextQuaternary, cursor: 'pointer', flexShrink: 0 }}
-                  onClick={() => { setEditName(plugin.name); setIsRenaming(true); }}
+                  onClick={() => {
+                    if (isControlLocked) return;
+                    setEditName(plugin.name);
+                    setIsRenaming(true);
+                  }}
                 />
               </Tooltip>
             </>
@@ -217,7 +251,7 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
 
         {/* ── Meta tags ───────────────────────────────────────────── */}
         <Space size={4} wrap style={{ lineHeight: 1 }}>
-          <Tag color={getFormatColor(plugin.format)} style={{ fontSize: 10, margin: 0 }}>
+          <Tag color={getFormatColor(plugin.format)} style={{ fontSize: 10, margin: 0, fontWeight: 600 }}>
             {plugin.format.toUpperCase()}
           </Tag>
           {plugin.manufacture && (
@@ -239,17 +273,30 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
 
         {/* ── Crash status ────────────────────────────────────────── */}
         {isCrashed && (
-          <Tag
-            icon={<WarningOutlined />}
-            color={crashStatus.type === 'Crashed' ? 'error' : 'warning'}
-            style={{ fontSize: 10 }}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              borderRadius: 6,
+              padding: '6px 8px',
+              fontSize: 11,
+              color: token.colorErrorText,
+              background: token.colorErrorBg,
+              border: `1px solid ${token.colorErrorBorder}`,
+            }}
           >
-            {crashStatus.type === 'Timeout' ? 'TIMEOUT' : `${crashStatus.type}: ${crashStatus.data ?? ''}`}
-          </Tag>
+            <WarningOutlined />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {effectiveCrashStatus.type === 'Timeout'
+                ? 'TIMEOUT'
+                : `${effectiveCrashStatus.type}: ${effectiveCrashStatus.data ?? ''}`}
+            </span>
+          </div>
         )}
 
         {/* ── Action Buttons ──────────────────────────────────────── */}
-        <Space style={{ width: '100%' }} size="small">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, width: '100%' }}>
           {isCrashed && (
             <Tooltip title="Reset Crash Protection">
               <Button
@@ -257,7 +304,8 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
                 icon={<ReloadOutlined />}
                 onClick={handleResetCrash}
                 loading={checkingStatus}
-                style={{ flex: 1 }}
+                disabled={interactionLocked}
+                style={{ gridColumn: '1 / span 3' }}
               >
                 Reset
               </Button>
@@ -271,12 +319,12 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
               icon={<PoweroffOutlined />}
               onClick={onToggleBypass}
               style={{
-                flex: 1,
+                width: '100%',
                 ...(plugin.bypassed
                   ? { background: 'transparent', borderColor: token.colorBorder, color: token.colorTextSecondary }
                   : { background: token.colorSuccess, borderColor: token.colorSuccess, color: '#fff' }),
               }}
-              disabled={isCrashed}
+              disabled={isCrashed || isControlLocked}
             >
               {plugin.bypassed ? 'Bypassed' : 'Active'}
             </Button>
@@ -288,9 +336,9 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
               size="small"
               icon={launchButtonProps.icon}
               onClick={launchButtonProps.onClick}
-              disabled={isCrashed || isLaunching}
+              disabled={isCrashed || isControlLocked}
               style={{
-                flex: 1,
+                width: '100%',
                 color: plugin.gui_open ? token.colorSuccess : undefined,
                 borderColor: plugin.gui_open ? token.colorSuccess : undefined,
               }}
@@ -306,32 +354,40 @@ export default function PluginCard({ plugin, onRemove, onToggleBypass, onLaunch 
               size="small"
               icon={<CloseOutlined />}
               onClick={onRemove}
+              disabled={isControlLocked}
+              style={{ minWidth: 34 }}
             />
           </Tooltip>
-        </Space>
+        </div>
       </Space>
     </Card>
 
-    {plugin.format === 'builtin' && plugin.plugin_id === 'builtin::noise_suppressor' && (
-      <NoiseSuppressorGui
-        plugin={plugin}
-        isOpen={showBuiltinGui}
-        onClose={() => setShowBuiltinGui(false)}
-      />
+    {showBuiltinGui && plugin.format === 'builtin' && plugin.plugin_id === 'builtin::noise_suppressor' && (
+      <Suspense fallback={null}>
+        <NoiseSuppressorGui
+          plugin={plugin}
+          isOpen={showBuiltinGui}
+          onClose={() => setShowBuiltinGui(false)}
+        />
+      </Suspense>
     )}
-    {plugin.format === 'builtin' && plugin.plugin_id === 'builtin::compressor' && (
-      <CompressorGui
-        plugin={plugin}
-        isOpen={showBuiltinGui}
-        onClose={() => setShowBuiltinGui(false)}
-      />
+    {showBuiltinGui && plugin.format === 'builtin' && plugin.plugin_id === 'builtin::compressor' && (
+      <Suspense fallback={null}>
+        <CompressorGui
+          plugin={plugin}
+          isOpen={showBuiltinGui}
+          onClose={() => setShowBuiltinGui(false)}
+        />
+      </Suspense>
     )}
-    {plugin.format === 'builtin' && plugin.plugin_id === 'builtin::voice' && (
-      <VoiceGui
-        plugin={plugin}
-        isOpen={showBuiltinGui}
-        onClose={() => setShowBuiltinGui(false)}
-      />
+    {showBuiltinGui && plugin.format === 'builtin' && plugin.plugin_id === 'builtin::voice' && (
+      <Suspense fallback={null}>
+        <VoiceGui
+          plugin={plugin}
+          isOpen={showBuiltinGui}
+          onClose={() => setShowBuiltinGui(false)}
+        />
+      </Suspense>
     )}
   </>
   );

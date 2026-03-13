@@ -39,7 +39,7 @@ mod win {
     // ──────────────────────────────────────────────────────────────────
     thread_local! {
         /// COM initialized on this thread with MULTITHREADED apartment
-        static COM_INITIALIZED: std::cell::RefCell<bool> = std::cell::RefCell::new(false);
+        static COM_INITIALIZED: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
     }
 
     // Milliseconds since UNIX_EPOCH; 0 means no global block.
@@ -243,7 +243,7 @@ mod win {
             let mut component_ptr: *mut IComponent = ptr::null_mut();
             let result = unsafe {
                 factory.createInstance(
-                    cid.as_ptr() as *const i8,
+                    cid.as_ptr(),
                     IComponent::IID.as_ptr() as *const i8,
                     &mut component_ptr as *mut _ as *mut _,
                 )
@@ -259,7 +259,7 @@ mod win {
                 let mut raw_ptr: *mut vst3::Steinberg::FUnknown = ptr::null_mut();
                 let r2 = unsafe {
                     factory.createInstance(
-                        cid.as_ptr() as *const i8,
+                        cid.as_ptr(),
                         vst3::Steinberg::FUnknown::IID.as_ptr() as *const i8,
                         &mut raw_ptr as *mut _ as *mut _,
                     )
@@ -282,14 +282,14 @@ mod win {
             // Initialize, activate all buses (audio + event)
             unsafe {
                 component.initialize(ptr::null_mut());
-                let ai = component.getBusCount(kAudio as i32, kInput as i32);
-                let ao = component.getBusCount(kAudio as i32, kOutput as i32);
-                let ei = component.getBusCount(kEvent as i32, kInput as i32);
-                let eo = component.getBusCount(kEvent as i32, kOutput as i32);
-                for i in 0..ai { component.activateBus(kAudio as i32, kInput as i32,  i, 1); }
-                for i in 0..ao { component.activateBus(kAudio as i32, kOutput as i32, i, 1); }
-                for i in 0..ei { component.activateBus(kEvent as i32, kInput as i32,  i, 1); }
-                for i in 0..eo { component.activateBus(kEvent as i32, kOutput as i32, i, 1); }
+                let ai = component.getBusCount(kAudio, kInput);
+                let ao = component.getBusCount(kAudio, kOutput);
+                let ei = component.getBusCount(kEvent, kInput);
+                let eo = component.getBusCount(kEvent, kOutput);
+                for i in 0..ai { component.activateBus(kAudio, kInput,  i, 1); }
+                for i in 0..ao { component.activateBus(kAudio, kOutput, i, 1); }
+                for i in 0..ei { component.activateBus(kEvent, kInput,  i, 1); }
+                for i in 0..eo { component.activateBus(kEvent, kOutput, i, 1); }
             }
 
             // QueryInterface  IAudioProcessor
@@ -308,8 +308,8 @@ mod win {
 
             // Setup processing
             let mut setup = ProcessSetup {
-                processMode:        kRealtime as i32,
-                symbolicSampleSize: kSample32 as i32,
+                processMode:        kRealtime,
+                symbolicSampleSize: kSample32,
                 maxSamplesPerBlock: block_size as i32,
                 sampleRate:         sample_rate,
             };
@@ -344,7 +344,7 @@ mod win {
                         let mut ec_ptr: *mut IEditController = ptr::null_mut();
                         let r = unsafe {
                             factory.createInstance(
-                                ctrl_cid.as_ptr() as *const i8,
+                                ctrl_cid.as_ptr(),
                                 IEditController::IID.as_ptr() as *const i8,
                                 &mut ec_ptr as *mut _ as *mut _,
                             )
@@ -428,8 +428,8 @@ mod win {
                 },
             };
             let mut pd = ProcessData {
-                processMode: kRealtime as i32,
-                symbolicSampleSize: kSample32 as i32,
+                processMode: kRealtime,
+                symbolicSampleSize: kSample32,
                 numSamples: n as i32,
                 numInputs: 1,
                 numOutputs: 1,

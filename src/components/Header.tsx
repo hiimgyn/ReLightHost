@@ -22,7 +22,15 @@ import AppSettings from './AppSettings';
 export default function Header() {
   const { theme: appTheme, toggleTheme } = useThemeStore();
   const { token } = theme.useToken();
-  const { status, isMuted, setMuted, isLoopbackEnabled, setLoopback } = useAudioStore();
+  const {
+    status,
+    isMuted,
+    setMuted,
+    isLoopbackEnabled,
+    setLoopback,
+    applyExternalMuteState,
+    applyExternalLoopbackState,
+  } = useAudioStore();
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
   const [appVersion, setAppVersion] = useState('');
@@ -34,8 +42,8 @@ export default function Header() {
   // Listen for tray context-menu events
   useEffect(() => {
     const unlistens = [
-      listen<boolean>('tray-mute-changed',     (e) => setMuted(e.payload)),
-      listen<boolean>('tray-loopback-changed', (e) => setLoopback(e.payload)),
+      listen<boolean>('tray-mute-changed',     (e) => applyExternalMuteState(e.payload)),
+      listen<boolean>('tray-loopback-changed', (e) => applyExternalLoopbackState(e.payload)),
       listen('tray-open-audio-settings',       ()  => setShowAudioSettings(true)),
       listen('tray-open-app-settings',         ()  => setShowAppSettings(true)),
     ];

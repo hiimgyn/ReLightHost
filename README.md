@@ -6,7 +6,7 @@
 
 *Designed for musicians and audio engineers who need low-latency, multi-format plugin processing with a clean, native-feeling UI.*
 
-[![Version](https://img.shields.io/badge/version-1.3.0-9b72cf?style=for-the-badge)](https://github.com)
+[![Version](https://img.shields.io/badge/version-1.4.1-9b72cf?style=for-the-badge)](https://github.com)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0d7adf?style=for-the-badge)](https://github.com)
 [![Rust](https://img.shields.io/badge/rust-1.77%2B-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Tauri](https://img.shields.io/badge/tauri-2.x-24c8db?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app)
@@ -37,9 +37,10 @@ Three built-in processors — **Compressor**, **RNNoise Noise Suppressor**, and 
 | 💾 | **Preset management** | Save/load named chains (params + VST3 binary state) |
 | 🔄 | **Auto-save session** | Plugin chain and audio config restored on every launch |
 | 🖱 | **System tray** | Minimize to tray, mute toggle, quick-access menu |
-| 🚀 | **Run on startup** | Optional Windows startup registry entry |
+| 🚀 | **Run on startup** | Optional Windows startup registry entry (show window or start hidden) |
 | 🌗 | **Dark / Light theme** | Persistent theme toggle |
-| 🛡 | **Crash isolation** | A panicking plugin is caught and bypassed; the host keeps running |
+| 🛡 | **Crash isolation + cooldown recovery** | Crash is isolated, audio kept alive, then auto-recovery is attempted safely |
+| 📦 | **Frontend code-splitting** | Heavy modals and plugin UIs are lazy-loaded to reduce initial bundle cost |
 
 ---
 
@@ -103,6 +104,15 @@ Three built-in processors — **Compressor**, **RNNoise Noise Suppressor**, and 
 ```powershell
 pnpm install
 pnpm tauri dev
+```
+
+Optional quality gates:
+
+```powershell
+pnpm build
+cd src-tauri
+cargo check
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 ### Production Build
@@ -174,7 +184,8 @@ C:\Program Files\Common Files\CLAP
 
 All external plugins are wrapped with `catch_unwind`. If a plugin panics:
 - The crash is logged with full details
-- That instance switches to **pass-through mode** (audio is unchanged)
+- That instance switches to **temporary silence/pass-through protection mode**
+- The host attempts **cooldown-based auto recovery** to avoid crash loops
 - The rest of the chain continues processing normally
 
 ---
@@ -328,7 +339,7 @@ Stored as JSON in the platform app-data directory:
 
 | OS | Location |
 |---|---|
-| Windows | `%APPDATA%\ReLightHost\presets\` |
+| Windows | `%LOCALAPPDATA%\ReLightHost\presets\` |
 | macOS / Linux | `~/.config/ReLightHost/presets/` |
 
 <details>
@@ -357,7 +368,7 @@ Stored as JSON in the platform app-data directory:
 
 ### Auto-save
 
-Every structural change to the plugin chain (add, remove, reorder, bypass toggle) auto-saves to an `__autosave__` preset. The chain is silently restored on the next launch.
+Every structural change to the plugin chain (add, remove, reorder, bypass toggle, rename) auto-saves to an `__autosave__` preset. The chain is silently restored on the next launch.
 
 ### Session Restore Sequence
 
@@ -367,7 +378,17 @@ Every structural change to the plugin chain (add, remove, reorder, bypass toggle
 3. Plugin chain                      ← __autosave__ preset
 4. Audio stream started
    └─ Voicemeeter ASIO: 2 s delay to let Voicemeeter finish its startup
+  └─ VST3 safety window may defer start a bit longer during restore
 5. Frontend stores sync from restored backend state
+
+### Startup Visibility
+
+In **Application Settings**, you can choose:
+
+- **Run on startup**: register/unregister Windows Run key
+- **Show app window on startup**:
+  - ON: normal launch and show main window
+  - OFF: launch with `--start-hidden` and stay in tray until opened
 ```
 
 ### VB-Cable / Voicemeeter

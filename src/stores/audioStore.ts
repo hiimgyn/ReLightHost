@@ -29,6 +29,8 @@ interface AudioStore {
   setBufferSize: (size: number) => Promise<void>;
   setMuted: (muted: boolean) => Promise<void>;
   setLoopback: (enabled: boolean) => Promise<void>;
+  applyExternalMuteState: (muted: boolean) => void;
+  applyExternalLoopbackState: (enabled: boolean) => void;
 }
 
 export const useAudioStore = create<AudioStore>((set, get) => ({
@@ -189,5 +191,13 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       set({ isLoopbackEnabled: !enabled }); // revert on error
       throw error;
     }
+  },
+
+  applyExternalMuteState: (muted: boolean) => {
+    set({ isMuted: muted });
+  },
+
+  applyExternalLoopbackState: (enabled: boolean) => {
+    set({ isLoopbackEnabled: enabled });
   },
 }));

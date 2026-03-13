@@ -95,6 +95,16 @@ export type PluginStatus =
   | { type: 'Timeout'; data: { secs: number; nanos: number } }
   | { type: 'Error'; data: string };
 
+export interface PluginCrashStatusItem {
+  instance_id: string;
+  status: PluginStatus;
+}
+
+export interface PluginChainChangedEvent {
+  reason: string;
+  instance_id: string | null;
+}
+
 // VU Meter Types
 export interface VUChannel {
   peak: number;       // 0.0 - 1.0

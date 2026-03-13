@@ -2,8 +2,8 @@
 import * as tauri from '../lib/tauri';
 import type { VUData } from '../lib/types';
 
-function toDb(v: number) { return v <= 0.01 ? -40 : Math.min(0, Math.max(20 * Math.log10(v), -40)); }
-function toFrac(db: number) { return Math.min(1, Math.max(0, (db + 40) / 40)); }
+function toDb(v: number) { return v <= 0.0031623 ? -50 : Math.min(0, Math.max(20 * Math.log10(v), -50)); }
+function toFrac(db: number) { return Math.min(1, Math.max(0, (db + 50) / 50)); }
 
 const BAR_GRAD = 'linear-gradient(to right, #9b72cf 0%, #b08ee0 45%, #e478a8 75%, #ff4d4f 100%)';
 const BAR_GRAD_CLIP = 'linear-gradient(to right, #f97316 0%, #ef4444 60%, #ff4d4f 100%)';
@@ -58,20 +58,35 @@ export function VUMeter({ updateInterval = 50, isDark = true }: { updateInterval
   const [clipR, setClipR] = useState(false);
   const timerL = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timerR = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlight = useRef(false);
 
   useEffect(() => {
     const poll = async () => {
+      if (document.visibilityState !== 'visible') return;
+      if (inFlight.current) return;
+      inFlight.current = true;
       try {
         const d = await tauri.getVUData();
         setVu(d);
         if (d.left.peak  > 0.989) { setClipL(true); if (timerL.current) clearTimeout(timerL.current); timerL.current = setTimeout(() => setClipL(false), 1500); }
         if (d.right.peak > 0.989) { setClipR(true); if (timerR.current) clearTimeout(timerR.current); timerR.current = setTimeout(() => setClipR(false), 1500); }
       } catch { /* not started */ }
+      finally {
+        inFlight.current = false;
+      }
     };
+
     poll();
     const id = setInterval(poll, updateInterval);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        poll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
       if (timerL.current) clearTimeout(timerL.current);
       if (timerR.current) clearTimeout(timerR.current);
     };
@@ -87,8 +102,9 @@ export function VUMeter({ updateInterval = 50, isDark = true }: { updateInterval
     <div style={{
       display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6,
       padding: '3px 10px',
-      minWidth: 320,
-      width: 420,
+      width: '100%',
+      maxWidth: 'clamp(240px, 42vw, 760px)',
+      minWidth: 0,
     }}>
       {/* L channel */}
       <span style={labelCss}>L</span>

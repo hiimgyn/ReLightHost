@@ -22,8 +22,25 @@ function AppShell({ children, isDark }: { children: ReactNode; isDark: boolean }
   const { pluginChain } = usePluginStore();
 
   useEffect(() => {
-    const id = setInterval(fetchStatus, 2000);
-    return () => clearInterval(id);
+    const poll = () => {
+      if (document.visibilityState === 'visible') {
+        fetchStatus();
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        fetchStatus();
+      }
+    };
+
+    poll();
+    const id = setInterval(poll, 2000);
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [fetchStatus]);
 
   return (
@@ -60,7 +77,7 @@ export default function Layout({ children }: LayoutProps) {
         algorithm: isDark ? antTheme.darkAlgorithm : antTheme.defaultAlgorithm,
         token: {
           colorPrimary: '#9b72cf',
-          colorInfo: '#9b72cf',
+          colorInfo: '#1890ff',
           borderRadius: 8,
           fontFamily:
             'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
@@ -143,14 +160,24 @@ function Footer({ status, pluginCount, isDark }: {
 
   useEffect(() => {
     const poll = async () => {
+      if (document.visibilityState !== 'visible') return;
       try {
         const s = await getSystemStats();
         setSys(s);
       } catch { /* backend not ready yet */ }
     };
     poll();
-    const id = setInterval(poll, 1000);
-    return () => clearInterval(id);
+    const id = setInterval(poll, 2000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        poll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   const cpuColor = sys.cpu_percent > 80 ? '#ff4d4f' : sys.cpu_percent > 50 ? '#faad14' : '#52c41a';
@@ -167,12 +194,12 @@ function Footer({ status, pluginCount, isDark }: {
         flexShrink: 0,
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
+        gap: 12,
         height: 28,
       }}
     >
       {/* Left: audio engine info */}
-      <Space size={0}>
+      <Space size={0} style={{ flex: 1, minWidth: 0 }}>
         <Text style={{ fontSize: 11, color: token.colorTextTertiary }}>
           {(status.sample_rate / 1000).toFixed(1)} kHz
         </Text>
@@ -191,9 +218,21 @@ function Footer({ status, pluginCount, isDark }: {
       </Space>
 
       {/* Center: VU Meter */}
-      <VUMeter isDark={isDark} />
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          pointerEvents: 'none',
+        }}
+      >
+        <VUMeter isDark={isDark} />
+      </div>
 
       {/* Right: real-time system meters */}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'flex-end' }}>
       <Space size={0}>
         {/* CPU meter */}
         <Tooltip title={`CPU: ${sys.cpu_percent.toFixed(1)}% (app)`}>
@@ -222,9 +261,10 @@ function Footer({ status, pluginCount, isDark }: {
         </Tooltip>
         {sep}
         <Text style={{ fontSize: 11, color: token.colorTextSecondary }}>
-          ReLightHost · Made by <HeartFilled style={{ color: '#ff4d4f', fontSize: 10 }} /> Gyn
+          <HeartFilled style={{ color: '#ff4d4f', fontSize: 10 }} /> HiimGyn
         </Text>
       </Space>
+      </div>
     </footer>
   );
 }

@@ -13,7 +13,6 @@
 ///
 /// Topology: feed-forward peak detector → soft-knee gain computer →
 /// asymmetric envelope follower → makeup gain → parallel wet/dry blend.
-
 use super::BuiltinProcessor;
 
 pub const ID: &str = "builtin::compressor";

@@ -2,7 +2,6 @@
 ///
 /// Each built-in implements `BuiltinProcessor` and is identified by a stable
 /// string ID stored as `PluginInfo::path` so it survives presets and sessions.
-
 pub mod noise_suppressor;
 pub mod compressor;
 pub mod voice;

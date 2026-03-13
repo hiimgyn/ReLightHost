@@ -2,6 +2,7 @@ mod audio;
 mod plugins;
 mod preset;
 mod config;
+mod app_events;
 
 use parking_lot::RwLock;
 use std::collections::hash_map::DefaultHasher;
@@ -256,6 +257,7 @@ fn load_plugin(state: tauri::State<AppState>, plugin_info: PluginInfo) -> Result
         .load_plugin(plugin_info, config.sample_rate as f64, config.buffer_size as usize)
         .map_err(|e| format!("Failed to load plugin: {}", e))?;
     auto_save_plugin_chain(&state);
+    crate::app_events::emit_plugin_chain_changed("load", Some(&instance_id));
     Ok(instance_id)
 }
 
@@ -266,6 +268,7 @@ fn remove_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(
         .remove_instance(&instance_id)
         .map_err(|e| format!("Failed to remove plugin: {}", e))?;
     auto_save_plugin_chain(&state);
+    crate::app_events::emit_plugin_chain_changed("remove", Some(&instance_id));
     Ok(())
 }
 
@@ -285,6 +288,7 @@ fn set_plugin_bypass(state: tauri::State<AppState>, instance_id: String, bypasse
         }
     }
     auto_save_plugin_chain(&state);
+    crate::app_events::emit_plugin_chain_changed("bypass", Some(&instance_id));
     Ok(())
 }
 
@@ -310,6 +314,7 @@ fn rename_plugin(state: tauri::State<AppState>, instance_id: String, new_name: S
         }
     }
     auto_save_plugin_chain(&state);
+    crate::app_events::emit_plugin_chain_changed("rename", Some(&instance_id));
     Ok(())
 }
 
@@ -320,6 +325,7 @@ fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to_ind
         .reorder(from_index, to_index)
         .map_err(|e| format!("Failed to reorder plugin chain: {}", e))?;
     auto_save_plugin_chain(&state);
+    crate::app_events::emit_plugin_chain_changed("reorder", None);
     Ok(())
 }
 
@@ -338,42 +344,44 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
     // Reload plugins from preset
     let config = state.audio_manager.read().get_config();
     for plugin_preset in preset.plugin_chain {
-        if plugin_preset.plugin_path.is_some() && plugin_preset.plugin_format.is_some() {
-            let plugin_info = PluginInfo {
-                id: plugin_preset.plugin_id.clone(),
-                name: plugin_preset.plugin_name.clone(),
-                vendor: plugin_preset.plugin_vendor.clone().unwrap_or_default(),
-                version: plugin_preset.plugin_version.clone().unwrap_or_default(),
-                path: plugin_preset.plugin_path.clone().unwrap(),
-                format: plugin_preset.plugin_format.unwrap(),
-                category: plugin_preset.plugin_category.clone().unwrap_or_default(),
-            };
+        let (Some(path), Some(format)) = (plugin_preset.plugin_path, plugin_preset.plugin_format) else {
+            continue;
+        };
+        let plugin_info = PluginInfo {
+            id: plugin_preset.plugin_id.clone(),
+            name: plugin_preset.plugin_name.clone(),
+            vendor: plugin_preset.plugin_vendor.unwrap_or_default(),
+            version: plugin_preset.plugin_version.unwrap_or_default(),
+            path,
+            format,
+            category: plugin_preset.plugin_category.unwrap_or_default(),
+        };
 
-            if let Ok(instance_id) = state.plugin_manager.read().load_plugin(
-                plugin_info,
-                config.sample_rate as f64,
-                config.buffer_size as usize,
-            ) {
-                if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
-                    instance.set_bypassed(plugin_preset.bypassed);
-                    
-                    // Restore VST3 binary state first (contains internal plugin data)
-                    if let Some(ref vst3_state) = plugin_preset.vst3_state {
-                        log::debug!("🔄 Restoring VST3 state for '{}' ({} bytes)", 
-                            plugin_preset.plugin_name, vst3_state.len());
-                        instance.set_state_binary(vst3_state);
-                    }
-                    
-                    // Then apply parameter values (may override some state)
-                    for p in plugin_preset.parameters {
-                        instance.set_parameter(p.id, p.value);
-                    }
+        if let Ok(instance_id) = state.plugin_manager.read().load_plugin(
+            plugin_info,
+            config.sample_rate as f64,
+            config.buffer_size as usize,
+        ) {
+            if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
+                instance.set_bypassed(plugin_preset.bypassed);
+
+                // Restore VST3 binary state first (contains internal plugin data)
+                if let Some(ref vst3_state) = plugin_preset.vst3_state {
+                    log::debug!("🔄 Restoring VST3 state for '{}' ({} bytes)", 
+                        plugin_preset.plugin_name, vst3_state.len());
+                    instance.set_state_binary(vst3_state);
+                }
+
+                // Then apply parameter values (may override some state)
+                for p in plugin_preset.parameters {
+                    instance.set_parameter(p.id, p.value);
                 }
             }
         }
     }
 
     log::info!("✅ Applied preset: {}", name);
+    crate::app_events::emit_plugin_chain_changed("apply_preset", None);
     Ok(())
 }
 
@@ -383,10 +391,28 @@ fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(
     if let Some(instance) = manager.get_instance(&instance_id) {
         // Use the existing VST3 processor's GUI instead of loading a new instance
         instance.open_gui()
-            .map_err(|e| format!("Failed to open plugin GUI: {}", e))
+            .map_err(|e| format!("Failed to open plugin GUI: {}", e))?;
+        crate::app_events::emit_plugin_chain_changed("gui_open", Some(&instance_id));
+        Ok(())
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
     }
+}
+
+#[derive(serde::Serialize)]
+struct PluginCrashStatusItem {
+    instance_id: String,
+    status: plugins::PluginStatus,
+}
+
+#[tauri::command]
+fn get_plugin_crash_statuses(state: tauri::State<AppState>) -> Result<Vec<PluginCrashStatusItem>, String> {
+    let manager = state.plugin_manager.read();
+    Ok(manager
+        .get_crash_statuses()
+        .into_iter()
+        .map(|(instance_id, status)| PluginCrashStatusItem { instance_id, status })
+        .collect())
 }
 
 /// Return the current voice-activity probability (0.0–1.0) from the built-in
@@ -521,6 +547,27 @@ fn set_minimize_to_tray(state: tauri::State<AppState>, enabled: bool) -> Result<
         .map_err(|e| format!("Failed to save minimize_to_tray: {}", e))
 }
 
+#[tauri::command]
+fn get_show_app_on_startup(state: tauri::State<AppState>) -> bool {
+    state.config_manager.read().get_show_app_on_startup()
+}
+
+#[tauri::command]
+fn set_show_app_on_startup(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+    state.config_manager
+        .read()
+        .set_show_app_on_startup(enabled)
+        .map_err(|e| format!("Failed to save show_app_on_startup: {}", e))?;
+
+    // If startup is already enabled, rewrite the Run key immediately so the
+    // next OS login uses the new visibility mode.
+    if is_startup_enabled().unwrap_or(false) {
+        toggle_startup(true, state)?;
+    }
+
+    Ok(())
+}
+
 // Startup Commands
 
 #[tauri::command]
@@ -529,7 +576,7 @@ fn is_startup_enabled() -> Result<bool, String> {
     {
         use std::process::Command;
         let output = Command::new("reg")
-            .args(&[
+            .args([
                 "query",
                 "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                 "/v",
@@ -550,7 +597,7 @@ fn is_startup_enabled() -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn toggle_startup(enable: bool) -> Result<(), String> {
+fn toggle_startup(enable: bool, state: tauri::State<AppState>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
@@ -559,9 +606,15 @@ fn toggle_startup(enable: bool) -> Result<(), String> {
         if enable {
             let exe_path = env::current_exe()
                 .map_err(|e| format!("Failed to get exe path: {}", e))?;
+            let show_on_startup = state.config_manager.read().get_show_app_on_startup();
+            let launch_cmd = if show_on_startup {
+                format!("\"{}\"", exe_path.display())
+            } else {
+                format!("\"{}\" --start-hidden", exe_path.display())
+            };
             
             let output = Command::new("reg")
-                .args(&[
+                .args([
                     "add",
                     "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                     "/v",
@@ -569,7 +622,7 @@ fn toggle_startup(enable: bool) -> Result<(), String> {
                     "/t",
                     "REG_SZ",
                     "/d",
-                    &format!("\"{}\"", exe_path.display()),
+                    &launch_cmd,
                     "/f",
                 ])
                 .output()
@@ -580,7 +633,7 @@ fn toggle_startup(enable: bool) -> Result<(), String> {
             }
         } else {
             let output = Command::new("reg")
-                .args(&[
+                .args([
                     "delete",
                     "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                     "/v",
@@ -602,7 +655,7 @@ fn toggle_startup(enable: bool) -> Result<(), String> {
     {
         // For macOS and Linux, we'd create/remove LaunchAgents or autostart files
         // For now, return Ok as a placeholder
-        let _ = enable;
+        let _ = (enable, state);
         Ok(())
     }
 }
@@ -727,6 +780,7 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
     ).is_err() {
         log::info!("restore_session: already restored, skipping duplicate call");
         let plugins_restored = state.plugin_manager.read().get_instances().len();
+        crate::app_events::emit_plugin_chain_changed("restore_session_skip", None);
         return Ok(SessionRestoreResult {
             audio_restored: state.audio_manager.read().get_status().is_monitoring,
             plugins_restored,
@@ -762,45 +816,47 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
             state.plugin_manager.read().clear();
 
             for plugin_preset in &preset.plugin_chain {
-                if plugin_preset.plugin_path.is_some() && plugin_preset.plugin_format.is_some() {
-                    let plugin_info = PluginInfo {
-                        id:       plugin_preset.plugin_id.clone(),
-                        name:     plugin_preset.plugin_name.clone(),
-                        vendor:   plugin_preset.plugin_vendor.clone().unwrap_or_default(),
-                        version:  plugin_preset.plugin_version.clone().unwrap_or_default(),
-                        path:     plugin_preset.plugin_path.clone().unwrap(),
-                        format:   plugin_preset.plugin_format.clone().unwrap(),
-                        category: plugin_preset.plugin_category.clone().unwrap_or_default(),
-                    };
+                let (Some(path), Some(format)) =
+                    (plugin_preset.plugin_path.as_ref(), plugin_preset.plugin_format)
+                else {
+                    continue;
+                };
+                let plugin_info = PluginInfo {
+                    id:       plugin_preset.plugin_id.clone(),
+                    name:     plugin_preset.plugin_name.clone(),
+                    vendor:   plugin_preset.plugin_vendor.clone().unwrap_or_default(),
+                    version:  plugin_preset.plugin_version.clone().unwrap_or_default(),
+                    path:     path.clone(),
+                    format,
+                    category: plugin_preset.plugin_category.clone().unwrap_or_default(),
+                };
 
-                    if let Ok(instance_id) = state.plugin_manager.read().load_plugin(
-                        plugin_info,
-                        config.sample_rate as f64,
-                        config.buffer_size as usize,
-                    ) {
-                        let restoring_vst3 = plugin_preset.plugin_format
-                            == Some(crate::plugins::types::PluginFormat::VST3);
-                        if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
-                            instance.set_bypassed(plugin_preset.bypassed);
-                            if restoring_vst3 {
-                                // Startup-safe mode for fragile VST3 plugins:
-                                // defer state/parameter replay to avoid heap corruption
-                                // during immediate post-load initialization.
-                                log::warn!(
-                                    "Skipping startup state replay for VST3 '{}' to improve launch stability",
-                                    plugin_preset.plugin_name
-                                );
-                            } else {
-                                if let Some(ref vst3_state) = plugin_preset.vst3_state {
-                                    instance.set_state_binary(vst3_state);
-                                }
-                                for p in &plugin_preset.parameters {
-                                    instance.set_parameter(p.id, p.value);
-                                }
+                if let Ok(instance_id) = state.plugin_manager.read().load_plugin(
+                    plugin_info,
+                    config.sample_rate as f64,
+                    config.buffer_size as usize,
+                ) {
+                    let restoring_vst3 = format == crate::plugins::types::PluginFormat::VST3;
+                    if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
+                        instance.set_bypassed(plugin_preset.bypassed);
+                        if restoring_vst3 {
+                            // Startup-safe mode for fragile VST3 plugins:
+                            // defer state/parameter replay to avoid heap corruption
+                            // during immediate post-load initialization.
+                            log::warn!(
+                                "Skipping startup state replay for VST3 '{}' to improve launch stability",
+                                plugin_preset.plugin_name
+                            );
+                        } else {
+                            if let Some(ref vst3_state) = plugin_preset.vst3_state {
+                                instance.set_state_binary(vst3_state);
+                            }
+                            for p in &plugin_preset.parameters {
+                                instance.set_parameter(p.id, p.value);
                             }
                         }
-                        plugins_restored += 1;
                     }
+                    plugins_restored += 1;
                 }
             }
 
@@ -879,6 +935,9 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
             );
         }
     }
+
+    // Notify frontend that startup restore finished and chain snapshot is ready.
+    crate::app_events::emit_plugin_chain_changed("restore_session", None);
 
     Ok(SessionRestoreResult { audio_restored, plugins_restored, needs_deferred_start })
 }
@@ -978,6 +1037,8 @@ pub fn run() {
             safe_start_deadline: Arc::new(RwLock::new(None)),
         })
         .setup(|app| {
+            crate::app_events::init_app_handle(app.handle().clone());
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -1108,6 +1169,7 @@ pub fn run() {
             const MIN_H: f64 = 520.0;
 
             if let Some(window) = app.get_webview_window("main") {
+                let start_hidden = std::env::args().any(|arg| arg == "--start-hidden");
                 if let Ok(Some(monitor)) = window.primary_monitor() {
                     let monitor: tauri::Monitor = monitor;
                     let scale: f64 = monitor.scale_factor();
@@ -1128,6 +1190,10 @@ pub fn run() {
                     win_h = win_h.max(MIN_H);
 
                     let _ = window.set_size(tauri::LogicalSize::new(win_w, win_h));
+                }
+
+                if start_hidden {
+                    let _ = window.hide();
                 }
             }
 
@@ -1167,11 +1233,14 @@ pub fn run() {
             remove_custom_scan_path,
             get_minimize_to_tray,
             set_minimize_to_tray,
+            get_show_app_on_startup,
+            set_show_app_on_startup,
             is_startup_enabled,
             toggle_startup,
             launch_plugin,
             get_system_stats,
             get_plugin_crash_status,
+            get_plugin_crash_statuses,
             reset_plugin_crash_protection,
             get_noise_suppressor_vad,
             restore_session,

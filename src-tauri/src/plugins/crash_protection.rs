@@ -49,6 +49,31 @@ impl CrashProtection {
         matches!(self.status, PluginStatus::Ok)
     }
 
+    /// Attempt automatic recovery after a crash with cooldown/rate limiting.
+    /// Returns true when recovery succeeded and processing may resume.
+    pub fn try_auto_recover(&mut self) -> bool {
+        // Do not enter an infinite crash loop for unstable plugins.
+        if !self.should_auto_restart() {
+            return false;
+        }
+
+        // Give plugin internals time to settle before re-enabling processing.
+        const RECOVERY_COOLDOWN: Duration = Duration::from_secs(2);
+        if let Some(last_crash) = self.last_crash_time {
+            if last_crash.elapsed() < RECOVERY_COOLDOWN {
+                return false;
+            }
+        }
+
+        if !self.is_healthy() {
+            log::warn!("Attempting automatic plugin recovery after crash");
+            self.status = PluginStatus::Ok;
+            return true;
+        }
+
+        true
+    }
+
     #[allow(dead_code)]
     pub fn should_auto_restart(&self) -> bool {
         // Auto-restart if crashed less than 3 times
@@ -138,5 +163,19 @@ mod tests {
         
         protection.mark_crashed("Crash 3".to_string());
         assert!(!protection.should_auto_restart()); // Too many crashes
+    }
+
+    #[test]
+    fn test_auto_recover_after_cooldown() {
+        let mut protection = CrashProtection::new();
+        protection.mark_crashed("Crash".to_string());
+
+        // Immediate recovery should be blocked by cooldown.
+        assert!(!protection.try_auto_recover());
+
+        // Simulate cooldown elapsed.
+        protection.last_crash_time = Some(Instant::now() - Duration::from_secs(3));
+        assert!(protection.try_auto_recover());
+        assert!(protection.is_healthy());
     }
 }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::panic::AssertUnwindSafe;
+use std::time::{Duration, Instant};
 use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, PluginFormat};
 use crate::plugins::vst3_processor::Vst3Processor;
 use crate::plugins::vst2_processor::Vst2Processor;
@@ -160,6 +161,32 @@ impl PluginInstance {
         *self.bypassed.read()
     }
 
+    fn request_close_gui(&self, timeout: Duration) -> bool {
+        if !self.gui_open.load(Ordering::Acquire) {
+            return true;
+        }
+
+        let mut close_sent = false;
+        let deadline = Instant::now() + timeout;
+        while self.gui_open.load(Ordering::Acquire) && Instant::now() < deadline {
+            if !close_sent {
+                let hwnd = self.gui_hwnd.load(Ordering::Acquire);
+                if hwnd != 0 {
+                    #[cfg(target_os = "windows")]
+                    unsafe {
+                        use windows_sys::Win32::Foundation::HWND;
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+                        PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
+                    }
+                    close_sent = true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        !self.gui_open.load(Ordering::Acquire)
+    }
+
     /// Process a stereo buffer in-place through the VST3 plugin.
     ///
     /// Mirrors LightHost's chain: INPUT → plugin → OUTPUT.
@@ -171,9 +198,9 @@ impl PluginInstance {
         }
         
         // Check if plugin is in crashed state
-        if let Some(protection) = self.crash_protection.try_lock() {
-            if !protection.is_healthy() {
-                // Plugin crashed - fill with silence
+        if let Some(mut protection) = self.crash_protection.try_lock() {
+            if !protection.is_healthy() && !protection.try_auto_recover() {
+                // Plugin crashed - fill with silence until cooldown expires.
                 left.fill(0.0);
                 right.fill(0.0);
                 return;
@@ -486,51 +513,9 @@ impl PluginInstance {
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
-        // Stability-first workaround for problematic VST3 DLL unload/destructor paths:
-        // keep removed VST3 processors alive for process lifetime instead of
-        // running plugin destructor code that can corrupt heap on some plugins
-        // (observed with remove -> re-add sequences).
-        if let Some(proc) = self.vst3_processor.lock().take() {
-            log::warn!(
-                "Leaking VST3 processor for '{}' to avoid runtime heap corruption during unload",
-                self.plugin_info.name
-            );
-            std::mem::forget(proc);
-        }
-
-        // If a GUI is open (or being opened), wait for the GUI thread to release
-        // all COM interface clones before we drop Vst3Processor (which unloads
-        // the DLL).  The GUI thread's CleanupGuard sets gui_open → false only
-        // AFTER releasing its ComPtr clones — so this ordering is safe.
-        if !self.gui_open.load(Ordering::Acquire) {
-            return;
-        }
-
-        // The HWND may not be published yet if we're removed during window
-        // creation startup.  Spin until it appears (or gui_open clears on its
-        // own in case of an early error), then send WM_CLOSE.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        let mut close_sent = false;
-
-        while self.gui_open.load(Ordering::Acquire)
-            && std::time::Instant::now() < deadline
-        {
-            if !close_sent {
-                let hwnd = self.gui_hwnd.load(Ordering::Acquire);
-                if hwnd != 0 {
-                    #[cfg(target_os = "windows")]
-                    unsafe {
-                        use windows_sys::Win32::Foundation::HWND;
-                        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
-                        PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
-                    }
-                    close_sent = true;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-
-        if self.gui_open.load(Ordering::Acquire) {
+        // If GUI teardown gets stuck, leaking processors is safer than dropping
+        // while plugin UI threads may still execute through freed code/vtables.
+        if !self.request_close_gui(Duration::from_secs(3)) {
             log::error!("GUI thread did not release in time; skipping processor teardown to avoid heap corruption");
             // Safety fallback: leaking the processor is better than dropping it
             // while plugin GUI thread is still alive (can trigger heap corruption).
@@ -576,18 +561,18 @@ impl PluginInstanceManager {
 
     /// Remove a plugin instance
     pub fn remove_instance(&self, instance_id: &str) -> Result<()> {
-        // Safety gate: never remove an instance while its GUI is open/opening.
-        // This race (remove + GUI thread teardown) is a known source of
-        // STATUS_HEAP_CORRUPTION with some VST3 plugins.
+        // Proactively close GUI before removal to prevent teardown races.
         if let Some(inst) = self.instances
             .read()
             .iter()
             .find(|i| i.instance_id() == instance_id)
             .cloned()
         {
-            if inst.gui_open.load(Ordering::Acquire) {
+            if inst.gui_open.load(Ordering::Acquire)
+                && !inst.request_close_gui(Duration::from_secs(3))
+            {
                 return Err(anyhow::anyhow!(
-                    "Cannot remove plugin while GUI is open. Please close the plugin window first."
+                    "Cannot remove plugin: GUI did not close in time"
                 ));
             }
         }
@@ -621,6 +606,14 @@ impl PluginInstanceManager {
             .collect()
     }
 
+    pub fn get_crash_statuses(&self) -> Vec<(String, crash_protection::PluginStatus)> {
+        self.instances
+            .read()
+            .iter()
+            .map(|i| (i.instance_id().to_string(), i.get_crash_status()))
+            .collect()
+    }
+
     /// Get specific instance
     pub fn get_instance(&self, instance_id: &str) -> Option<Arc<PluginInstance>> {
         self.instances
@@ -636,9 +629,11 @@ impl PluginInstanceManager {
     ///   INPUT → (non-bypassed) plugin 1 → plugin 2 → … → OUTPUT
     /// Called from the CPAL audio output callback via the process callback.
     pub fn process_chain_stereo(&self, left: &mut [f32], right: &mut [f32]) {
-        let instances = self.instances.read();
-        for instance in instances.iter() {
-            instance.process_stereo(left, right);
+        // Real-time safety: never block audio callback on a contended chain lock.
+        if let Some(instances) = self.instances.try_read() {
+            for instance in instances.iter() {
+                instance.process_stereo(left, right);
+            }
         }
     }
 

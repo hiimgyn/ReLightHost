@@ -274,11 +274,11 @@ impl PluginScanner {
         // For single-file VST3 (.vst3 files that are PE DLLs), try VERSIONINFO
         // resource first (no code execution), then IPluginFactory2 as fallback.
         let (name, vendor, version, category) = if matches!(format, PluginFormat::VST) {
-            let (n, v, ver) = read_vst2_metadata(&path)
+            let (n, v, ver) = read_vst2_metadata(path)
                 .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
             (n, v, ver, "Effect".to_string())
         } else if matches!(format, PluginFormat::CLAP) {
-            let (n, v, ver) = crate::plugins::clap_processor::read_clap_metadata(&path)
+            let (n, v, ver) = crate::plugins::clap_processor::read_clap_metadata(path)
                 .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
             (n, v, ver, "Effect".to_string())
         } else if matches!(format, PluginFormat::VST3) {

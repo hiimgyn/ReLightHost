@@ -56,6 +56,7 @@ pub fn open_clap_gui(
                 fn drop(&mut self) {
                     self.1.store(0, Ordering::Release);
                     self.0.store(false, Ordering::Release);
+                    crate::app_events::emit_plugin_chain_changed("gui_close", None);
                 }
             }
             let _guard = GuiFlagGuard(gui_flag, gui_hwnd.clone());
@@ -97,11 +98,12 @@ mod win {
 
     /// Thread-local HWND (isize) used by WndProc → gui.set_size.
     use std::cell::Cell;
+    type ResizeCallback = Box<dyn Fn(u32, u32)>;
     thread_local! {
-        static TL_HWND: Cell<isize> = Cell::new(0);
+        static TL_HWND: Cell<isize> = const { Cell::new(0) };
         /// Resize callback: (width, height) → gui.set_size.
-        static TL_RESIZE: std::cell::RefCell<Option<Box<dyn Fn(u32, u32)>>> =
-            std::cell::RefCell::new(None);
+        static TL_RESIZE: std::cell::RefCell<Option<ResizeCallback>> =
+            const { std::cell::RefCell::new(None) };
     }
 
     /// Posted to self once the message loop is running, to call gui.show from
@@ -205,8 +207,8 @@ mod win {
                 bottom: plug_h as i32,
             };
             AdjustWindowRect(&mut rect, style, 0);
-            let win_w = (rect.right  - rect.left) as i32;
-            let win_h = (rect.bottom - rect.top)  as i32;
+            let win_w = rect.right  - rect.left;
+            let win_h = rect.bottom - rect.top;
 
             // ── Create host window ────────────────────────────────────────────
             let hwnd = CreateWindowExW(

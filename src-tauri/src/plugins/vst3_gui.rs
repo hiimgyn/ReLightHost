@@ -39,6 +39,8 @@ pub mod win {
     use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows_sys::Win32::Graphics::Gdi::{RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE};
 
+    static GLOBAL_VST3_GUI_OPEN: AtomicBool = AtomicBool::new(false);
+
     // Thread-local state shared between GUI setup, WndProc, and IPlugFrame.
     // Safe because the GUI runs on a single dedicated thread.
     thread_local! {
@@ -62,6 +64,13 @@ pub mod win {
         /// send it WM_QUIT before PluginInstance::drop calls view.removed()).
         static TL_ATTACH_TID: std::cell::RefCell<Option<Arc<AtomicU32>>> =
             std::cell::RefCell::new(None);
+        /// Attachment-ready flag shared from Vst3Processor. Set to true after
+        /// IPlugView::attached() succeeds, signaling the audio thread that the
+        /// plugin is fully initialized and ready for process() calls.
+        static TL_ATTACHMENT_READY: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+            std::cell::RefCell::new(None);
+        /// Whether component and controller are separate objects.
+        static TL_SEPARATE_CONTROLLER: Cell<bool> = Cell::new(true);
     }
 
     /// Posted to self just before the message loop starts.
@@ -150,7 +159,17 @@ pub mod win {
         plugin_name: &str,
         gui_flag: Arc<AtomicBool>,
         gui_hwnd: Arc<AtomicIsize>,
+        attachment_ready: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<()> {
+        if GLOBAL_VST3_GUI_OPEN
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(anyhow!(
+                "Another VST3 GUI is already open. Close it before opening a new one."
+            ));
+        }
+
         let controller_clone = controller.clone();
         let component_clone  = component.clone();
         let name_owned = plugin_name.to_string();
@@ -172,6 +191,7 @@ pub mod win {
                     component:  ManuallyDrop<ComPtr<IComponent>>,
                     flag: Arc<AtomicBool>,
                     hwnd: Arc<AtomicIsize>,
+                    attachment_ready: Arc<std::sync::atomic::AtomicBool>,
                 }
                 impl Drop for CleanupGuard {
                     fn drop(&mut self) {
@@ -183,6 +203,9 @@ pub mod win {
                         // Only THEN signal that it is safe to unload the DLL.
                         self.hwnd.store(0, Ordering::Release);
                         self.flag.store(false, Ordering::Release);
+                        // Editor is no longer in attach phase; allow process().
+                        self.attachment_ready.store(true, Ordering::Release);
+                        GLOBAL_VST3_GUI_OPEN.store(false, Ordering::Release);
                         log::debug!("GUI flag cleared");
                     }
                 }
@@ -192,6 +215,7 @@ pub mod win {
                     component:  ManuallyDrop::new(component_clone),
                     flag: gui_flag,
                     hwnd: Arc::clone(&gui_hwnd),
+                    attachment_ready: Arc::clone(&attachment_ready),
                 };
 
                 if let Err(e) = run_gui_window_impl(
@@ -199,12 +223,16 @@ pub mod win {
                     &_cleanup.component,
                     &name_owned,
                     &gui_hwnd,
+                    &_cleanup.attachment_ready,
                 ) {
                     log::error!("VST3 GUI error for '{}': {}", name_owned, e);
                 }
                 // _cleanup drops here: COM refs released, then gui_open cleared
             })
-            .map_err(|e| anyhow!("Failed to spawn GUI thread: {}", e))?;
+            .map_err(|e| {
+                GLOBAL_VST3_GUI_OPEN.store(false, Ordering::Release);
+                anyhow!("Failed to spawn GUI thread: {}", e)
+            })?;
 
         Ok(())
     }
@@ -216,6 +244,7 @@ pub mod win {
         component:  &ComPtr<IComponent>,
         plugin_name: &str,
         gui_hwnd_arc: &Arc<AtomicIsize>,
+        attachment_ready: &Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<()> {
         use std::ffi::CString;
 
@@ -231,6 +260,12 @@ pub mod win {
             let hr = unsafe { CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32) };
             hr == 0_i32 || hr == 1_i32
         });
+
+        // Store attachment_ready in thread-local so the attach thread can access it
+        TL_ATTACHMENT_READY.with(|c| {
+            *c.borrow_mut() = Some(Arc::clone(attachment_ready));
+        });
+        TL_SEPARATE_CONTROLLER.with(|c| c.set(true));
 
         // ── Pre-createView setup (VST3 hosting protocol) ─────────────────────
         // 1. Connect component ↔ controller via IConnectionPoint so the plugin
@@ -414,37 +449,24 @@ pub mod win {
         run_message_loop();
 
         // 10. Cleanup — window destroyed by WM_CLOSE → DefWindowProc.
-        // Wait for the attach thread to finish before calling view.removed().
-        // The attach thread holds a SendView clone; if we call removed() while
-        // it is still running attached() we race on the COM refcount.
+        // Wait for the attach thread to finish. The attach thread performs
+        // view teardown (setFrame(nullptr) + removed()) on the same thread that
+        // called attached(), then exits.
         if let Some(handle) = TL_ATTACH_THREAD.with(|c| c.borrow_mut().take()) {
             let _ = handle.join();
         }
 
-        // Disconnect IConnectionPoint before view.removed() so that neither
-        // the component nor the controller can fire notify() callbacks into
-        // each other during teardown.  Only disconnect if we actually connected
-        // (dual-component plugins only).
-        if connected_icp {
-            if let (Some(comp_cp), Some(ctrl_cp)) = (
-                component.cast::<IConnectionPoint>(),
-                controller.cast::<IConnectionPoint>(),
-            ) {
-                unsafe {
-                    let _ = comp_cp.disconnect(ctrl_cp.as_ptr());
-                    let _ = ctrl_cp.disconnect(comp_cp.as_ptr());
-                }
-                log::debug!("'{}': IConnectionPoint disconnected", plugin_name);
-            }
-        }
-
-        unsafe { view.setFrame(ptr::null_mut()); }
-        let _ = unsafe { view.removed() };
+        // NOTE: Avoid disconnect() during teardown.
+        // Some plugins free internal connection-point state inside removed(), and
+        // disconnecting afterwards (or from another thread) can corrupt heap.
+        let _ = connected_icp;
         // Clear remaining thread-locals — releases ComPtr clones before view drops.
         TL_ATTACH_TID.with(|c| *c.borrow_mut() = None);
         TL_PENDING_VIEW.with(|c| *c.borrow_mut() = None);
         TL_ON_SIZE.with(|cell| *cell.borrow_mut() = None);
         TL_INITIAL_SIZE.with(|c| c.set((0, 0)));
+        TL_ATTACHMENT_READY.with(|c| *c.borrow_mut() = None);
+        TL_SEPARATE_CONTROLLER.with(|c| c.set(true));
         TL_HWND.set(0);
 
         log::debug!("'{}' GUI cleanup complete", plugin_name);
@@ -520,6 +542,10 @@ pub mod win {
                         let tid_clone = Arc::clone(&tid_arc);
                         TL_ATTACH_TID.with(|c| *c.borrow_mut() = Some(tid_arc));
 
+                        // Retrieve attachment_ready from thread-local so we can move it into the spawn closure
+                        let attachment_ready_opt = TL_ATTACHMENT_READY.with(|c| {
+                            c.borrow().as_ref().map(Arc::clone)
+                        });
                         let send_view = SendView(view);
                         let spawn_res = std::thread::Builder::new()
                             .name("vst3-attach".into())
@@ -555,6 +581,19 @@ pub mod win {
                                     kPlatformTypeHWND,
                                 );
 
+                                // Keep process() paused while GUI is open.
+                                // Resume is handled in CleanupGuard::drop when the window closes.
+                                if res != kResultOk {
+                                    if let Some(ref ar) = attachment_ready_opt {
+                                        // Attach failed; do not keep the processor blocked.
+                                        ar.store(true, Ordering::Release);
+                                    }
+                                } else {
+                                    log::debug!(
+                                        "VST3 GUI attached: audio processing remains paused until GUI closes"
+                                    );
+                                }
+
                                 // Signal GUI thread that attach() is done.
                                 unsafe { PostMessageW(hwnd_key as _, WM_VST_READY, res as usize, 0); }
 
@@ -578,6 +617,12 @@ pub mod win {
                                     }
                                 }
 
+                                // Teardown on the same thread as attached().
+                                unsafe {
+                                    send_view.0.setFrame(ptr::null_mut());
+                                    let _ = send_view.0.removed();
+                                }
+
                                 if com_inited { unsafe { CoUninitialize(); } }
                             });
                         match spawn_res {
@@ -599,6 +644,12 @@ pub mod win {
                 let attach_res = wparam as i32;
                 if attach_res != 0 {
                     log::warn!("VST3 attached() returned {} (continuing)", attach_res);
+                } else {
+                    TL_ATTACHMENT_READY.with(|c| {
+                        if let Some(ref flag) = *c.borrow() {
+                            flag.store(true, Ordering::Release);
+                        }
+                    });
                 }
                 let (w, h) = TL_INITIAL_SIZE.with(|c| c.get());
                 if w > 0 && h > 0 {
@@ -722,12 +773,15 @@ pub mod win {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use vst3::ComPtr;
-    use vst3::Steinberg::Vst::IEditController;
+    use vst3::Steinberg::Vst::{IComponent, IEditController};
 
     pub fn open_gui_window(
         _controller: &ComPtr<IEditController>,
+        _component: &ComPtr<IComponent>,
         plugin_name: &str,
         _gui_flag: Arc<AtomicBool>,
+        _gui_hwnd: Arc<std::sync::atomic::AtomicIsize>,
+        _attachment_ready: Arc<AtomicBool>,
     ) -> Result<()> {
         log::warn!("VST3 GUI launching only supported on Windows. Plugin: {}", plugin_name);
         Err(anyhow!("Plugin GUI launching not supported on this platform"))

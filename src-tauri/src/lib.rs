@@ -4,8 +4,11 @@ mod preset;
 mod config;
 
 use parking_lot::RwLock;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tauri::Manager;
 use audio::{AudioManager, AudioStatus, AudioDeviceInfo, AudioDevice, AudioConfig};
 use plugins::{PluginScanner, PluginInstanceManager, PluginInfo, PluginInstanceInfo};
@@ -24,6 +27,14 @@ struct AppState {
     /// React StrictMode invokes effects twice in dev; this flag makes the
     /// second call a fast no-op so the restored ASIO stream is not torn down.
     session_restored: AtomicBool,
+    /// Coalesce rapid plugin-chain mutations into a single autosave write.
+    autosave_scheduled: Arc<AtomicBool>,
+    /// Last serialized autosave hash to skip redundant writes.
+    autosave_last_hash: Arc<AtomicU64>,
+    /// Backend-orchestrated anti-crash delayed start deadline.
+    /// When set, toggle_monitoring(true) will wait until this instant before
+    /// opening audio streams.
+    safe_start_deadline: Arc<RwLock<Option<Instant>>>,
 }
 
 /// Holds dynamic menu items so they can be updated from commands and tray events.
@@ -155,6 +166,22 @@ fn set_buffer_size(state: tauri::State<AppState>, buffer_size: u32) -> Result<()
 
 #[tauri::command]
 fn toggle_monitoring(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+    if enabled {
+        let deadline_opt = *state.safe_start_deadline.read();
+        if let Some(deadline) = deadline_opt {
+            let now = Instant::now();
+            if deadline > now {
+                let wait = deadline.duration_since(now);
+                log::info!(
+                    "Safe delayed start active: waiting {} ms before monitoring start",
+                    wait.as_millis()
+                );
+                std::thread::sleep(wait);
+            }
+            *state.safe_start_deadline.write() = None;
+        }
+    }
+
     state.audio_manager
         .read()
         .toggle_monitoring(enabled)
@@ -422,22 +449,7 @@ fn reset_plugin_crash_protection(state: tauri::State<AppState>, instance_id: Str
 
 #[tauri::command]
 fn save_preset(state: tauri::State<AppState>, name: String) -> Result<String, String> {
-    let plugin_chain = state.plugin_manager.read().get_instances();
-    let mut preset = Preset::new(name, plugin_chain);
-    
-    // Enhance preset with VST3 binary state for each plugin
-    let manager = state.plugin_manager.read();
-    for preset_plugin in &mut preset.plugin_chain {
-        if let Some(instance) = manager.get_instance(&preset_plugin.plugin_id) {
-            // Capture full VST3 state (includes internal data, samples, banks, etc.)
-            let state_blob = instance.get_state_binary();
-            if !state_blob.is_empty() {
-                preset_plugin.vst3_state = Some(state_blob);
-                log::debug!("💾 Captured VST3 state for '{}' ({} bytes)", 
-                    preset_plugin.plugin_name, preset_plugin.vst3_state.as_ref().unwrap().len());
-            }
-        }
-    }
+    let preset = build_chain_preset_with_state(&state, name);
     
     state.preset_manager
         .read()
@@ -464,19 +476,7 @@ fn delete_preset(state: tauri::State<AppState>, name: String) -> Result<(), Stri
 
 #[tauri::command]
 fn auto_save_preset(state: tauri::State<AppState>) -> Result<(), String> {
-    let plugin_chain = state.plugin_manager.read().get_instances();
-    let mut preset = Preset::new("__autosave__".to_string(), plugin_chain);
-    
-    // Also capture VST3 state for auto-save
-    let manager = state.plugin_manager.read();
-    for preset_plugin in &mut preset.plugin_chain {
-        if let Some(instance) = manager.get_instance(&preset_plugin.plugin_id) {
-            let state_blob = instance.get_state_binary();
-            if !state_blob.is_empty() {
-                preset_plugin.vst3_state = Some(state_blob);
-            }
-        }
-    }
+    let preset = build_chain_preset_with_state(&state, "__autosave__".to_string());
     
     state.preset_manager
         .read()
@@ -622,12 +622,14 @@ fn save_audio_session_to_disk(state: &AppState) {
 /// Snapshot the current plugin chain to the __autosave__ preset.
 /// Called after any structural change to the chain (add/remove/reorder/bypass/rename).
 fn auto_save_plugin_chain(state: &AppState) {
+    schedule_auto_save_plugin_chain(state);
+}
+
+fn build_chain_preset_with_state(state: &AppState, name: String) -> Preset {
     let chain = state.plugin_manager.read().get_instances();
-    let mut preset = Preset::new("__autosave__".to_string(), chain.clone());
+    let mut preset = Preset::new(name, chain.clone());
     {
         let manager = state.plugin_manager.read();
-        // Zip with the original info list to get instance_id for the binary-state lookup.
-        // (PresetPlugin.plugin_id is the plugin's format-ID, not the runtime instance_id.)
         for (preset_plugin, info) in preset.plugin_chain.iter_mut().zip(chain.iter()) {
             if let Some(instance) = manager.get_instance(&info.instance_id) {
                 let blob = instance.get_state_binary();
@@ -637,9 +639,61 @@ fn auto_save_plugin_chain(state: &AppState) {
             }
         }
     }
-    if let Err(e) = state.preset_manager.read().save_preset(&preset) {
-        log::warn!("Failed to auto-save plugin chain: {e}");
+    preset
+}
+
+fn preset_hash(preset: &Preset) -> Option<u64> {
+    let bytes = serde_json::to_vec(preset).ok()?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+fn schedule_auto_save_plugin_chain(state: &AppState) {
+    if state.autosave_scheduled.swap(true, Ordering::AcqRel) {
+        return;
     }
+
+    let plugin_manager = Arc::clone(&state.plugin_manager);
+    let preset_manager = Arc::clone(&state.preset_manager);
+    let autosave_scheduled = Arc::clone(&state.autosave_scheduled);
+    let autosave_last_hash = Arc::clone(&state.autosave_last_hash);
+
+    std::thread::spawn(move || {
+        // Debounce bursty chain updates from UI operations.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let chain = plugin_manager.read().get_instances();
+        let mut preset = Preset::new("__autosave__".to_string(), chain.clone());
+        {
+            let manager = plugin_manager.read();
+            for (preset_plugin, info) in preset.plugin_chain.iter_mut().zip(chain.iter()) {
+                if let Some(instance) = manager.get_instance(&info.instance_id) {
+                    let blob = instance.get_state_binary();
+                    if !blob.is_empty() {
+                        preset_plugin.vst3_state = Some(blob);
+                    }
+                }
+            }
+        }
+
+        let skip_write = preset_hash(&preset)
+            .map(|h| h == autosave_last_hash.load(Ordering::Acquire))
+            .unwrap_or(false);
+
+        if !skip_write {
+            match preset_manager.read().save_preset(&preset) {
+                Ok(_) => {
+                    if let Some(h) = preset_hash(&preset) {
+                        autosave_last_hash.store(h, Ordering::Release);
+                    }
+                }
+                Err(e) => log::warn!("Failed to auto-save plugin chain: {e}"),
+            }
+        }
+
+        autosave_scheduled.store(false, Ordering::Release);
+    });
 }
 
 /// Summary returned to the frontend so it can show a restore notification.
@@ -724,13 +778,25 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
                         config.sample_rate as f64,
                         config.buffer_size as usize,
                     ) {
+                        let restoring_vst3 = plugin_preset.plugin_format
+                            == Some(crate::plugins::types::PluginFormat::VST3);
                         if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
                             instance.set_bypassed(plugin_preset.bypassed);
-                            if let Some(ref vst3_state) = plugin_preset.vst3_state {
-                                instance.set_state_binary(vst3_state);
-                            }
-                            for p in &plugin_preset.parameters {
-                                instance.set_parameter(p.id, p.value);
+                            if restoring_vst3 {
+                                // Startup-safe mode for fragile VST3 plugins:
+                                // defer state/parameter replay to avoid heap corruption
+                                // during immediate post-load initialization.
+                                log::warn!(
+                                    "Skipping startup state replay for VST3 '{}' to improve launch stability",
+                                    plugin_preset.plugin_name
+                                );
+                            } else {
+                                if let Some(ref vst3_state) = plugin_preset.vst3_state {
+                                    instance.set_state_binary(vst3_state);
+                                }
+                                for p in &plugin_preset.parameters {
+                                    instance.set_parameter(p.id, p.value);
+                                }
                             }
                         }
                         plugins_restored += 1;
@@ -755,14 +821,62 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
     // before our ASIO stream connects.  We signal the frontend to call
     // toggle_monitoring(true) after a 2-second delay, keeping the call on
     // the proper Tauri command thread.
-    let needs_deferred_start = audio_restored && state.audio_manager.read().get_config()
-        .output_device_id.as_deref()
+    // Runtime check is more reliable than preset metadata when deciding whether
+    // startup monitoring should be deferred for fragile plugin hosts.
+    let restored_has_vst3 = state
+        .plugin_manager
+        .read()
+        .get_instances()
+        .iter()
+        .any(|p| p.format == crate::plugins::types::PluginFormat::VST3);
+
+    let is_voicemeeter = state
+        .audio_manager
+        .read()
+        .get_config()
+        .output_device_id
+        .as_deref()
         .map(|id| id.to_lowercase().contains("voicemeeter"))
         .unwrap_or(false);
 
-    if audio_restored && !needs_deferred_start {
-        if let Err(e) = state.audio_manager.read().toggle_monitoring(true) {
-            log::warn!("Failed to auto-start monitoring on session restore: {e}");
+    let mut safe_delay_ms = 0u64;
+    if restored_has_vst3 {
+        safe_delay_ms = safe_delay_ms.max(4000);
+    }
+    if is_voicemeeter {
+        safe_delay_ms = safe_delay_ms.max(2000);
+    }
+
+    let needs_deferred_start = audio_restored && safe_delay_ms > 0;
+
+    if needs_deferred_start {
+        *state.safe_start_deadline.write() = Some(Instant::now() + Duration::from_millis(safe_delay_ms));
+        // Extra guard after stream start: skip VST3 process() during fragile warmup.
+        // total guard = delayed-start wait + additional post-start settling window.
+        let extra_post_start_ms = if restored_has_vst3 { 8000 } else { 0 };
+        crate::plugins::vst3_processor::set_global_process_block_ms(
+            safe_delay_ms.saturating_add(extra_post_start_ms)
+        );
+        log::info!(
+            "Scheduled backend safe delayed start: {} ms (vst3={}, voicemeeter={})",
+            safe_delay_ms,
+            restored_has_vst3,
+            is_voicemeeter
+        );
+    } else {
+        *state.safe_start_deadline.write() = None;
+        crate::plugins::vst3_processor::set_global_process_block_ms(0);
+    }
+
+    if audio_restored {
+        if !needs_deferred_start {
+            if let Err(e) = state.audio_manager.read().toggle_monitoring(true) {
+                log::warn!("Failed to auto-start monitoring on session restore: {e}");
+            }
+        } else {
+            log::info!(
+                "Automatic monitoring deferred; frontend can call toggleMonitoring(true) immediately and backend will gate start"
+            );
         }
     }
 
@@ -859,6 +973,9 @@ pub fn run() {
             config_manager,
             sys_info,
             session_restored: AtomicBool::new(false),
+            autosave_scheduled: Arc::new(AtomicBool::new(false)),
+            autosave_last_hash: Arc::new(AtomicU64::new(0)),
+            safe_start_deadline: Arc::new(RwLock::new(None)),
         })
         .setup(|app| {
             if cfg!(debug_assertions) {

@@ -111,6 +111,26 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
+### Updater Signing Key (Required for Signed Update Artifacts)
+
+Set `TAURI_SIGNING_PRIVATE_KEY` in your environment before running a release build.
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = @"
+PASTE_YOUR_PRIVATE_KEY_HERE
+"@
+pnpm tauri build
+```
+
+If your private key is password-protected, also set:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "your-password"
+pnpm tauri build
+```
+
+Tip: copy `.env.example` to `.env.local` for local reference, but do not commit it.
+
 > Output binaries → `src-tauri/target/release/`  
 > Installers (NSIS `.exe` / MSI) → `src-tauri/target/release/bundle/`
 

@@ -37,6 +37,11 @@ src-tauri/WixTools/
 *.key.pub
 .tauri/
 
+# Local environment files
+.env
+.env.local
+.env.*.local
+
 # VST log dumps
 src-tauri/vst_log.txt
 

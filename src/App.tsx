@@ -33,17 +33,14 @@ function App() {
           localStorage.setItem('audioConfigured', 'true');
 
           if (result.needs_deferred_start) {
-            // Voicemeeter ASIO Insert: wait 2 s for Voicemeeter to finish its
-            // own startup, then connect on the Tauri command thread (which has
-            // COM initialized — raw OS threads crash ASIO with AV).
-            setTimeout(async () => {
-              try {
-                await toggleMonitoring(true);
-                await fetchStatus();
-              } catch (e) {
-                console.error('Deferred ASIO start failed:', e);
-              }
-            }, 2000);
+            // Backend orchestrates a safe delayed start window.
+            // Call immediately; backend will wait for its anti-crash deadline.
+            try {
+              await toggleMonitoring(true);
+              await fetchStatus();
+            } catch (e) {
+              console.error('Deferred backend start failed:', e);
+            }
           } else if (result.audio_restored) {
             await fetchStatus();
           }

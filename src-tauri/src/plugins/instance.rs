@@ -486,6 +486,18 @@ impl PluginInstance {
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
+        // Stability-first workaround for problematic VST3 DLL unload/destructor paths:
+        // keep removed VST3 processors alive for process lifetime instead of
+        // running plugin destructor code that can corrupt heap on some plugins
+        // (observed with remove -> re-add sequences).
+        if let Some(proc) = self.vst3_processor.lock().take() {
+            log::warn!(
+                "Leaking VST3 processor for '{}' to avoid runtime heap corruption during unload",
+                self.plugin_info.name
+            );
+            std::mem::forget(proc);
+        }
+
         // If a GUI is open (or being opened), wait for the GUI thread to release
         // all COM interface clones before we drop Vst3Processor (which unloads
         // the DLL).  The GUI thread's CleanupGuard sets gui_open → false only
@@ -519,7 +531,21 @@ impl Drop for PluginInstance {
         }
 
         if self.gui_open.load(Ordering::Acquire) {
-            log::warn!("GUI thread did not release in time; proceeding with plugin teardown (may crash)");
+            log::error!("GUI thread did not release in time; skipping processor teardown to avoid heap corruption");
+            // Safety fallback: leaking the processor is better than dropping it
+            // while plugin GUI thread is still alive (can trigger heap corruption).
+            if let Some(proc) = self.vst3_processor.lock().take() {
+                std::mem::forget(proc);
+            }
+            if let Some(proc) = self.vst2_processor.lock().take() {
+                std::mem::forget(proc);
+            }
+            if let Some(proc) = self.clap_processor.lock().take() {
+                std::mem::forget(proc);
+            }
+            if let Some(proc) = self.builtin_processor.lock().take() {
+                std::mem::forget(proc);
+            }
         }
     }
 }
@@ -550,13 +576,25 @@ impl PluginInstanceManager {
 
     /// Remove a plugin instance
     pub fn remove_instance(&self, instance_id: &str) -> Result<()> {
+        // Safety gate: never remove an instance while its GUI is open/opening.
+        // This race (remove + GUI thread teardown) is a known source of
+        // STATUS_HEAP_CORRUPTION with some VST3 plugins.
+        if let Some(inst) = self.instances
+            .read()
+            .iter()
+            .find(|i| i.instance_id() == instance_id)
+            .cloned()
+        {
+            if inst.gui_open.load(Ordering::Acquire) {
+                return Err(anyhow::anyhow!(
+                    "Cannot remove plugin while GUI is open. Please close the plugin window first."
+                ));
+            }
+        }
+
         // Extract the Arc while holding the write lock, but do NOT drop it
-        // inside the lock.  PluginInstance::drop() will block waiting for the
-        // GUI thread to finish (sends WM_CLOSE, spins until gui_open = false).
-        // Holding the write lock during that spin starves the audio callback
-        // (which needs instances.read()) for up to 3 seconds — and on some
-        // plugins (Auto-Tune) the write guard itself being live when the GUI
-        // cleanup callbacks fire can cause STATUS_ACCESS_VIOLATION.
+        // inside the lock.  PluginInstance::drop() can block waiting for GUI
+        // cleanup if a window was just closed.
         let instance = {
             let mut instances = self.instances.write();
             let pos = instances

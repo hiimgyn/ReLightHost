@@ -347,10 +347,18 @@ impl AudioManager {
                     // Read mute flag once so both output paths use the same state.
                     let is_muted = muted.load(Ordering::Relaxed);
 
-                    // Step 2.75: Mirror processed audio to Hardware Out (monitoring).
-                    // Gated by loopback_enabled — when the loopback button is OFF the
-                    // Hardware Out ring buffer is left empty so speakers hear silence.
-                    if loopback_flag.load(Ordering::Relaxed) && !is_muted {
+                    // Step 2.75: Mirror processed audio to the Virtual Output (e.g. VB-Cable)
+                    // and gate Hardware Out (monitoring) by the Loopback flag.
+                    // Behavior change: always mirror processed audio to the virtual
+                    // output when configured (unless muted). Hardware output only
+                    // receives audio when the Loopback button is ON.
+                    let is_loopback = loopback_flag.load(Ordering::Relaxed);
+
+                    // Mirror processed audio to the virtual output when
+                    // configured (unless muted). Hardware Out remains gated
+                    // by the Loopback flag so local monitoring is silent
+                    // when loopback is OFF.
+                    if !is_muted {
                         if let Some(ref mut vp) = virt_producer_opt {
                             for frame in 0..frames {
                                 let _ = vp.try_push(left_buf[frame]);
@@ -360,12 +368,11 @@ impl AudioManager {
                     }
 
                     // Step 3: Re-interleave L/R → CPAL output buffer.
-                    // If muted, write silence so the VU meter still shows levels
-                    // but speakers hear nothing.
+                    // Hardware output only receives audio when Loopback is enabled.
                     for frame in 0..frames {
                         for ch in 0..output_channels {
                             data[frame * output_channels + ch] = if is_muted { 0.0 } else {
-                                if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] }
+                                if is_loopback { if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] } } else { 0.0 }
                             };
                         }
                     }

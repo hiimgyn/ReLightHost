@@ -150,3 +150,7 @@ export async function resetPluginCrashProtection(instanceId: string): Promise<vo
 export async function getNoiseSuppressorVad(instanceId: string): Promise<number> {
   return invoke('get_noise_suppressor_vad', { instanceId });
 }
+
+export async function getPluginParameters(instanceId: string): Promise<import('./types').PluginParameter[]> {
+  return invoke('get_plugin_parameters', { instanceId });
+}

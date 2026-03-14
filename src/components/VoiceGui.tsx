@@ -109,12 +109,25 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
 
   useEffect(() => {
     if (!isOpen) return;
-    setLow(    paramValue(plugin, P_LOW,     0));
-    setMid(    paramValue(plugin, P_MID,     0));
-    setHigh(   paramValue(plugin, P_HIGH,    0));
-    setDrive(  paramValue(plugin, P_DRIVE,   0));
-    setWidth(  paramValue(plugin, P_WIDTH,   0));
-    setCeiling(paramValue(plugin, P_CEILING, 0));
+    // Try to fetch authoritative parameter values from backend; fall back to props
+    (async () => {
+      try {
+        const params = await tauri.getPluginParameters(plugin.instance_id);
+        setLow(params.find(p => p.id === P_LOW)?.value ?? paramValue(plugin, P_LOW, 0));
+        setMid(params.find(p => p.id === P_MID)?.value ?? paramValue(plugin, P_MID, 0));
+        setHigh(params.find(p => p.id === P_HIGH)?.value ?? paramValue(plugin, P_HIGH, 0));
+        setDrive(params.find(p => p.id === P_DRIVE)?.value ?? paramValue(plugin, P_DRIVE, 0));
+        setWidth(params.find(p => p.id === P_WIDTH)?.value ?? paramValue(plugin, P_WIDTH, 0));
+        setCeiling(params.find(p => p.id === P_CEILING)?.value ?? paramValue(plugin, P_CEILING, 0));
+      } catch (err) {
+        setLow(paramValue(plugin, P_LOW, 0));
+        setMid(paramValue(plugin, P_MID, 0));
+        setHigh(paramValue(plugin, P_HIGH, 0));
+        setDrive(paramValue(plugin, P_DRIVE, 0));
+        setWidth(paramValue(plugin, P_WIDTH, 0));
+        setCeiling(paramValue(plugin, P_CEILING, 0));
+      }
+    })();
   }, [plugin.parameters, isOpen]); // eslint-disable-line
 
   const send = (id: number, value: number) =>

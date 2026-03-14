@@ -297,7 +297,19 @@ fn set_plugin_parameter(state: tauri::State<AppState>, instance_id: String, para
     let manager = state.plugin_manager.read();
     if let Some(instance) = manager.get_instance(&instance_id) {
         instance.set_parameter(param_id, value);
+        // Schedule an autosave so parameter-only edits are persisted to __autosave__.
+        auto_save_plugin_chain(&state);
         Ok(())
+    } else {
+        Err(format!("Plugin instance not found: {}", instance_id))
+    }
+}
+
+#[tauri::command]
+fn get_plugin_parameters(state: tauri::State<AppState>, instance_id: String) -> Result<Vec<plugins::types::PluginParameter>, String> {
+    let manager = state.plugin_manager.read();
+    if let Some(instance) = manager.get_instance(&instance_id) {
+        Ok(instance.get_info().parameters)
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
     }
@@ -393,6 +405,76 @@ fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(
         instance.open_gui()
             .map_err(|e| format!("Failed to open plugin GUI: {}", e))?;
         crate::app_events::emit_plugin_chain_changed("gui_open", Some(&instance_id));
+        // Spawn a background watcher while the GUI is open.  Some native
+        // plugin UIs change internal state without calling our host APIs;
+        // periodically snapshot the plugin state and persist an autosave
+        // when the binary state changes so __autosave__ captures GUI edits.
+        {
+            // Capture only the Arcs we need so nothing with a non-'static
+            // lifetime (like `tauri::State`) escapes into the spawned thread.
+            let plugin_manager = Arc::clone(&state.plugin_manager);
+            let preset_manager = Arc::clone(&state.preset_manager);
+            let autosave_last_hash = Arc::clone(&state.autosave_last_hash);
+            let inst_id = instance_id.clone();
+
+            std::thread::spawn(move || {
+                use std::hash::{Hash, Hasher};
+                use std::collections::hash_map::DefaultHasher;
+
+                // Small debounce loop: poll while GUI flag remains true.
+                if let Some(inst) = plugin_manager.read().get_instance(&inst_id) {
+                    let mut last_h: Option<u64> = None;
+                    while inst.get_info().gui_open {
+                        std::thread::sleep(Duration::from_millis(500));
+                        let blob = inst.get_state_binary();
+                        if !blob.is_empty() {
+                            let mut hasher = DefaultHasher::new();
+                            blob.hash(&mut hasher);
+                            let h = hasher.finish();
+                            if last_h.map(|v| v != h).unwrap_or(true) {
+                                last_h = Some(h);
+
+                                // Build minimal preset snapshot (similar to schedule_auto_save)
+                                let chain = plugin_manager.read().get_instances();
+                                let mut preset = Preset::new("__autosave__".to_string(), chain.clone());
+                                {
+                                    let manager = plugin_manager.read();
+                                    for (preset_plugin, info) in preset.plugin_chain.iter_mut().zip(chain.iter()) {
+                                        if let Some(instance) = manager.get_instance(&info.instance_id) {
+                                            let blob = instance.get_state_binary();
+                                            if !blob.is_empty() {
+                                                preset_plugin.vst3_state = Some(blob);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                let skip_write = {
+                                    let bytes = match serde_json::to_vec(&preset) {
+                                        Ok(b) => b,
+                                        Err(_) => Vec::new(),
+                                    };
+                                    if bytes.is_empty() { false } else {
+                                        let mut hasher = DefaultHasher::new();
+                                        bytes.hash(&mut hasher);
+                                        let ph = hasher.finish();
+                                        ph == autosave_last_hash.load(Ordering::Acquire)
+                                    }
+                                };
+
+                                if !skip_write {
+                                    if let Err(e) = preset_manager.read().save_preset(&preset) {
+                                        log::warn!("Failed to save autosave from GUI watcher: {e}");
+                                    } else if let Some(h) = preset_hash(&preset) {
+                                        autosave_last_hash.store(h, Ordering::Release);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
         Ok(())
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
@@ -1243,6 +1325,7 @@ pub fn run() {
             get_plugin_crash_statuses,
             reset_plugin_crash_protection,
             get_noise_suppressor_vad,
+            get_plugin_parameters,
             restore_session,
             check_for_update,
             install_update,

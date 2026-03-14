@@ -130,9 +130,12 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
           tasks.push(setInputDevice(values.asioDevice));
         }
       } else {
-        if (values.outputDevice) tasks.push(setOutputDevice(values.outputDevice));
+        const outputToSet = values.outputDevice || null;
+        const virtualToSet = values.virtualOutputDevice || null;
+
+        if (outputToSet) tasks.push(setOutputDevice(outputToSet));
         tasks.push(setInputDevice(values.inputDevice || null));
-        tasks.push(setVirtualOutputDevice(values.virtualOutputDevice || null));
+        tasks.push(setVirtualOutputDevice(virtualToSet || null));
       }
 
       tasks.push(setSampleRate(parseInt(values.sampleRate)));
@@ -241,7 +244,9 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
             <Form.Item
               label="Output Device"
               name="outputDevice"
+              extra="Physical output device (speakers / headphones) used for monitoring. When the loopback button is ON, processed audio is sent here so you can hear it. When OFF, this device is silent."
               rules={[{ required: true, message: 'Please select an output device' }]}
+
             >
               <Select size="large" placeholder="Select output device" optionLabelProp="label">
                 {outputDevices.map(device => (
@@ -266,9 +271,8 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
             </Form.Item>
 
             <Form.Item
-              label="Hardware Out (Loopback Source)"
+              label="Virtual Output Device"
               name="virtualOutputDevice"
-              extra="Physical output device (speakers / headphones) used for monitoring. When the loopback button is ON, processed audio is sent here so you can hear it. When OFF, this device is silent."
             >
               <Select size="large" placeholder="None (disabled)" allowClear optionLabelProp="label">
                 <Select.Option value="" label="None (disabled)">

@@ -869,26 +869,17 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
             needs_deferred_start: false,
         });
     }
-
-    let mut audio_restored   = false;
-    let mut plugins_restored = 0usize;
-
+    let mut audio_restored: bool = false;
+    let mut plugins_restored: usize = 0;
     // ── 1. Audio config (stop stream only — do NOT restart yet) ───────────
     if let Some(session) = state.config_manager.read().load_session() {
-        // React child effects (Layout) fire before parent effects (App), so
-        // Layout's toggleMonitoring(true) may have already opened a stream
-        // using the default config.  Stop it unconditionally so we can swap
-        // in the saved config.
+        // Ensure any pre-opened stream is stopped before we swap device config.
         let _ = state.audio_manager.read().toggle_monitoring(false);
-
         state.audio_manager.read().restore_config(session.audio);
         state.audio_manager.read().set_muted(session.muted);
         audio_restored = true;
         log::info!("✅ Audio session restored");
     }
-
-    // ── 2. Plugin chain (loaded while stream is stopped) ──────────────────
-    // Plugins are loaded BEFORE the audio stream starts so the very first
     // buffer handed to Voicemeeter Insert already has the full chain active.
     // Guard: do not reload if the chain already has items (StrictMode double-invoke).
     let chain_empty = state.plugin_manager.read().get_instances().is_empty();
@@ -896,6 +887,9 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
         if let Ok(preset) = state.preset_manager.read().restore_auto_save() {
             let config = state.audio_manager.read().get_config();
             state.plugin_manager.read().clear();
+
+            // Collect VST3 blobs + params to replay after load phase completes
+            let mut vst3_replays: Vec<(String, Option<Vec<u8>>, Vec<preset::PresetParameter>)> = Vec::new();
 
             for plugin_preset in &preset.plugin_chain {
                 let (Some(path), Some(format)) =
@@ -922,13 +916,13 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
                     if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
                         instance.set_bypassed(plugin_preset.bypassed);
                         if restoring_vst3 {
-                            // Startup-safe mode for fragile VST3 plugins:
-                            // defer state/parameter replay to avoid heap corruption
-                            // during immediate post-load initialization.
-                            log::warn!(
-                                "Skipping startup state replay for VST3 '{}' to improve launch stability",
-                                plugin_preset.plugin_name
-                            );
+                            // Defer replay: record instance_id + blob + params for later.
+                            vst3_replays.push((
+                                instance_id.clone(),
+                                plugin_preset.vst3_state.clone(),
+                                plugin_preset.parameters.clone(),
+                            ));
+                            log::debug!("Deferred VST3 state for '{}', will replay after load", plugin_preset.plugin_name);
                         } else {
                             if let Some(ref vst3_state) = plugin_preset.vst3_state {
                                 instance.set_state_binary(vst3_state);
@@ -944,6 +938,26 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
 
             if plugins_restored > 0 {
                 log::info!("✅ Plugin chain restored: {} plugins", plugins_restored);
+            }
+
+            // Replay VST3 binary state + parameters on a background thread
+            if !vst3_replays.is_empty() {
+                let plugin_manager = Arc::clone(&state.plugin_manager);
+                std::thread::spawn(move || {
+                    // Wait a short time to let plugin load/initialization stabilise.
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    for (inst_id, opt_blob, params) in vst3_replays.into_iter() {
+                        if let Some(inst) = plugin_manager.read().get_instance(&inst_id) {
+                            if let Some(blob) = opt_blob {
+                                // set_state_binary handles COM init where required.
+                                inst.set_state_binary(&blob);
+                            }
+                            for p in params {
+                                inst.set_parameter(p.id, p.value);
+                            }
+                        }
+                    }
+                });
             }
         }
     }

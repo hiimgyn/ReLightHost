@@ -311,23 +311,24 @@ impl AudioManager {
         let vu_meter = Arc::clone(&self.vu_meter);
         let muted = Arc::clone(&self.muted);
         let loopback_flag = Arc::clone(&self.loopback_enabled);
-        let mut left_buf  = vec![0.0f32; config.buffer_size as usize];
-        let mut right_buf = vec![0.0f32; config.buffer_size as usize];
+        // Preallocate bounce buffers to avoid reallocations in the realtime callback.
+        // Use buf_capacity (samples) / 2 to get a safe max number of frames (stereo pairs).
+        let max_frames = (buf_capacity / 2).max(config.buffer_size as usize);
+        let mut left_buf  = vec![0.0f32; max_frames];
+        let mut right_buf = vec![0.0f32; max_frames];
 
         let out_stream = output_device
             .build_output_stream(
                 &out_cfg,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let frames = data.len() / output_channels.max(1);
+                        let frames = data.len() / output_channels.max(1);
 
-                    // Grow bounce buffers if needed (happens at most once per
-                    // session when the driver uses a larger block than configured).
-                    if left_buf.len()  < frames { left_buf.resize(frames,  0.0); }
-                    if right_buf.len() < frames { right_buf.resize(frames, 0.0); }
+                        // Clamp frames to our preallocated buffer to avoid resizing.
+                        let frames_to_process = frames.min(left_buf.len());
 
                     // Step 1: Drain ring buffer → L/R bounce buffers.
                     // Ring buffer samples are already interleaved as [L, R] pairs.
-                    for frame in 0..frames {
+                    for frame in 0..frames_to_process {
                         left_buf[frame]  = consumer.try_pop().unwrap_or(0.0);
                         right_buf[frame] = consumer.try_pop().unwrap_or(0.0);
                     }
@@ -344,23 +345,16 @@ impl AudioManager {
                     // Step 2.5: Update VU meter with processed audio
                     vu_meter.update(&left_buf[..frames], &right_buf[..frames]);
 
-                    // Read mute flag once so both output paths use the same state.
+                    // Read mute and loopback flags once so both output paths use the same state.
                     let is_muted = muted.load(Ordering::Relaxed);
-
-                    // Step 2.75: Mirror processed audio to the Virtual Output (e.g. VB-Cable)
-                    // and gate Hardware Out (monitoring) by the Loopback flag.
-                    // Behavior change: always mirror processed audio to the virtual
-                    // output when configured (unless muted). Hardware output only
-                    // receives audio when the Loopback button is ON.
                     let is_loopback = loopback_flag.load(Ordering::Relaxed);
 
-                    // Mirror processed audio to the virtual output when
-                    // configured (unless muted). Hardware Out remains gated
-                    // by the Loopback flag so local monitoring is silent
-                    // when loopback is OFF.
+                    // Mirror processed audio to the virtual output when configured.
+                    // Block virtual loopback when muted so routing to OBS/Discord/etc.
+                    // does not send audio while the user has muted output locally.
                     if !is_muted {
                         if let Some(ref mut vp) = virt_producer_opt {
-                            for frame in 0..frames {
+                            for frame in 0..frames_to_process {
                                 let _ = vp.try_push(left_buf[frame]);
                                 let _ = vp.try_push(right_buf[frame]);
                             }
@@ -368,12 +362,22 @@ impl AudioManager {
                     }
 
                     // Step 3: Re-interleave L/R → CPAL output buffer.
-                    // Hardware output only receives audio when Loopback is enabled.
+                    // Hardware output receives processed audio only when Loopback
+                    // is enabled. When loopback is ON, bypass the global mute so
+                    // local monitoring remains audible; when loopback is OFF,
+                    // hardware out stays silent.
+                    // Write out processed frames; if the host requested more
+                    // frames than we processed, zero the remainder to avoid
+                    // leaking uninitialized data.
                     for frame in 0..frames {
                         for ch in 0..output_channels {
-                            data[frame * output_channels + ch] = if is_muted { 0.0 } else {
-                                if is_loopback { if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] } } else { 0.0 }
-                            };
+                            if frame < frames_to_process {
+                                data[frame * output_channels + ch] = if is_loopback {
+                                    if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] }
+                                } else { 0.0 };
+                            } else {
+                                data[frame * output_channels + ch] = 0.0;
+                            }
                         }
                     }
                 },

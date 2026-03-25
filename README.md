@@ -1,6 +1,6 @@
 <div align="center">
 
-# ![Main window](public/logo.png) ReLightHost
+<h1><img src="public/logo.png" width="80" align="absmiddle"> ReLightHost </h1>
 
 **A modern, real-time audio plugin host built with Rust and React**
 

@@ -22,7 +22,7 @@ interface AudioStore {
   start: () => Promise<void>;
   stop: () => Promise<void>;
   toggleMonitoring: (enabled: boolean) => Promise<void>;
-  setOutputDevice: (deviceId: string) => Promise<void>;
+  setOutputDevice: (deviceId: string | null) => Promise<void>;
   setInputDevice: (deviceId: string | null) => Promise<void>;
   setVirtualOutputDevice: (deviceId: string | null) => Promise<void>;
   setSampleRate: (rate: number) => Promise<void>;
@@ -119,7 +119,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     }
   },
 
-  setOutputDevice: async (deviceId: string) => {
+  setOutputDevice: async (deviceId: string | null) => {
     set({ selectedDevice: deviceId });
     try {
       await tauri.setOutputDevice(deviceId);

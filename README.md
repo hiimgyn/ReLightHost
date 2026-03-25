@@ -6,7 +6,7 @@
 
 *Designed for musicians and audio engineers who need low-latency, multi-format plugin processing with a clean, native-feeling UI.*
 
-[![Version](https://img.shields.io/badge/version-1.5.1-9b72cf?style=for-the-badge)](https://github.com)
+[![Version](https://img.shields.io/badge/version-1.6.0-9b72cf?style=for-the-badge)](https://github.com)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0d7adf?style=for-the-badge)](https://github.com)
 [![Rust](https://img.shields.io/badge/rust-1.77%2B-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Tauri](https://img.shields.io/badge/tauri-2.x-24c8db?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app)
@@ -218,7 +218,7 @@ All external plugins are wrapped with `catch_unwind`. If a plugin panics:
 
 **Latency formula:**
 
-$$\text{latency (ms)} = \frac{\text{buffer\_size}}{\text{sample\_rate}} \times 1000$$
+$$\text{latency (ms)} = \frac{\text{buffer\\_size}}{\text{sample\\_rate}} \times 1000$$
 
 | Buffer / Rate | Latency |
 |---|---|

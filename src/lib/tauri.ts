@@ -32,7 +32,7 @@ export async function listAudioDevices(): Promise<AudioDeviceInfo[]> {
   return invoke('list_audio_devices');
 }
 
-export async function setOutputDevice(deviceId: string): Promise<void> {
+export async function setOutputDevice(deviceId: string | null): Promise<void> {
   return invoke('set_output_device', { deviceId });
 }
 

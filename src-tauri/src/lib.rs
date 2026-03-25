@@ -116,10 +116,10 @@ fn get_audio_config(state: tauri::State<AppState>) -> Result<AudioConfig, String
 }
 
 #[tauri::command]
-fn set_output_device(state: tauri::State<AppState>, device_id: String) -> Result<(), String> {
+fn set_output_device(state: tauri::State<AppState>, device_id: Option<String>) -> Result<(), String> {
     state.audio_manager
         .read()
-        .set_output_device(Some(device_id))
+        .set_output_device(device_id)
         .map_err(|e| format!("Failed to set output device: {}", e))?;
     save_audio_session_to_disk(&state);
     Ok(())

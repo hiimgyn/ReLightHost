@@ -15,7 +15,7 @@ use crate::audio::vu_meter::VUMeter;
 /// Holds live CPAL streams for input monitoring (kept alive while monitoring is on)
 struct MonitoringStreams {
     _input: cpal::Stream,
-    _output: cpal::Stream,
+    _output: Option<cpal::Stream>,
     /// Optional Hardware Out stream — feeds processed audio to speakers/headphones for monitoring.
     /// Gated by `loopback_enabled`; only audible when the loopback button is ON.
     _virtual_output: Option<cpal::Stream>,
@@ -155,21 +155,27 @@ impl AudioManager {
         let out_asio_name = config.output_device_id.as_deref().and_then(|id| id.strip_prefix("asio_"));
         let same_asio_device = input_is_asio && output_is_asio && in_asio_name == out_asio_name;
 
-        let (input_device, output_device) = if same_asio_device {
+        let (input_device, output_device_opt) = if same_asio_device {
             let asio_name = in_asio_name.unwrap(); // safe: guarded above
             log::info!("ASIO full-duplex insert mode: using shared host for '{}'", asio_name);
-            AudioDevice::find_asio_device_pair(asio_name)
-                .ok_or_else(|| anyhow::anyhow!("ASIO device '{}' not found for insert mode", asio_name))?
+            let (inp, out) = AudioDevice::find_asio_device_pair(asio_name)
+                .ok_or_else(|| anyhow::anyhow!("ASIO device '{}' not found for insert mode", asio_name))?;
+            (inp, Some(out))
         } else {
             let inp = config.input_device_id.as_deref()
                 .and_then(AudioDevice::find_input_device)
                 .or_else(|| cpal::default_host().default_input_device())
                 .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
-            let out = config.output_device_id.as_deref()
-                .and_then(AudioDevice::find_output_device)
-                .or_else(|| cpal::default_host().default_output_device())
-                .ok_or_else(|| anyhow::anyhow!("No output device available"))?;
-            (inp, out)
+            // If the user explicitly set output_device_id to None, do NOT fall back
+            // to the system default — treat it as "no hardware out configured".
+            let out_opt = if config.output_device_id.is_some() {
+                config.output_device_id.as_deref()
+                    .and_then(AudioDevice::find_output_device)
+                    .or_else(|| cpal::default_host().default_output_device())
+            } else {
+                None
+            };
+            (inp, out_opt)
         };
 
         // -----------------------------------------------------------------
@@ -219,7 +225,12 @@ impl AudioManager {
         };
 
         let (in_cfg, input_channels)  = build_config(&input_device,  true,  input_is_asio)?;
-        let (out_cfg, output_channels) = build_config(&output_device, false, output_is_asio)?;
+        let (out_cfg_opt, output_channels_opt) = if let Some(ref out_dev) = output_device_opt {
+            let (cfg, ch) = build_config(out_dev, false, output_is_asio)?;
+            (Some(cfg), Some(ch))
+        } else {
+            (None, None)
+        };
 
         // -----------------------------------------------------------------
         // Lock-free SPSC ring buffer — stereo, sized by mode:
@@ -317,8 +328,8 @@ impl AudioManager {
         let mut left_buf  = vec![0.0f32; max_frames];
         let mut right_buf = vec![0.0f32; max_frames];
 
-        let out_stream = output_device
-            .build_output_stream(
+        let out_stream_opt = if let (Some(out_cfg), Some(output_channels)) = (out_cfg_opt, output_channels_opt) {
+            let out_stream = output_device_opt.unwrap().build_output_stream(
                 &out_cfg,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let frames = data.len() / output_channels.max(1);
@@ -336,14 +347,14 @@ impl AudioManager {
                     // Step 2: Run plugin chain (non-blocking try_lock).
                     // If the lock is contended (parameter update from UI thread)
                     // audio passes through unchanged — same as LightHost bypass.
-                    if let Ok(guard) = process_fn.try_lock() {
+                        if let Ok(guard) = process_fn.try_lock() {
                         if let Some(ref f) = *guard {
-                            f(&mut left_buf[..frames], &mut right_buf[..frames]);
+                            f(&mut left_buf[..frames_to_process], &mut right_buf[..frames_to_process]);
                         }
                     }
 
                     // Step 2.5: Update VU meter with processed audio
-                    vu_meter.update(&left_buf[..frames], &right_buf[..frames]);
+                    vu_meter.update(&left_buf[..frames_to_process], &right_buf[..frames_to_process]);
 
                     // Read mute and loopback flags once so both output paths use the same state.
                     let is_muted = muted.load(Ordering::Relaxed);
@@ -383,15 +394,30 @@ impl AudioManager {
                 },
                 |err| log::error!("Output stream error: {err}"),
                 None,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to build output stream: {e}"))?;
+            );
+            match out_stream {
+                Ok(stream) => Some(stream),
+                Err(e) => {
+                    log::warn!("Failed to build output stream: {e}; continuing without it");
+                    None
+                }
+            }
+        } else {
+            // No hardware output configured — skip creating output stream.
+            None
+        };
 
+        // Start input stream first (some drivers require input started before output).
         in_stream
             .play()
             .map_err(|e| anyhow::anyhow!("Failed to start input stream: {e}"))?;
-        out_stream
-            .play()
-            .map_err(|e| anyhow::anyhow!("Failed to start output stream: {e}"))?;
+
+        // Now start output stream if present.
+        if let Some(ref stream) = out_stream_opt {
+            if let Err(e) = stream.play() {
+                log::warn!("Failed to start output stream: {e}");
+            }
+        }
 
         // -----------------------------------------------------------------
         // Virtual output stream — consumes from the virtual ring buffer that
@@ -436,7 +462,7 @@ impl AudioManager {
         let has_virt = virtual_out_stream.is_some();
         *monitoring_guard = Some(MonitoringStreams {
             _input: in_stream,
-            _output: out_stream,
+            _output: out_stream_opt,
             _virtual_output: virtual_out_stream,
         });
         self.status.write().is_monitoring = true;

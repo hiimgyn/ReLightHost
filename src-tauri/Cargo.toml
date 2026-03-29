@@ -1,6 +1,6 @@
 [package]
 name = "ReLightHost"
-version = "1.6.0"
+version = "1.7.0"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
 license = ""
@@ -44,6 +44,7 @@ nnnoiseless = "0.5"
 
 # Utilities
 anyhow = "1.0"
+rayon = "1.10"
 dirs = "5.0"
 libloading = "0.8"
 sysinfo = "0.32"

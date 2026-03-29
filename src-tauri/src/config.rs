@@ -65,12 +65,12 @@ impl ConfigManager {
     }
 
     pub fn get_custom_paths(&self) -> Vec<String> {
-        let config = self.config.read().unwrap();
+        let config = self.config.read().unwrap_or_else(|e| e.into_inner());
         config.custom_scan_paths.clone()
     }
 
     pub fn add_custom_path(&self, path: String) -> Result<()> {
-        let mut config = self.config.write().unwrap();
+        let mut config = self.config.write().unwrap_or_else(|e| e.into_inner());
         if !config.custom_scan_paths.contains(&path) {
             config.custom_scan_paths.push(path);
             self.save_config(&config)?;
@@ -79,29 +79,29 @@ impl ConfigManager {
     }
 
     pub fn remove_custom_path(&self, path: &str) -> Result<()> {
-        let mut config = self.config.write().unwrap();
+        let mut config = self.config.write().unwrap_or_else(|e| e.into_inner());
         config.custom_scan_paths.retain(|p| p != path);
         self.save_config(&config)?;
         Ok(())
     }
 
     pub fn get_minimize_to_tray(&self) -> bool {
-        self.config.read().unwrap().minimize_to_tray
+        self.config.read().unwrap_or_else(|e| e.into_inner()).minimize_to_tray
     }
 
     pub fn set_minimize_to_tray(&self, enabled: bool) -> Result<()> {
-        let mut config = self.config.write().unwrap();
+        let mut config = self.config.write().unwrap_or_else(|e| e.into_inner());
         config.minimize_to_tray = enabled;
         self.save_config(&config)?;
         Ok(())
     }
 
     pub fn get_show_app_on_startup(&self) -> bool {
-        self.config.read().unwrap().show_app_on_startup
+        self.config.read().unwrap_or_else(|e| e.into_inner()).show_app_on_startup
     }
 
     pub fn set_show_app_on_startup(&self, enabled: bool) -> Result<()> {
-        let mut config = self.config.write().unwrap();
+        let mut config = self.config.write().unwrap_or_else(|e| e.into_inner());
         config.show_app_on_startup = enabled;
         self.save_config(&config)?;
         Ok(())
@@ -118,10 +118,29 @@ impl ConfigManager {
     fn session_path(&self) -> PathBuf {
         self.config_path
             .parent()
-            .expect("config path must have a parent directory")
-            .join("session.json")
+            .map(|p| p.join("session.json"))
+            .unwrap_or_else(|| std::env::temp_dir().join("session.json"))
     }
 
+}
+
+impl Default for ConfigManager {
+    fn default() -> Self {
+        let config = AppConfig::default();
+        let config_path = std::env::temp_dir().join("relighthost_config.json");
+
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        Self {
+            config: Arc::new(RwLock::new(config)),
+            config_path,
+        }
+    }
+}
+
+impl ConfigManager {
     /// Persist the current audio configuration to session.json.
     /// Called after every audio setting change so the state survives restarts.
     pub fn save_session(&self, audio: &AudioConfig, muted: bool) -> Result<()> {

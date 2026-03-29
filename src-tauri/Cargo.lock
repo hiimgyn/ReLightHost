@@ -13,6 +13,7 @@ dependencies = [
  "log",
  "nnnoiseless",
  "parking_lot",
+ "rayon",
  "ringbuf",
  "serde",
  "serde_json",

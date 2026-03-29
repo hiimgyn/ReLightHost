@@ -116,7 +116,7 @@ function App() {
   return (
     <Suspense fallback={<div className="h-screen" />}>
       <Layout>
-        <div className="h-full p-6">
+        <div className="rh-main-inner h-full w-full max-w-[1820px] mx-auto px-4 py-4 md:px-7 md:py-5">
           <PluginChain />
         </div>
         {showFirstTimeAudio && (

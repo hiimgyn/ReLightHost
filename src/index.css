@@ -3,14 +3,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Brand — keep in sync with Layout ConfigProvider colorPrimary / colorInfo */
 :root {
-  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+  --rh-primary: #9b72cf;
+  --rh-primary-soft: #b08ee0;
+  --rh-primary-glow: rgba(155, 114, 207, 0.38);
+  --rh-info: #1890ff;
+
+  font-family: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
   color-scheme: light;
   color: rgba(0, 0, 0, 0.88);
-  background-color: #f0f2f5;
+  background-color: #eef0f7;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -18,11 +24,10 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Dark mode — toggled by Layout.tsx adding the `dark` class to <html> */
 :root.dark {
   color-scheme: dark;
   color: rgba(255, 255, 255, 0.88);
-  background-color: #0a0a0a;
+  background-color: #08080c;
 }
 
 body {
@@ -32,9 +37,10 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background:
-    radial-gradient(1200px 700px at 8% -10%, rgba(59, 130, 246, 0.22), transparent 55%),
-    radial-gradient(950px 600px at 92% 8%, rgba(16, 185, 129, 0.16), transparent 58%),
-    linear-gradient(180deg, #f4f7fc 0%, #ebf1fa 100%);
+    radial-gradient(ellipse 900px 520px at 0% 0%, var(--rh-primary-glow), transparent 62%),
+    radial-gradient(ellipse 700px 480px at 100% 0%, rgba(24, 144, 255, 0.14), transparent 55%),
+    radial-gradient(ellipse 600px 400px at 50% 110%, rgba(16, 185, 129, 0.09), transparent 50%),
+    linear-gradient(165deg, #f6f4fc 0%, #e8ecf6 48%, #eef2f9 100%);
 }
 
 #root {
@@ -44,9 +50,10 @@ body {
 
 :root.dark body {
   background:
-    radial-gradient(1200px 700px at 8% -10%, rgba(59, 130, 246, 0.18), transparent 55%),
-    radial-gradient(950px 600px at 92% 8%, rgba(16, 185, 129, 0.13), transparent 58%),
-    linear-gradient(180deg, #070b14 0%, #0b1220 100%);
+    radial-gradient(ellipse 900px 520px at 0% 0%, rgba(155, 114, 207, 0.2), transparent 58%),
+    radial-gradient(ellipse 700px 480px at 100% 0%, rgba(24, 144, 255, 0.11), transparent 52%),
+    radial-gradient(ellipse 500px 360px at 80% 100%, rgba(16, 185, 129, 0.07), transparent 45%),
+    linear-gradient(165deg, #0c0a10 0%, #0f111a 40%, #0a0c12 100%);
 }
 
 * {
@@ -62,15 +69,25 @@ body {
 }
 
 .glass-panel {
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  background: color-mix(in srgb, white 72%, transparent);
-  border: 1px solid color-mix(in srgb, #9db2ce 32%, transparent);
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+  background: color-mix(in srgb, white 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--rh-primary) 18%, #9db2ce 24%);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 12px 40px -18px color-mix(in srgb, var(--rh-primary) 22%, transparent);
 }
 
 :root.dark .glass-panel {
-  background: color-mix(in srgb, #111827 70%, transparent);
-  border: 1px solid color-mix(in srgb, #334155 42%, transparent);
+  background: color-mix(in srgb, #14141c 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--rh-primary) 22%, #334155 35%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 20px 50px -24px rgba(0, 0, 0, 0.65);
+}
+
+.rh-main-inner {
+  min-height: 0;
 }
 
 .mono-text {
@@ -88,13 +105,13 @@ body {
 
 *::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: rgba(120, 140, 170, 0.35);
+  background: color-mix(in srgb, var(--rh-primary) 32%, rgba(120, 140, 170, 0.45));
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(120, 140, 170, 0.55);
+  background: color-mix(in srgb, var(--rh-primary) 48%, rgba(120, 140, 170, 0.5));
   border: 2px solid transparent;
   background-clip: content-box;
 }

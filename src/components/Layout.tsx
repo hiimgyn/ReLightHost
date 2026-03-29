@@ -45,13 +45,14 @@ function AppShell({ children, isDark }: { children: ReactNode; isDark: boolean }
 
   return (
     <div
-      className="flex flex-col h-screen"
-      style={{ background: token.colorBgLayout, color: token.colorText }}
+      className="flex flex-col h-screen min-h-0"
+      style={{
+        background: 'transparent',
+        color: token.colorText,
+      }}
     >
       <Header />
-      <div className="flex-1 overflow-hidden">
-        {children}
-      </div>
+      <div className="flex-1 overflow-hidden min-h-0">{children}</div>
       <Footer status={status} pluginCount={pluginChain.length} isDark={isDark} />
     </div>
   );
@@ -78,15 +79,13 @@ export default function Layout({ children }: LayoutProps) {
         token: {
           colorPrimary: '#9b72cf',
           colorInfo: '#1890ff',
-          borderRadius: 8,
+          colorLink: '#9b72cf',
+          borderRadius: 10,
           fontFamily:
-            'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          // Layout background
-          colorBgLayout: isDark ? '#0a0a0a' : '#f0f2f5',
-          // Container / card background
-          colorBgContainer: isDark ? '#141414' : '#ffffff',
-          // Elevated (modal, dropdown) background
-          colorBgElevated: isDark ? '#1f1f1f' : '#ffffff',
+            '"Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+          colorBgLayout: isDark ? 'transparent' : 'transparent',
+          colorBgContainer: isDark ? '#16161d' : '#fcfcff',
+          colorBgElevated: isDark ? '#1e1e28' : '#ffffff',
           // Border
           colorBorder: isDark ? '#303030' : '#d9d9d9',
           colorBorderSecondary: isDark ? '#1f1f1f' : '#f0f0f0',
@@ -100,9 +99,12 @@ export default function Layout({ children }: LayoutProps) {
           Card: {
             headerBg: 'transparent',
           },
+          Button: {
+            primaryShadow: '0 4px 14px -2px rgba(155, 114, 207, 0.45)',
+          },
           Modal: {
-            contentBg: isDark ? '#141414' : '#ffffff',
-            headerBg: isDark ? '#141414' : '#ffffff',
+            contentBg: isDark ? '#16161d' : '#ffffff',
+            headerBg: isDark ? '#16161d' : '#ffffff',
           },
           Select: {
             optionSelectedBg: isDark ? '#2a1f3d' : '#f5f0ff',
@@ -187,15 +189,22 @@ function Footer({ status, pluginCount, isDark }: {
 
   return (
     <footer
+      className="glass-panel"
       style={{
-        background: token.colorBgContainer,
-        borderTop: `1px solid ${token.colorBorderSecondary}`,
-        padding: '0 24px',
+        margin: '0 16px 12px',
+        borderRadius: token.borderRadiusLG * 1.2,
+        background: isDark ? 'rgba(22, 22, 29, 0.88)' : 'rgba(252, 252, 255, 0.85)',
+        borderTop: 'none',
+        border: `1px solid ${isDark ? 'rgba(155,114,207,0.15)' : 'rgba(155,114,207,0.12)'}`,
+        boxShadow: isDark
+          ? '0 -4px 24px rgba(0,0,0,0.35)'
+          : '0 -2px 20px rgba(15,23,42,0.06)',
+        padding: '0 20px',
         flexShrink: 0,
         display: 'flex',
         alignItems: 'center',
         gap: 12,
-        height: 28,
+        height: 36,
       }}
     >
       {/* Left: audio engine info */}

@@ -9,6 +9,7 @@ import type {
   PluginStatus,
   VUData,
   PluginCrashStatusItem,
+  LaunchPluginsResult,
 } from './types';
 
 // Audio Commands
@@ -115,6 +116,11 @@ export async function getSystemStats(): Promise<SystemStats> {
 
 export async function launchPlugin(instanceId: string): Promise<void> {
   return invoke('launch_plugin', { instanceId });
+}
+
+/** Open many native GUIs. Omit IDs to open every VST/VST3/CLAP in the chain that is not already open. */
+export async function launchPlugins(instanceIds?: string[] | null): Promise<LaunchPluginsResult> {
+  return invoke('launch_plugins', { instanceIds: instanceIds ?? null });
 }
 
 // Preset Commands

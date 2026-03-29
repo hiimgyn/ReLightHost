@@ -3,7 +3,7 @@ import { Button, Space, Tooltip, Typography, theme, Badge } from 'antd';
 import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 
-const { Text } = Typography;
+const { Text, Title } = Typography;
 import {
   AudioOutlined,
   SettingOutlined,
@@ -39,124 +39,205 @@ export default function Header() {
     getVersion().then(setAppVersion).catch(() => {});
   }, []);
 
-  // Listen for tray context-menu events
   useEffect(() => {
     const unlistens = [
-      listen<boolean>('tray-mute-changed',     (e) => applyExternalMuteState(e.payload)),
+      listen<boolean>('tray-mute-changed', (e) => applyExternalMuteState(e.payload)),
       listen<boolean>('tray-loopback-changed', (e) => applyExternalLoopbackState(e.payload)),
-      listen('tray-open-audio-settings',       ()  => setShowAudioSettings(true)),
-      listen('tray-open-app-settings',         ()  => setShowAppSettings(true)),
+      listen('tray-open-audio-settings', () => setShowAudioSettings(true)),
+      listen('tray-open-app-settings', () => setShowAppSettings(true)),
     ];
-    return () => { unlistens.forEach(p => p.then(fn => fn())); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      unlistens.forEach((p) => p.then((fn) => fn()));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const isDark = appTheme === 'dark';
 
   return (
     <>
       <header
         style={{
-          background: token.colorBgContainer,
-          borderBottom: `1px solid ${token.colorBorderSecondary}`,
-          padding: '0 24px',
-          height: 56,
+          margin: '12px 16px 0',
+          padding: '12px 20px',
+          flexShrink: 0,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          flexShrink: 0,
+          gap: 16,
+          minHeight: 64,
+          borderRadius: token.borderRadiusLG * 1.25,
+          background: isDark ? 'rgba(22, 22, 29, 0.92)' : 'rgba(252, 252, 255, 0.92)',
+          border: `1px solid ${isDark ? 'rgba(155,114,207,0.18)' : 'rgba(155,114,207,0.14)'}`,
+          boxShadow: isDark
+            ? '0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.03) inset'
+            : '0 8px 28px rgba(15,23,42,0.08), 0 0 0 1px rgba(255,255,255,0.7) inset',
+          backdropFilter: 'blur(16px)',
+          WebkitBackdropFilter: 'blur(16px)',
         }}
       >
-        {/* Logo */}
-        <Space size="small">
-          <img src="/logo.png" alt="ReLightHost" style={{ width: 64, height: 64 }} />
-          <Text
+        {/* Brand */}
+        <Space size={14} align="center" style={{ minWidth: 0 }}>
+          <div
             style={{
-              fontSize: 11,
-              background: token.colorFillSecondary,
-              padding: '1px 8px',
-              borderRadius: token.borderRadiusSM,
-              color: token.colorTextSecondary,
+              width: 52,
+              height: 52,
+              borderRadius: 14,
+              overflow: 'hidden',
+              flexShrink: 0,
+              boxShadow: `0 4px 14px ${isDark ? 'rgba(155,114,207,0.25)' : 'rgba(155,114,207,0.2)'}`,
+              border: `1px solid ${isDark ? 'rgba(155,114,207,0.3)' : 'rgba(155,114,207,0.22)'}`,
             }}
           >
-            {appVersion ? `v${appVersion}` : 'Beta'}
-          </Text>
+            <img src="/logo.png" alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <Title
+              level={4}
+              style={{
+                margin: 0,
+                fontSize: 19,
+                fontWeight: 700,
+                letterSpacing: '-0.02em',
+                lineHeight: 1.15,
+                color: token.colorText,
+              }}
+            >
+              ReLight<span style={{ color: token.colorPrimary }}>Host</span>
+            </Title>
+            <Space size={8} style={{ marginTop: 4 }} wrap>
+              <Text style={{ fontSize: 11, color: token.colorTextTertiary }}>
+                VST · VST3 · CLAP
+              </Text>
+              <Text
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: 0.04,
+                  textTransform: 'uppercase',
+                  color: token.colorPrimary,
+                  background: isDark ? 'rgba(155,114,207,0.14)' : 'rgba(155,114,207,0.12)',
+                  padding: '1px 8px',
+                  borderRadius: 20,
+                  border: `1px solid ${isDark ? 'rgba(155,114,207,0.28)' : 'rgba(155,114,207,0.2)'}`,
+                }}
+              >
+                {appVersion ? `v${appVersion}` : 'Beta'}
+              </Text>
+            </Space>
+          </div>
         </Space>
+
         {/* Controls */}
-        <Space size="middle">
-          {/* Stream status badge — read-only */}
-          <Space size={6} align="center">
-            {status.is_monitoring
-              ? <Badge status="processing" color={token.colorSuccess} />
-              : <LoadingOutlined style={{ fontSize: 12, color: token.colorTextSecondary }} />}
+        <Space size={10} wrap style={{ justifyContent: 'flex-end' }}>
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 12px',
+              borderRadius: 999,
+              background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(15,23,42,0.04)',
+              border: `1px solid ${token.colorBorderSecondary}`,
+            }}
+          >
+            {status.is_monitoring ? (
+              <Badge status="processing" color={token.colorSuccess} />
+            ) : (
+              <LoadingOutlined style={{ fontSize: 12, color: token.colorTextSecondary }} />
+            )}
             <Text
               style={{
                 fontSize: 12,
+                fontWeight: 600,
                 color: status.is_monitoring ? token.colorSuccess : token.colorTextSecondary,
               }}
             >
-              {status.is_monitoring ? 'Running' : 'Loading…'}
+              {status.is_monitoring ? 'Engine on' : 'Starting…'}
             </Text>
-          </Space>
-          {/* Mute toggle */}
-          <Tooltip title={isMuted ? 'Unmute output' : 'Mute output'}>
-            <Button
-              type="text"
-              icon={isMuted
-                ? <MutedOutlined style={{ color: '#ff4d4f' }} />
-                : <SoundOutlined style={{ color: '#52c41a' }} />}
-              onClick={() => setMuted(!isMuted)}
-            />
-          </Tooltip>
-          {/* Loopback toggle — routes processed audio to Hardware Out for monitoring */}
-          <Tooltip title={isLoopbackEnabled ? 'Turn off monitoring (Hardware Out silent)' : 'Turn on monitoring (hear output through Hardware Out)'}>
-            <Button
-              type="text"
-              icon={
-                <RetweetOutlined
-                  style={{ color: isLoopbackEnabled ? token.colorPrimary : token.colorTextSecondary }}
-                />
+          </div>
+
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 2,
+              padding: 4,
+              borderRadius: 12,
+              background: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(15,23,42,0.045)',
+              border: `1px solid ${token.colorBorderSecondary}`,
+            }}
+          >
+            <Tooltip title={isMuted ? 'Unmute output' : 'Mute output'}>
+              <Button
+                type="text"
+                size="small"
+                icon={
+                  isMuted ? (
+                    <MutedOutlined style={{ color: '#ff4d4f' }} />
+                  ) : (
+                    <SoundOutlined style={{ color: '#52c41a' }} />
+                  )
+                }
+                onClick={() => setMuted(!isMuted)}
+              />
+            </Tooltip>
+            <Tooltip
+              title={
+                isLoopbackEnabled
+                  ? 'Monitoring off — hardware out silent'
+                  : 'Monitoring on — hear processed audio on hardware out'
               }
-              onClick={() => setLoopback(!isLoopbackEnabled)}
-            />
-          </Tooltip>
-          {/* Theme toggle */}
-          <Tooltip title={appTheme === 'dark' ? 'Switch to Light' : 'Switch to Dark'}>
-            <Button
-              type="text"
-              icon={appTheme === 'dark'
-                ? <BulbFilled style={{ color: '#faad14' }} />
-                : <BulbOutlined style={{ color: '#faad14' }} />}
-              onClick={toggleTheme}
-            />
-          </Tooltip>
-
-          {/* Audio Settings */}
-          <Tooltip title="Audio Settings">
-            <Button
-              type="text"
-              icon={<AudioOutlined style={{ color: '#1677ff' }} />}
-              onClick={() => setShowAudioSettings(true)}
-            />
-          </Tooltip>
-
-          {/* App Settings */}
-          <Tooltip title="Application Settings">
-            <Button
-              type="text"
-              icon={<SettingOutlined style={{ color: '#9b72cf' }} />}
-              onClick={() => setShowAppSettings(true)}
-            />
-          </Tooltip>
+            >
+              <Button
+                type="text"
+                size="small"
+                icon={
+                  <RetweetOutlined
+                    style={{
+                      color: isLoopbackEnabled ? token.colorPrimary : token.colorTextSecondary,
+                    }}
+                  />
+                }
+                onClick={() => setLoopback(!isLoopbackEnabled)}
+              />
+            </Tooltip>
+            <Tooltip title={appTheme === 'dark' ? 'Light theme' : 'Dark theme'}>
+              <Button
+                type="text"
+                size="small"
+                icon={
+                  appTheme === 'dark' ? (
+                    <BulbFilled style={{ color: '#faad14' }} />
+                  ) : (
+                    <BulbOutlined style={{ color: '#faad14' }} />
+                  )
+                }
+                onClick={toggleTheme}
+              />
+            </Tooltip>
+            <Tooltip title="Audio devices & engine">
+              <Button
+                type="text"
+                size="small"
+                icon={<AudioOutlined style={{ color: token.colorInfo }} />}
+                onClick={() => setShowAudioSettings(true)}
+              />
+            </Tooltip>
+            <Tooltip title="Application settings">
+              <Button
+                type="text"
+                size="small"
+                icon={<SettingOutlined style={{ color: token.colorPrimary }} />}
+                onClick={() => setShowAppSettings(true)}
+              />
+            </Tooltip>
+          </div>
         </Space>
       </header>
 
-      <AudioSettings
-        isOpen={showAudioSettings}
-        onClose={() => setShowAudioSettings(false)}
-      />
-      <AppSettings
-        isOpen={showAppSettings}
-        onClose={() => setShowAppSettings(false)}
-      />
+      <AudioSettings isOpen={showAudioSettings} onClose={() => setShowAudioSettings(false)} />
+      <AppSettings isOpen={showAppSettings} onClose={() => setShowAppSettings(false)} />
     </>
   );
 }

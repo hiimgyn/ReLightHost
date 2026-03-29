@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as tauri from '../lib/tauri';
 import type { VUData } from '../lib/types';
 
@@ -8,24 +8,27 @@ function toFrac(db: number) { return Math.min(1, Math.max(0, (db + 50) / 50)); }
 const BAR_GRAD = 'linear-gradient(to right, #9b72cf 0%, #b08ee0 45%, #e478a8 75%, #ff4d4f 100%)';
 const BAR_GRAD_CLIP = 'linear-gradient(to right, #f97316 0%, #ef4444 60%, #ff4d4f 100%)';
 
-function HBar({ peak, rms, peak_hold, clip }: {
-  peak: number; rms: number; peak_hold: number; clip: boolean;
+function HBar({ peak, rms, peak_hold, clip, isDark }: {
+  peak: number; rms: number; peak_hold: number; clip: boolean; isDark: boolean;
 }) {
   const peakPct = toFrac(toDb(peak)) * 100;
   const rmsPct  = toFrac(toDb(rms))  * 100;
   const holdPct = toFrac(toDb(peak_hold)) * 100;
+  const trackBg = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.08)';
+  const trackBorder = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(155,114,207,0.12)';
+  const rmsGhost = isDark ? 'rgba(155,114,207,0.22)' : 'rgba(155,114,207,0.28)';
 
   return (
     <div style={{
       position: 'relative', flex: 1, height: 5, borderRadius: 3,
-      background: 'rgba(255,255,255,0.05)',
-      border: '1px solid rgba(255,255,255,0.07)',
+      background: trackBg,
+      border: `1px solid ${trackBorder}`,
     }}>
       {/* RMS ghost */}
       <div style={{
         position: 'absolute', top: 0, left: 0, bottom: 0,
         width: rmsPct + '%', borderRadius: 3,
-        background: 'rgba(155,114,207,0.2)',
+        background: rmsGhost,
       }} />
       {/* Peak fill */}
       <div style={{
@@ -108,14 +111,19 @@ export function VUMeter({ updateInterval = 50, isDark = true }: { updateInterval
     }}>
       {/* L channel */}
       <span style={labelCss}>L</span>
-      <HBar peak={vu.left.peak} rms={vu.left.rms} peak_hold={vu.left.peak_hold} clip={clipL} />
+      <HBar peak={vu.left.peak} rms={vu.left.rms} peak_hold={vu.left.peak_hold} clip={clipL} isDark={isDark} />
 
       {/* divider */}
-      <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.1)', flexShrink: 0 }} />
+      <div style={{
+        width: 1,
+        height: 14,
+        background: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(15,23,42,0.1)',
+        flexShrink: 0,
+      }} />
 
       {/* R channel */}
       <span style={labelCss}>R</span>
-      <HBar peak={vu.right.peak} rms={vu.right.rms} peak_hold={vu.right.peak_hold} clip={clipR} />
+      <HBar peak={vu.right.peak} rms={vu.right.rms} peak_hold={vu.right.peak_hold} clip={clipR} isDark={isDark} />
     </div>
   );
 }

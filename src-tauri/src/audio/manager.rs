@@ -62,7 +62,7 @@ impl AudioManager {
     where
         F: Fn(&mut [f32], &mut [f32]) + Send + 'static,
     {
-        *self.process_fn.lock().unwrap() = Some(Box::new(f));
+        *self.process_fn.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
     }
 
     /// Restore a previously saved AudioConfig without restarting any running streams.
@@ -117,7 +117,7 @@ impl AudioManager {
     /// latency.
     pub fn toggle_monitoring(&self, enabled: bool) -> Result<()> {
         if !enabled {
-            *self.monitoring.lock().unwrap() = None;
+            *self.monitoring.lock().unwrap_or_else(|e| e.into_inner()) = None;
             self.status.write().is_monitoring = false;
             log::info!("Input monitoring stopped");
             return Ok(());
@@ -127,7 +127,7 @@ impl AudioManager {
         // (e.g. React StrictMode double-effect) cannot race and create duplicate
         // streams — which caused STATUS_ACCESS_VIOLATION when the first set of
         // streams was dropped mid-callback.
-        let mut monitoring_guard = self.monitoring.lock().unwrap();
+        let mut monitoring_guard = self.monitoring.lock().unwrap_or_else(|e| e.into_inner());
         if monitoring_guard.is_some() {
             log::info!("Audio stream already running — ignoring duplicate start");
             return Ok(());
@@ -156,7 +156,9 @@ impl AudioManager {
         let same_asio_device = input_is_asio && output_is_asio && in_asio_name == out_asio_name;
 
         let (input_device, output_device_opt) = if same_asio_device {
-            let asio_name = in_asio_name.unwrap(); // safe: guarded above
+            let asio_name = in_asio_name
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("ASIO insert mode requires a device name after 'asio_' prefix"))?;
             log::info!("ASIO full-duplex insert mode: using shared host for '{}'", asio_name);
             let (inp, out) = AudioDevice::find_asio_device_pair(asio_name)
                 .ok_or_else(|| anyhow::anyhow!("ASIO device '{}' not found for insert mode", asio_name))?;
@@ -328,9 +330,11 @@ impl AudioManager {
         let mut left_buf  = vec![0.0f32; max_frames];
         let mut right_buf = vec![0.0f32; max_frames];
 
-        let out_stream_opt = if let (Some(out_cfg), Some(output_channels)) = (out_cfg_opt, output_channels_opt) {
-            let out_stream = output_device_opt.unwrap().build_output_stream(
-                &out_cfg,
+        let out_stream_opt = if let (Some(out_dev), Some(out_cfg), Some(output_channels)) =
+            (output_device_opt.as_ref(), out_cfg_opt.as_ref(), output_channels_opt)
+        {
+            let out_stream = out_dev.build_output_stream(
+                out_cfg,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let frames = data.len() / output_channels.max(1);
 

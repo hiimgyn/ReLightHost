@@ -38,7 +38,6 @@ pub mod win {
     use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows_sys::Win32::Graphics::Gdi::{RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE};
 
-    static GLOBAL_VST3_GUI_OPEN: AtomicBool = AtomicBool::new(false);
     type OnSizeCallback = Box<dyn Fn(i32, i32)>;
 
     // Thread-local state shared between GUI setup, WndProc, and IPlugFrame.
@@ -161,15 +160,6 @@ pub mod win {
         gui_hwnd: Arc<AtomicIsize>,
         attachment_ready: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<()> {
-        if GLOBAL_VST3_GUI_OPEN
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(anyhow!(
-                "Another VST3 GUI is already open. Close it before opening a new one."
-            ));
-        }
-
         let controller_clone = controller.clone();
         let component_clone  = component.clone();
         let name_owned = plugin_name.to_string();
@@ -205,7 +195,6 @@ pub mod win {
                         self.flag.store(false, Ordering::Release);
                         // Editor is no longer in attach phase; allow process().
                         self.attachment_ready.store(true, Ordering::Release);
-                        GLOBAL_VST3_GUI_OPEN.store(false, Ordering::Release);
                         crate::app_events::emit_plugin_chain_changed("gui_close", None);
                         log::debug!("GUI flag cleared");
                     }
@@ -230,10 +219,7 @@ pub mod win {
                 }
                 // _cleanup drops here: COM refs released, then gui_open cleared
             })
-            .map_err(|e| {
-                GLOBAL_VST3_GUI_OPEN.store(false, Ordering::Release);
-                anyhow!("Failed to spawn GUI thread: {}", e)
-            })?;
+            .map_err(|e| anyhow!("Failed to spawn GUI thread: {}", e))?;
 
         Ok(())
     }

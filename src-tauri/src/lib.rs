@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tauri::Manager;
 use audio::{AudioManager, AudioStatus, AudioDeviceInfo, AudioDevice, AudioConfig};
-use plugins::{PluginScanner, PluginInstanceManager, PluginInfo, PluginInstanceInfo};
+use plugins::{PluginFormat, PluginScanner, PluginInstanceManager, PluginInfo, PluginInstanceInfo};
 use preset::{PresetManager, Preset};
 use config::ConfigManager;
 
@@ -353,13 +353,24 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
     // Clear current chain
     state.plugin_manager.read().clear();
 
-    // Reload plugins from preset
     let config = state.audio_manager.read().get_config();
+    let sample_rate = config.sample_rate as f64;
+    let buffer_size = config.buffer_size;
+
+    let mut infos: Vec<PluginInfo> = Vec::new();
+    let mut preset_items: Vec<(
+        bool,
+        String,
+        PluginFormat,
+        Option<Vec<u8>>,
+        Vec<preset::PresetParameter>,
+    )> = Vec::new();
+
     for plugin_preset in preset.plugin_chain {
         let (Some(path), Some(format)) = (plugin_preset.plugin_path, plugin_preset.plugin_format) else {
             continue;
         };
-        let plugin_info = PluginInfo {
+        infos.push(PluginInfo {
             id: plugin_preset.plugin_id.clone(),
             name: plugin_preset.plugin_name.clone(),
             vendor: plugin_preset.plugin_vendor.unwrap_or_default(),
@@ -367,27 +378,45 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
             path,
             format,
             category: plugin_preset.plugin_category.unwrap_or_default(),
+        });
+        preset_items.push((
+            plugin_preset.bypassed,
+            plugin_preset.plugin_name.clone(),
+            format,
+            plugin_preset.vst3_state.clone(),
+            plugin_preset.parameters.clone(),
+        ));
+    }
+
+    let results = state
+        .plugin_manager
+        .read()
+        .load_plugins_parallel_results(infos, sample_rate, buffer_size as usize);
+
+    for ((bypassed, plugin_name, _format, vst3_state, parameters), res) in
+        preset_items.into_iter().zip(results)
+    {
+        let instance_id = match res {
+            Ok(id) => id,
+            Err(e) => {
+                log::warn!("Preset '{}' — skipped plugin '{}': {}", name, plugin_name, e);
+                continue;
+            }
         };
+        if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
+            instance.set_bypassed(bypassed);
 
-        if let Ok(instance_id) = state.plugin_manager.read().load_plugin(
-            plugin_info,
-            config.sample_rate as f64,
-            config.buffer_size as usize,
-        ) {
-            if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
-                instance.set_bypassed(plugin_preset.bypassed);
+            if let Some(ref vst3_state) = vst3_state {
+                log::debug!(
+                    "🔄 Restoring VST3 state for '{}' ({} bytes)",
+                    plugin_name,
+                    vst3_state.len()
+                );
+                instance.set_state_binary(vst3_state);
+            }
 
-                // Restore VST3 binary state first (contains internal plugin data)
-                if let Some(ref vst3_state) = plugin_preset.vst3_state {
-                    log::debug!("🔄 Restoring VST3 state for '{}' ({} bytes)", 
-                        plugin_preset.plugin_name, vst3_state.len());
-                    instance.set_state_binary(vst3_state);
-                }
-
-                // Then apply parameter values (may override some state)
-                for p in plugin_preset.parameters {
-                    instance.set_parameter(p.id, p.value);
-                }
+            for p in parameters {
+                instance.set_parameter(p.id, p.value);
             }
         }
     }
@@ -397,88 +426,167 @@ fn apply_preset(state: tauri::State<AppState>, name: String) -> Result<(), Strin
     Ok(())
 }
 
-#[tauri::command]
-fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
-    let manager = state.plugin_manager.read();
-    if let Some(instance) = manager.get_instance(&instance_id) {
-        // Use the existing VST3 processor's GUI instead of loading a new instance
-        instance.open_gui()
-            .map_err(|e| format!("Failed to open plugin GUI: {}", e))?;
-        crate::app_events::emit_plugin_chain_changed("gui_open", Some(&instance_id));
-        // Spawn a background watcher while the GUI is open.  Some native
-        // plugin UIs change internal state without calling our host APIs;
-        // periodically snapshot the plugin state and persist an autosave
-        // when the binary state changes so __autosave__ captures GUI edits.
-        {
-            // Capture only the Arcs we need so nothing with a non-'static
-            // lifetime (like `tauri::State`) escapes into the spawned thread.
-            let plugin_manager = Arc::clone(&state.plugin_manager);
-            let preset_manager = Arc::clone(&state.preset_manager);
-            let autosave_last_hash = Arc::clone(&state.autosave_last_hash);
-            let inst_id = instance_id.clone();
+#[derive(serde::Serialize)]
+struct LaunchPluginsResult {
+    ok_count: usize,
+    skipped_count: usize,
+    errors: Vec<String>,
+}
 
-            std::thread::spawn(move || {
-                use std::hash::{Hash, Hasher};
-                use std::collections::hash_map::DefaultHasher;
+/// While a native plugin GUI is open, poll binary state and persist __autosave__ when it changes.
+fn spawn_plugin_gui_autosave_watcher(
+    plugin_manager: Arc<RwLock<PluginInstanceManager>>,
+    preset_manager: Arc<RwLock<PresetManager>>,
+    autosave_last_hash: Arc<AtomicU64>,
+    inst_id: String,
+) {
+    std::thread::spawn(move || {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
-                // Small debounce loop: poll while GUI flag remains true.
-                if let Some(inst) = plugin_manager.read().get_instance(&inst_id) {
-                    let mut last_h: Option<u64> = None;
-                    while inst.get_info().gui_open {
-                        std::thread::sleep(Duration::from_millis(500));
-                        let blob = inst.get_state_binary();
-                        if !blob.is_empty() {
-                            let mut hasher = DefaultHasher::new();
-                            blob.hash(&mut hasher);
-                            let h = hasher.finish();
-                            if last_h.map(|v| v != h).unwrap_or(true) {
-                                last_h = Some(h);
+        if let Some(inst) = plugin_manager.read().get_instance(&inst_id) {
+            let mut last_h: Option<u64> = None;
+            while inst.get_info().gui_open {
+                std::thread::sleep(Duration::from_millis(500));
+                let blob = inst.get_state_binary();
+                if blob.is_empty() {
+                    continue;
+                }
+                let mut hasher = DefaultHasher::new();
+                blob.hash(&mut hasher);
+                let h = hasher.finish();
+                if last_h.map(|v| v != h).unwrap_or(true) {
+                    last_h = Some(h);
 
-                                // Build minimal preset snapshot (similar to schedule_auto_save)
-                                let chain = plugin_manager.read().get_instances();
-                                let mut preset = Preset::new("__autosave__".to_string(), chain.clone());
-                                {
-                                    let manager = plugin_manager.read();
-                                    for (preset_plugin, info) in preset.plugin_chain.iter_mut().zip(chain.iter()) {
-                                        if let Some(instance) = manager.get_instance(&info.instance_id) {
-                                            let blob = instance.get_state_binary();
-                                            if !blob.is_empty() {
-                                                preset_plugin.vst3_state = Some(blob);
-                                            }
-                                        }
-                                    }
-                                }
-
-                                let skip_write = {
-                                    let bytes = match serde_json::to_vec(&preset) {
-                                        Ok(b) => b,
-                                        Err(_) => Vec::new(),
-                                    };
-                                    if bytes.is_empty() { false } else {
-                                        let mut hasher = DefaultHasher::new();
-                                        bytes.hash(&mut hasher);
-                                        let ph = hasher.finish();
-                                        ph == autosave_last_hash.load(Ordering::Acquire)
-                                    }
-                                };
-
-                                if !skip_write {
-                                    if let Err(e) = preset_manager.read().save_preset(&preset) {
-                                        log::warn!("Failed to save autosave from GUI watcher: {e}");
-                                    } else if let Some(h) = preset_hash(&preset) {
-                                        autosave_last_hash.store(h, Ordering::Release);
-                                    }
+                    let chain = plugin_manager.read().get_instances();
+                    let mut preset = Preset::new("__autosave__".to_string(), chain.clone());
+                    {
+                        let manager = plugin_manager.read();
+                        for (preset_plugin, info) in preset.plugin_chain.iter_mut().zip(chain.iter()) {
+                            if let Some(instance) = manager.get_instance(&info.instance_id) {
+                                let blob = instance.get_state_binary();
+                                if !blob.is_empty() {
+                                    preset_plugin.vst3_state = Some(blob);
                                 }
                             }
                         }
                     }
+
+                    let skip_write = {
+                        let bytes = match serde_json::to_vec(&preset) {
+                            Ok(b) => b,
+                            Err(_) => Vec::new(),
+                        };
+                        if bytes.is_empty() {
+                            false
+                        } else {
+                            let mut hasher = DefaultHasher::new();
+                            bytes.hash(&mut hasher);
+                            let ph = hasher.finish();
+                            ph == autosave_last_hash.load(Ordering::Acquire)
+                        }
+                    };
+
+                    if !skip_write {
+                        if let Err(e) = preset_manager.read().save_preset(&preset) {
+                            log::warn!("Failed to save autosave from GUI watcher: {e}");
+                        } else if let Some(h) = preset_hash(&preset) {
+                            autosave_last_hash.store(h, Ordering::Release);
+                        }
+                    }
                 }
-            });
+            }
         }
+    });
+}
+
+#[tauri::command]
+fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
+    let manager = state.plugin_manager.read();
+    if let Some(instance) = manager.get_instance(&instance_id) {
+        instance
+            .open_gui()
+            .map_err(|e| format!("Failed to open plugin GUI: {}", e))?;
+        drop(manager);
+        crate::app_events::emit_plugin_chain_changed("gui_open", Some(&instance_id));
+        spawn_plugin_gui_autosave_watcher(
+            Arc::clone(&state.plugin_manager),
+            Arc::clone(&state.preset_manager),
+            Arc::clone(&state.autosave_last_hash),
+            instance_id,
+        );
         Ok(())
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
     }
+}
+
+/// Open native editor windows for many instances at once. Each instance still allows only one GUI.
+/// Pass `None` or an empty list to open every **non-builtin** plugin whose GUI is not already open.
+#[tauri::command]
+fn launch_plugins(
+    state: tauri::State<AppState>,
+    instance_ids: Option<Vec<String>>,
+) -> Result<LaunchPluginsResult, String> {
+    let ids: Vec<String> = match instance_ids {
+        Some(v) if !v.is_empty() => v,
+        _ => state
+            .plugin_manager
+            .read()
+            .get_instances()
+            .into_iter()
+            .filter(|p| !matches!(p.format, PluginFormat::Builtin) && !p.gui_open)
+            .map(|p| p.instance_id)
+            .collect(),
+    };
+
+    if ids.is_empty() {
+        return Ok(LaunchPluginsResult {
+            ok_count: 0,
+            skipped_count: 0,
+            errors: vec![],
+        });
+    }
+
+    let mut ok_count = 0usize;
+    let mut skipped_count = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    let manager = state.plugin_manager.read();
+    for id in ids {
+        let Some(instance) = manager.get_instance(&id) else {
+            errors.push(format!("Unknown instance: {}", id));
+            continue;
+        };
+        let info = instance.get_info();
+        if matches!(info.format, PluginFormat::Builtin) {
+            skipped_count += 1;
+            continue;
+        }
+        if info.gui_open {
+            skipped_count += 1;
+            continue;
+        }
+        match instance.open_gui() {
+            Ok(()) => {
+                ok_count += 1;
+                crate::app_events::emit_plugin_chain_changed("gui_open", Some(&id));
+                spawn_plugin_gui_autosave_watcher(
+                    Arc::clone(&state.plugin_manager),
+                    Arc::clone(&state.preset_manager),
+                    Arc::clone(&state.autosave_last_hash),
+                    id,
+                );
+            }
+            Err(e) => errors.push(format!("{}: {}", info.name, e)),
+        }
+    }
+
+    Ok(LaunchPluginsResult {
+        ok_count,
+        skipped_count,
+        errors,
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -891,13 +999,25 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
             // Collect VST3 blobs + params to replay after load phase completes
             let mut vst3_replays: Vec<(String, Option<Vec<u8>>, Vec<preset::PresetParameter>)> = Vec::new();
 
+            let sample_rate = config.sample_rate as f64;
+            let buffer_size = config.buffer_size;
+
+            let mut infos: Vec<PluginInfo> = Vec::new();
+            let mut restore_rows: Vec<(
+                bool,
+                PluginFormat,
+                String,
+                Option<Vec<u8>>,
+                Vec<preset::PresetParameter>,
+            )> = Vec::new();
+
             for plugin_preset in &preset.plugin_chain {
                 let (Some(path), Some(format)) =
                     (plugin_preset.plugin_path.as_ref(), plugin_preset.plugin_format)
                 else {
                     continue;
                 };
-                let plugin_info = PluginInfo {
+                infos.push(PluginInfo {
                     id:       plugin_preset.plugin_id.clone(),
                     name:     plugin_preset.plugin_name.clone(),
                     vendor:   plugin_preset.plugin_vendor.clone().unwrap_or_default(),
@@ -905,34 +1025,53 @@ fn restore_session(state: tauri::State<AppState>) -> Result<SessionRestoreResult
                     path:     path.clone(),
                     format,
                     category: plugin_preset.plugin_category.clone().unwrap_or_default(),
+                });
+                restore_rows.push((
+                    plugin_preset.bypassed,
+                    format,
+                    plugin_preset.plugin_name.clone(),
+                    plugin_preset.vst3_state.clone(),
+                    plugin_preset.parameters.clone(),
+                ));
+            }
+
+            let results = state
+                .plugin_manager
+                .read()
+                .load_plugins_parallel_results(infos, sample_rate, buffer_size as usize);
+
+            for ((bypassed, format, plugin_name, vst3_state, parameters), res) in
+                restore_rows.into_iter().zip(results)
+            {
+                let instance_id = match res {
+                    Ok(id) => id,
+                    Err(e) => {
+                        log::warn!("Session restore — skipped plugin '{plugin_name}': {e}");
+                        continue;
+                    }
                 };
 
-                if let Ok(instance_id) = state.plugin_manager.read().load_plugin(
-                    plugin_info,
-                    config.sample_rate as f64,
-                    config.buffer_size as usize,
-                ) {
-                    let restoring_vst3 = format == crate::plugins::types::PluginFormat::VST3;
-                    if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
-                        instance.set_bypassed(plugin_preset.bypassed);
-                        if restoring_vst3 {
-                            // Defer replay: record instance_id + blob + params for later.
-                            vst3_replays.push((
-                                instance_id.clone(),
-                                plugin_preset.vst3_state.clone(),
-                                plugin_preset.parameters.clone(),
-                            ));
-                            log::debug!("Deferred VST3 state for '{}', will replay after load", plugin_preset.plugin_name);
-                        } else {
-                            if let Some(ref vst3_state) = plugin_preset.vst3_state {
-                                instance.set_state_binary(vst3_state);
-                            }
-                            for p in &plugin_preset.parameters {
-                                instance.set_parameter(p.id, p.value);
-                            }
+                plugins_restored += 1;
+                let restoring_vst3 = format == PluginFormat::VST3;
+
+                if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
+                    instance.set_bypassed(bypassed);
+
+                    if restoring_vst3 {
+                        vst3_replays.push((
+                            instance_id.clone(),
+                            vst3_state.clone(),
+                            parameters.clone(),
+                        ));
+                        log::debug!("Deferred VST3 state for '{}', will replay after load", plugin_name);
+                    } else {
+                        if let Some(ref blob) = vst3_state {
+                            instance.set_state_binary(blob);
+                        }
+                        for p in &parameters {
+                            instance.set_parameter(p.id, p.value);
                         }
                     }
-                    plugins_restored += 1;
                 }
             }
 
@@ -1082,7 +1221,13 @@ pub fn run() {
     let plugin_manager = Arc::new(RwLock::new(PluginInstanceManager::new()));
     let preset_manager = Arc::new(RwLock::new(PresetManager::default()));
     let config_manager = Arc::new(RwLock::new(
-        ConfigManager::new().expect("Failed to initialize config manager")
+        match ConfigManager::new() {
+            Ok(cm) => cm,
+            Err(e) => {
+                log::error!("Failed to initialize config manager: {}. Using in-memory default.", e);
+                ConfigManager::default()
+            }
+        }
     ));
     let sys_info = Arc::new(RwLock::new({
         use sysinfo::{System, RefreshKind, CpuRefreshKind, MemoryRefreshKind};
@@ -1334,6 +1479,7 @@ pub fn run() {
             is_startup_enabled,
             toggle_startup,
             launch_plugin,
+            launch_plugins,
             get_system_stats,
             get_plugin_crash_status,
             get_plugin_crash_statuses,
@@ -1345,6 +1491,9 @@ pub fn run() {
             install_update,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            log::error!("Tauri application error: {}", e);
+            std::process::exit(1);
+        });
 }
 

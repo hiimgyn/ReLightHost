@@ -115,13 +115,13 @@ impl BuiltinProcessor for NoiseSuppressor {
         // Write output with wet/dry blend + gate + output gain.
         // Pass-through samples that have no denoised counterpart yet
         // (initial FRAME_SIZE latency on startup).
-        let avail = self.out_l.len().min(n);
+        let avail = self.out_l.len().min(self.out_r.len()).min(n);
         for i in 0..avail {
             self.gate_gain = GATE_COEFF * self.gate_gain + (1.0 - GATE_COEFF) * gate_target;
             let dry_l = self.dry_l.pop_front().unwrap_or(left[i]);
             let dry_r = self.dry_r.pop_front().unwrap_or(right[i]);
-            let wet_l = self.out_l.pop_front().unwrap();
-            let wet_r = self.out_r.pop_front().unwrap();
+            let wet_l = self.out_l.pop_front().unwrap_or(dry_l);
+            let wet_r = self.out_r.pop_front().unwrap_or(dry_r);
             left[i]  = (dry_l + mix * (wet_l - dry_l)) * self.gate_gain * output_gain;
             right[i] = (dry_r + mix * (wet_r - dry_r)) * self.gate_gain * output_gain;
         }

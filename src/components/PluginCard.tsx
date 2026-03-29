@@ -163,20 +163,20 @@ export default function PluginCard({
       className={`transition-all ${plugin.bypassed ? 'opacity-70' : ''}`}
       style={{
         borderWidth: 1,
-        borderRadius: 10,
+        borderRadius: 12,
         borderColor: isCrashed
           ? token.colorError
           : plugin.gui_open
           ? token.colorSuccess
           : plugin.bypassed
           ? token.colorBorderSecondary
-          : token.colorPrimary,
-        background: token.colorBgContainer,
+          : 'color-mix(in srgb, ' + token.colorPrimary + ' 38%, ' + token.colorBorder + ')',
+        background: token.colorBgElevated,
         boxShadow: isCrashed
-          ? `0 0 0 1px ${token.colorErrorBorder}, 0 8px 18px ${token.colorErrorBg}`
+          ? `0 0 0 1px ${token.colorErrorBorder}, 0 10px 28px ${token.colorErrorBg}`
           : plugin.gui_open
-          ? `0 0 0 1px ${token.colorSuccessBorder}, 0 8px 18px rgba(82,196,26,0.12)`
-          : `0 6px 14px ${token.colorFillSecondary}`,
+          ? `0 0 0 1px ${token.colorSuccessBorder}, 0 10px 26px rgba(82,196,26,0.14)`
+          : `0 4px 6px rgba(15,23,42,0.04), 0 14px 32px -12px color-mix(in srgb, ${token.colorPrimary} 22%, transparent)`,
       }}
       styles={{ body: { padding: '10px 12px' } }}
     >

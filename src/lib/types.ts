@@ -46,6 +46,13 @@ export interface PluginParameter {
   default: number;
 }
 
+/** Result of opening several plugin GUIs at once (see `launch_plugins`). */
+export interface LaunchPluginsResult {
+  ok_count: number;
+  skipped_count: number;
+  errors: string[];
+}
+
 export interface PluginInstanceInfo {
   instance_id: string;
   plugin_id: string;

@@ -9,7 +9,8 @@ use crate::plugins::vst2_processor::Vst2Processor;
 use crate::plugins::clap_processor::ClapProcessor;
 use crate::plugins::builtin::BuiltinProcessor;
 use crate::plugins::crash_protection::{self, SharedCrashProtection};
-use anyhow::Result;
+use anyhow::{Error, Result};
+use rayon::prelude::*;
 
 /// Represents a loaded plugin instance with an optional real audio processor.
 ///
@@ -248,10 +249,19 @@ impl PluginInstance {
                 // No VST2 processor → fall through to built-in check
             }
 
-            // Built-in processors are crash-safe (pure Rust); no extra protection needed.
             if let Some(mut guard) = self.builtin_processor.try_lock() {
                 if let Some(ref mut proc) = *guard {
-                    proc.process_stereo(left, right);
+                    let result = crash_protection::protected_call(AssertUnwindSafe(|| {
+                        proc.process_stereo(left, right);
+                    }));
+                    if let Err(crash_msg) = result {
+                        log::error!("Built-in plugin crashed during processing: {}", crash_msg);
+                        if let Some(mut protection) = self.crash_protection.try_lock() {
+                            protection.mark_crashed(crash_msg);
+                        }
+                        left.fill(0.0);
+                        right.fill(0.0);
+                    }
                     return;
                 }
             }
@@ -557,6 +567,94 @@ impl PluginInstanceManager {
         let instance_id = instance.instance_id().to_string();
         self.instances.write().push(instance);
         Ok(instance_id)
+    }
+
+    /// Load many plugins for preset/session restore. Preserves chain order.
+    ///
+    /// VST3 factories are initialised **sequentially** (COM + host stability).
+    /// CLAP, VST2, and built-ins load **in parallel** across a Rayon pool.
+    ///
+    /// Return value aligns 1:1 with `infos`: `Ok(id)` on success, `Err` when
+    /// that plugin failed to construct (same semantics as skipping a failed
+    /// `load_plugin` in a loop).
+    pub fn load_plugins_parallel_results(
+        &self,
+        infos: Vec<PluginInfo>,
+        sample_rate: f64,
+        block_size: usize,
+    ) -> Vec<Result<String, Error>> {
+        let n = infos.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        if n == 1 {
+            let info = infos.into_iter().next().unwrap();
+            return vec![match PluginInstance::new(info, sample_rate, block_size) {
+                Ok(p) => {
+                    let arc = Arc::new(p);
+                    let id = arc.instance_id().to_string();
+                    self.instances.write().push(arc);
+                    Ok(id)
+                }
+                Err(e) => Err(e),
+            }];
+        }
+
+        #[derive(Clone)]
+        struct Job {
+            idx: usize,
+            info: PluginInfo,
+            vst3: bool,
+        }
+
+        let jobs: Vec<Job> = infos
+            .into_iter()
+            .enumerate()
+            .map(|(idx, info)| {
+                let vst3 = info.format == PluginFormat::VST3;
+                Job { idx, info, vst3 }
+            })
+            .collect();
+
+        let mut slots: Vec<Option<Result<Arc<PluginInstance>, Error>>> = (0..n).map(|_| None).collect();
+
+        for j in &jobs {
+            if j.vst3 {
+                slots[j.idx] = Some(PluginInstance::new(j.info.clone(), sample_rate, block_size).map(Arc::new));
+            }
+        }
+
+        let parallel_jobs: Vec<Job> = jobs.iter().filter(|j| !j.vst3).cloned().collect();
+        if !parallel_jobs.is_empty() {
+            let filled: Vec<(usize, Result<Arc<PluginInstance>, Error>)> = parallel_jobs
+                .into_par_iter()
+                .map(|j| {
+                    let idx = j.idx;
+                    let r = PluginInstance::new(j.info, sample_rate, block_size).map(Arc::new);
+                    (idx, r)
+                })
+                .collect();
+            for (idx, r) in filled {
+                slots[idx] = Some(r);
+            }
+        }
+
+        let mut to_extend = Vec::new();
+        let mut out = Vec::with_capacity(n);
+        for (i, slot) in slots.into_iter().enumerate() {
+            let r = slot.unwrap_or_else(|| Err(anyhow::anyhow!("internal: empty plugin slot {}", i)));
+            match r {
+                Ok(arc) => {
+                    let id = arc.instance_id().to_string();
+                    to_extend.push(arc);
+                    out.push(Ok(id));
+                }
+                Err(e) => out.push(Err(e)),
+            }
+        }
+
+        self.instances.write().extend(to_extend);
+        out
     }
 
     /// Remove a plugin instance

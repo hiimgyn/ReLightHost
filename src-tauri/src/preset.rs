@@ -171,7 +171,14 @@ impl PresetManager {
 
 impl Default for PresetManager {
     fn default() -> Self {
-        Self::new().expect("Failed to create PresetManager")
+        match Self::new() {
+            Ok(m) => m,
+            Err(e) => {
+                log::error!("Failed to create PresetManager: {}. Falling back to current directory.", e);
+                let dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                Self { presets_dir: dir }
+            }
+        }
     }
 }
 impl PresetManager {
@@ -183,7 +190,7 @@ impl PresetManager {
 
 // Simple chrono replacement for timestamp
 mod chrono {
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     pub struct Local;
 
@@ -199,8 +206,8 @@ mod chrono {
         pub fn to_rfc3339(&self) -> String {
             let duration = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap();
-            
+                .unwrap_or(Duration::ZERO);
+
             format!("{}", duration.as_secs())
         }
     }

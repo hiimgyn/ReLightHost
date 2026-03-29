@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { lazy, Suspense } from 'react';
 import { Card, Button, Empty, Space, Tooltip, message, theme, Typography } from 'antd';
 import { listen } from '@tauri-apps/api/event';
@@ -13,6 +13,7 @@ import {
   LeftOutlined,
   RightOutlined,
   SwapOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { usePluginStore } from '../stores/pluginStore';
 import PluginCard from './PluginCard';
@@ -37,6 +38,10 @@ export default function PluginChain() {
   const [showPresetManager, setShowPresetManager] = useState(false);
   const [showPluginLibrary, setShowPluginLibrary] = useState(false);
   const addLocked = isMutating || isChainInitializing;
+  const nativeClosedCount = pluginChain.filter(
+    (p) => p.format !== 'builtin' && !p.gui_open,
+  ).length;
+  const canLaunchAllNative = nativeClosedCount > 0 && !addLocked;
 
   // draggedIndex: which card is being dragged
   // insertBefore: the index BEFORE which the dragged card will be inserted
@@ -192,26 +197,42 @@ export default function PluginChain() {
     insertBefore !== draggedIndex + 1;
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col min-h-0">
       {/* Toolbar */}
       <div
+        className="glass-panel"
         style={{
           marginBottom: 16,
+          padding: '16px 20px',
+          borderRadius: token.borderRadiusLG * 1.25,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 12,
+          gap: 16,
           flexWrap: 'wrap',
         }}
       >
-        <Space direction="vertical" size={0}>
-          <Text strong style={{ fontSize: 22, color: token.colorText, margin: 0 }}>
-            Signal Chain
+        <Space direction="vertical" size={2}>
+          <Text
+            strong
+            style={{
+              fontSize: 20,
+              fontWeight: 700,
+              letterSpacing: '-0.02em',
+              color: token.colorText,
+              margin: 0,
+              display: 'block',
+            }}
+          >
+            Signal chain
+          </Text>
+          <Text style={{ fontSize: 12, color: token.colorTextTertiary, margin: 0 }}>
+            Drag cards to reorder · right-click empty area to add
           </Text>
         </Space>
 
-        <Space size="middle">
-          <Button 
+        <Space size="middle" wrap>
+          <Button
             type="primary"
             icon={<PlusOutlined />}
             size="large"
@@ -219,23 +240,61 @@ export default function PluginChain() {
             disabled={addLocked}
             onClick={() => setShowPluginLibrary(true)}
           >
-            {isChainInitializing ? 'Preparing Chain...' : 'Add Plugin'}
+            {isChainInitializing ? 'Preparing…' : 'Add plugin'}
           </Button>
 
-          <Button 
-            icon={<ExportOutlined />}
-            size="large"
-            onClick={() => setShowPresetManager(true)}
-          >
+          <Button icon={<ExportOutlined />} size="large" onClick={() => setShowPresetManager(true)}>
             Presets
           </Button>
+
+          <Tooltip
+            title={
+              nativeClosedCount === 0
+                ? 'No closed native plugin GUIs (built-ins use Settings on each card)'
+                : `Open ${nativeClosedCount} native editor window(s) (VST / VST3 / CLAP)`
+            }
+          >
+            <Button
+              icon={<ThunderboltOutlined />}
+              size="large"
+              disabled={!canLaunchAllNative}
+              onClick={async () => {
+                try {
+                  const r = await tauri.launchPlugins();
+                  await fetchChain();
+                  await fetchCrashStatuses();
+                  if (r.errors.length > 0) {
+                    message.warning(
+                      `Opened ${r.ok_count} GUI(s). ${r.errors.length} failed — see log for details.`,
+                      5,
+                    );
+                  } else if (r.ok_count > 0) {
+                    message.success(`Opened ${r.ok_count} plugin window(s)`);
+                  } else {
+                    message.info('Nothing to open — all native GUIs may already be visible');
+                  }
+                } catch {
+                  message.error('Failed to launch plugin GUIs');
+                }
+              }}
+            >
+              Launch all
+            </Button>
+          </Tooltip>
         </Space>
       </div>
 
       {/* Plugin Chain Area */}
       <Card
-        style={{ flex: 1, background: token.colorBgContainer }}
-        styles={{ body: { height: '100%', padding: '18px', overflow: 'hidden' } }}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          background: token.colorBgContainer,
+          borderRadius: token.borderRadiusLG * 1.25,
+          border: `1px solid ${token.colorBorderSecondary}`,
+          boxShadow: token.boxShadowTertiary,
+        }}
+        styles={{ body: { height: '100%', padding: '20px', overflow: 'hidden' } }}
         onContextMenu={handleContextMenu}
       >
         {pluginChain.length > 0 ? (
@@ -245,13 +304,14 @@ export default function PluginChain() {
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
-                marginBottom: 10,
-                color: token.colorTextSecondary,
-                fontSize: 12,
+                marginBottom: 12,
+                color: token.colorTextTertiary,
+                fontSize: 11,
+                fontWeight: 500,
               }}
             >
-              <SwapOutlined />
-              <span>Drag the top bar to reorder plugins</span>
+              <SwapOutlined style={{ color: token.colorPrimary, opacity: 0.85 }} />
+              <span>Use the grip bar on each card to reorder</span>
             </div>
 
             <div

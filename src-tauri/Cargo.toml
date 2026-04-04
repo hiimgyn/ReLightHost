@@ -1,9 +1,9 @@
 [package]
 name = "ReLightHost"
-version = "1.7.0"
+version = "1.7.5"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
-license = ""
+license = "CC-BY-NC-SA-4.0"
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"

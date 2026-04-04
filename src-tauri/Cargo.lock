@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "ReLightHost"
-version = "1.7.0"
+version = "1.7.5"
 dependencies = [
  "anyhow",
  "cpal",

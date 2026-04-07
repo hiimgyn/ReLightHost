@@ -6,7 +6,7 @@
 
 *Designed for musicians and audio engineers who need low-latency, multi-format plugin processing with a clean, native-feeling UI.*
 
-[![Version](https://img.shields.io/badge/version-1.6.0-9b72cf?style=for-the-badge)](https://github.com)
+[![Version](https://img.shields.io/badge/version-1.8.0-9b72cf?style=for-the-badge)](https://github.com)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0d7adf?style=for-the-badge)](https://github.com)
 [![Rust](https://img.shields.io/badge/rust-1.77%2B-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Tauri](https://img.shields.io/badge/tauri-2.x-24c8db?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app)
@@ -368,14 +368,14 @@ Stored as JSON in the platform app-data directory:
 
 ### Auto-save
 
-Every structural change to the plugin chain (add, remove, reorder, bypass toggle, rename) auto-saves to an `__autosave__` preset. The chain is silently restored on the next launch.
+Every structural change to the plugin chain (add, remove, reorder, bypass toggle, rename) auto-saves to an `autosave` preset. The chain is silently restored on the next launch.
 
 ### Session Restore Sequence
 
 ```
 1. restore_session() called on frontend mount
 2. Audio config (device, SR, buffer) ← config.json
-3. Plugin chain                      ← __autosave__ preset
+3. Plugin chain                      ← autosave preset
 4. Audio stream started
    └─ Voicemeeter ASIO: 2 s delay to let Voicemeeter finish its startup
   └─ VST3 safety window may defer start a bit longer during restore

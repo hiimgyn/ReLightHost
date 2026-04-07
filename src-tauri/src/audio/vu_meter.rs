@@ -1,7 +1,16 @@
-use std::sync::Arc;
-use parking_lot::Mutex;
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
+
+#[inline(always)]
+fn load_f32(a: &AtomicU32) -> f32 {
+    f32::from_bits(a.load(Ordering::Relaxed))
+}
+
+#[inline(always)]
+fn store_f32(a: &AtomicU32, v: f32) {
+    a.store(v.to_bits(), Ordering::Relaxed);
+}
 
 /// VU Meter data for a single channel
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -31,123 +40,102 @@ pub struct VUData {
     pub right: VUChannel,
 }
 
-/// Peak hold with timestamp
-#[derive(Debug, Clone, Copy)]
-struct PeakHold {
-    value: f32,
-    timestamp: Instant,
-}
-
-/// VU Meter with peak and RMS detection
+/// Lock-free VU meter — safe to call from the realtime audio callback.
 ///
-/// Inspired by rust-vst3-host's metering system:
-/// - Peak detection for transients
-/// - Peak hold with 3-second decay
-/// - RMS for average loudness perception
+/// All writable fields are stored as atomic bitwise f32 (`AtomicU32`) so
+/// the audio thread never blocks. Peak hold timestamps use `AtomicI64`.
 pub struct VUMeter {
-    left_peak: Arc<Mutex<f32>>,
-    right_peak: Arc<Mutex<f32>>,
-    left_rms: Arc<Mutex<f32>>,
-    right_rms: Arc<Mutex<f32>>,
-    left_hold: Arc<Mutex<PeakHold>>,
-    right_hold: Arc<Mutex<PeakHold>>,
-    
-    /// Peak hold duration (default: 3 seconds)
-    hold_duration: Duration,
-    /// Peak decay rate per update (0.0 - 1.0)
-    /// 0.95 = 5% decay per frame
-    decay_rate: f32,
+    // peaks (written by audio thread, read by UI thread)
+    left_peak:  AtomicU32,
+    right_peak: AtomicU32,
+    // smoothed RMS
+    left_rms:   AtomicU32,
+    right_rms:  AtomicU32,
+    // peak hold value + timestamp (nanos, relative to meter creation)
+    left_hold_val:  AtomicU32,
+    right_hold_val: AtomicU32,
+    left_hold_ns:   AtomicI64,
+    right_hold_ns:  AtomicI64,
+
+    created_at:       Instant,
+    hold_duration_ns: i64, // nanos
+    decay_rate:       f32,
 }
 
 impl VUMeter {
     pub fn new() -> Self {
         Self {
-            left_peak: Arc::new(Mutex::new(0.0)),
-            right_peak: Arc::new(Mutex::new(0.0)),
-            left_rms: Arc::new(Mutex::new(0.0)),
-            right_rms: Arc::new(Mutex::new(0.0)),
-            left_hold: Arc::new(Mutex::new(PeakHold {
-                value: 0.0,
-                timestamp: Instant::now(),
-            })),
-            right_hold: Arc::new(Mutex::new(PeakHold {
-                value: 0.0,
-                timestamp: Instant::now(),
-            })),
-            hold_duration: Duration::from_secs(3),
-            decay_rate: 0.95,
+            left_peak:      AtomicU32::new(0.0f32.to_bits()),
+            right_peak:     AtomicU32::new(0.0f32.to_bits()),
+            left_rms:       AtomicU32::new(0.0f32.to_bits()),
+            right_rms:      AtomicU32::new(0.0f32.to_bits()),
+            left_hold_val:  AtomicU32::new(0.0f32.to_bits()),
+            right_hold_val: AtomicU32::new(0.0f32.to_bits()),
+            left_hold_ns:   AtomicI64::new(0),
+            right_hold_ns:  AtomicI64::new(0),
+            created_at:     Instant::now(),
+            hold_duration_ns: Duration::from_secs(3).as_nanos() as i64,
+            decay_rate:     0.95,
         }
     }
-    
-    /// Update VU meter with audio buffer (non-interleaved stereo)
-    ///
-    /// # Arguments
-    /// * `left` - Left channel samples
-    /// * `right` - Right channel samples
+
+    /// Called from the realtime audio callback — zero locks, zero allocations.
     pub fn update(&self, left: &[f32], right: &[f32]) {
-        // Calculate peak values
+        // Peak
         let peak_l = left.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         let peak_r = right.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        
-        // Calculate RMS values (average energy)
+
+        // Decay then clamp new peak up
+        let decayed_l = (load_f32(&self.left_peak) * self.decay_rate).max(peak_l);
+        let decayed_r = (load_f32(&self.right_peak) * self.decay_rate).max(peak_r);
+        store_f32(&self.left_peak, decayed_l);
+        store_f32(&self.right_peak, decayed_r);
+
+        // RMS smoothing
+        const RMS_SMOOTH: f32 = 0.8;
         let rms_l = if !left.is_empty() {
-            let sum_squares: f32 = left.iter().map(|s| s * s).sum();
-            (sum_squares / left.len() as f32).sqrt()
-        } else {
-            0.0
-        };
-        
+            (left.iter().map(|s| s * s).sum::<f32>() / left.len() as f32).sqrt()
+        } else { 0.0 };
         let rms_r = if !right.is_empty() {
-            let sum_squares: f32 = right.iter().map(|s| s * s).sum();
-            (sum_squares / right.len() as f32).sqrt()
-        } else {
-            0.0
+            (right.iter().map(|s| s * s).sum::<f32>() / right.len() as f32).sqrt()
+        } else { 0.0 };
+        store_f32(&self.left_rms,  load_f32(&self.left_rms)  * RMS_SMOOTH + rms_l * (1.0 - RMS_SMOOTH));
+        store_f32(&self.right_rms, load_f32(&self.right_rms) * RMS_SMOOTH + rms_r * (1.0 - RMS_SMOOTH));
+
+        // Peak hold using elapsed nanos since creation (single Instant::now() cost avoided)
+        let now_ns = self.created_at.elapsed().as_nanos() as i64;
+
+        let update_hold = |peak: f32, hold_val: &AtomicU32, hold_ns: &AtomicI64| {
+            let elapsed = now_ns - hold_ns.load(Ordering::Relaxed);
+            if peak > load_f32(hold_val) || elapsed > self.hold_duration_ns {
+                store_f32(hold_val, peak);
+                hold_ns.store(now_ns, Ordering::Relaxed);
+            }
         };
-        
-        // Update peaks with decay
-        let mut left_peak = self.left_peak.lock();
-        let mut right_peak = self.right_peak.lock();
-        *left_peak = (*left_peak * self.decay_rate).max(peak_l);
-        *right_peak = (*right_peak * self.decay_rate).max(peak_r);
-        
-        // Update RMS with smoothing
-        const RMS_SMOOTHING: f32 = 0.8; // Slower response for RMS
-        let mut left_rms = self.left_rms.lock();
-        let mut right_rms = self.right_rms.lock();
-        *left_rms = (*left_rms * RMS_SMOOTHING) + (rms_l * (1.0 - RMS_SMOOTHING));
-        *right_rms = (*right_rms * RMS_SMOOTHING) + (rms_r * (1.0 - RMS_SMOOTHING));
-        
-        // Update peak hold
-        let now = Instant::now();
-        
-        let mut left_hold = self.left_hold.lock();
-        if peak_l > left_hold.value || now.duration_since(left_hold.timestamp) > self.hold_duration {
-            *left_hold = PeakHold { value: peak_l, timestamp: now };
-        }
-        
-        let mut right_hold = self.right_hold.lock();
-        if peak_r > right_hold.value || now.duration_since(right_hold.timestamp) > self.hold_duration {
-            *right_hold = PeakHold { value: peak_r, timestamp: now };
-        }
+        update_hold(peak_l, &self.left_hold_val,  &self.left_hold_ns);
+        update_hold(peak_r, &self.right_hold_val, &self.right_hold_ns);
     }
-    
-    /// Get current VU meter data
+
+    /// Called from the UI thread — snapshot of current values, never blocks audio.
     pub fn get_data(&self) -> VUData {
         VUData {
             left: VUChannel {
-                peak: *self.left_peak.lock(),
-                peak_hold: self.left_hold.lock().value,
-                rms: *self.left_rms.lock(),
+                peak:      load_f32(&self.left_peak),
+                peak_hold: load_f32(&self.left_hold_val),
+                rms:       load_f32(&self.left_rms),
             },
             right: VUChannel {
-                peak: *self.right_peak.lock(),
-                peak_hold: self.right_hold.lock().value,
-                rms: *self.right_rms.lock(),
+                peak:      load_f32(&self.right_peak),
+                peak_hold: load_f32(&self.right_hold_val),
+                rms:       load_f32(&self.right_rms),
             },
         }
     }
-    
-    }
+}
+
+impl Default for VUMeter {
+    fn default() -> Self { Self::new() }
+}
 
 /// Convert linear amplitude to decibels
 ///

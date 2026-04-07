@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -11,6 +11,7 @@
   --rh-info: #1890ff;
 
   font-family: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Inter', 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
@@ -69,21 +70,26 @@ body {
 }
 
 .glass-panel {
-  backdrop-filter: blur(18px) saturate(1.15);
-  -webkit-backdrop-filter: blur(18px) saturate(1.15);
-  background: color-mix(in srgb, white 78%, transparent);
-  border: 1px solid color-mix(in srgb, var(--rh-primary) 18%, #9db2ce 24%);
+  backdrop-filter: blur(20px) saturate(1.12);
+  -webkit-backdrop-filter: blur(20px) saturate(1.12);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.04);
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 12px 40px -18px color-mix(in srgb, var(--rh-primary) 22%, transparent);
+    0 6px 18px rgba(2,6,23,0.6),
+    0 12px 40px -18px rgba(155,114,207,0.06);
 }
 
 :root.dark .glass-panel {
-  background: color-mix(in srgb, #14141c 82%, transparent);
-  border: 1px solid color-mix(in srgb, var(--rh-primary) 22%, #334155 35%);
+  background: rgba(20,20,28,0.5);
+  border: 1px solid rgba(255,255,255,0.03);
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.04) inset,
-    0 20px 50px -24px rgba(0, 0, 0, 0.65);
+    0 6px 20px rgba(0,0,0,0.6);
+}
+
+/* Signal chain dotted grid for a subtle technical texture */
+.signal-chain-container {
+  background-image: radial-gradient(circle at 0 0, rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 20px 20px;
 }
 
 .rh-main-inner {
@@ -115,4 +121,69 @@ body {
   border: 2px solid transparent;
   background-clip: content-box;
 }
+
+/* Button styles: pill, tonal/ghost, pastel glow */
+.btn-pill {
+  border-radius: var(--rh-border-radius);
+  padding: 6px 12px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+  border: none;
+}
+
+/* Tonal / ghost buttons */
+.btn-tonal {
+  background: rgba(0,0,0,0.04);
+  color: var(--rh-text);
+  border: 1px solid transparent;
+}
+.dark .btn-tonal { background: rgba(255,255,255,0.04); }
+.btn-tonal:hover { background: rgba(0,0,0,0.06); }
+.dark .btn-tonal:hover { background: rgba(255,255,255,0.08); }
+
+/* Active (ON) button with pastel glow */
+.btn-active {
+  background: var(--rh-active);
+  color: #042024;
+  box-shadow: 0 10px 30px var(--rh-active-glow);
+  border: none;
+}
+.btn-active:hover { transform: translateY(-1px); box-shadow: 0 18px 40px var(--rh-active-glow); }
+
+/* Off / muted button */
+.btn-off {
+  background: rgba(0,0,0,0.03);
+  color: var(--rh-text-secondary);
+  border: none;
+}
+.dark .btn-off { background: rgba(255,255,255,0.03); }
+.btn-off:hover { background: rgba(0,0,0,0.06); }
+
+/* Small icon button */
+.btn-icon {
+  border-radius: 8px;
+  color: var(--rh-text-tertiary);
+  background: transparent;
+  border: none;
+  padding: 6px;
+}
+.btn-icon:hover { color: var(--rh-danger-pastel); background: rgba(255,255,255,0.02); }
+
+/* Reset / action button variant */
+.btn-reset {
+  background: var(--rh-accent);
+  color: #fff;
+  box-shadow: 0 12px 36px var(--rh-accent-glow);
+  border: none;
+}
+.btn-reset:hover { opacity: 0.96; transform: translateY(-1px); }
+
+/* Make sure icons inside buttons align with text weight */
+.btn-pill svg { height: 16px; width: 16px; }
+
 

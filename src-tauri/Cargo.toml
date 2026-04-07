@@ -1,6 +1,6 @@
 [package]
 name = "ReLightHost"
-version = "1.7.5"
+version = "1.8.0"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
 license = "CC-BY-NC-SA-4.0"
@@ -26,11 +26,14 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
+thiserror = "1"
 
 # Audio Engine
 # ASIO support: requires ASIO SDK (https://www.steinberg.net/asiosdk) and env var CPAL_ASIO_DIR
 # Set CPAL_ASIO_DIR=C:\path\to\asiosdk before building to enable VirtualASIO / Voicemeeter ASIO
+
 cpal = { version = "0.15", features = ["asio"] }
+
 # Lock-free SPSC ring buffer for audio callbacks (avoids Mutex in realtime thread)
 ringbuf = "0.4"
 parking_lot = "0.12"
@@ -48,6 +51,7 @@ rayon = "1.10"
 dirs = "5.0"
 libloading = "0.8"
 sysinfo = "0.32"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -59,3 +63,4 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Gdi",             # RedrawWindow, InvalidateRect
     "Win32_UI_HiDpi",                 # GetDpiForWindow (DPI scale factor)
 ] }
+winreg = "0.52"

@@ -1,7 +1,6 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
   "productName": "ReLightHost",
-  "version": "1.7.5",
+  "version": "1.8.0",
   "identifier": "com.HiimGyn.relighthost",
   "build": {
     "frontendDist": "../dist",

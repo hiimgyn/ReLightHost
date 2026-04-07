@@ -46,11 +46,11 @@ export async function setVirtualOutputDevice(deviceId: string | null): Promise<v
 }
 
 export async function setSampleRate(sampleRate: number): Promise<void> {
-  return invoke('set_sample_rate', { sampleRate });
+  return invoke('set_sample_rate', { rate: sampleRate });
 }
 
 export async function setBufferSize(bufferSize: number): Promise<void> {
-  return invoke('set_buffer_size', { bufferSize });
+  return invoke('set_buffer_size', { size: bufferSize });
 }
 
 export async function toggleMonitoring(enabled: boolean): Promise<void> {
@@ -75,7 +75,7 @@ export async function scanPlugins(): Promise<PluginInfo[]> {
 }
 
 export async function loadPlugin(pluginInfo: PluginInfo): Promise<string> {
-  return invoke('load_plugin', { pluginInfo });
+  return invoke('load_plugin', { info: pluginInfo });
 }
 
 export async function removePlugin(instanceId: string): Promise<void> {
@@ -86,8 +86,8 @@ export async function getPluginChain(): Promise<PluginInstanceInfo[]> {
   return invoke('get_plugin_chain');
 }
 
-export async function setPluginBypass(instanceId: string, bypassed: boolean): Promise<void> {
-  return invoke('set_plugin_bypass', { instanceId, bypassed });
+export async function setPluginBypass(instanceId: string, bypass: boolean): Promise<void> {
+  return invoke('set_plugin_bypass', { instanceId, bypass });
 }
 
 export async function setPluginParameter(instanceId: string, paramId: number, value: number): Promise<void> {
@@ -100,10 +100,6 @@ export async function reorderPluginChain(fromIndex: number, toIndex: number): Pr
 
 export async function renamePlugin(instanceId: string, newName: string): Promise<void> {
   return invoke('rename_plugin', { instanceId, newName });
-}
-
-export async function applyPreset(name: string): Promise<void> {
-  return invoke('apply_preset', { name });
 }
 
 export async function playTestSound(): Promise<void> {
@@ -123,21 +119,9 @@ export async function launchPlugins(instanceIds?: string[] | null): Promise<Laun
   return invoke('launch_plugins', { instanceIds: instanceIds ?? null });
 }
 
-// Preset Commands
-export async function savePreset(name: string): Promise<string> {
-  return invoke('save_preset', { name });
-}
-
-export async function listPresets(): Promise<string[]> {
-  return invoke('list_presets');
-}
-
-export async function deletePreset(name: string): Promise<void> {
-  return invoke('delete_preset', { name });
-}
-
-export async function autoSavePreset(): Promise<void> {
-  return invoke('auto_save_preset');
+/** Request close of many native plugin GUIs. Omit IDs to close every open GUI. */
+export async function closePlugins(instanceIds?: string[] | null): Promise<LaunchPluginsResult> {
+  return invoke('close_plugins', { instanceIds: instanceIds ?? null });
 }
 
 // Crash Protection Commands

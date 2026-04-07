@@ -1,13 +1,10 @@
-pub mod scanner;
-pub mod instance;
-pub mod types;
-pub mod vst3_processor;
-pub mod vst3_gui;
-pub mod vst2_processor;
-pub mod vst2_gui;
-pub mod clap_processor;
-pub mod clap_gui;
-pub mod crash_protection;
+pub mod core;
+pub use core::instance;
+pub use core::scanner;
+pub use core::types;
+pub mod gui;
+pub mod processor;
+pub use core::crash_protection;
 pub mod builtin;
 
 pub use scanner::PluginScanner;

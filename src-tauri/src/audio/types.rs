@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioStatus {
     pub is_monitoring: bool,
+    pub is_muted: bool,
+    pub loopback_enabled: bool,
     pub sample_rate: u32,
     pub buffer_size: u32,
     pub cpu_usage: f32,
@@ -15,6 +17,8 @@ impl Default for AudioStatus {
         let buffer_size = 1024u32;
         Self {
             is_monitoring: false,
+            is_muted: false,
+            loopback_enabled: false,
             sample_rate,
             buffer_size,
             cpu_usage: 0.0,

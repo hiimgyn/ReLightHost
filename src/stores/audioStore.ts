@@ -36,6 +36,8 @@ interface AudioStore {
 export const useAudioStore = create<AudioStore>((set, get) => ({
   status: {
     is_monitoring: false,
+    is_muted: false,
+    loopback_enabled: false,
     sample_rate: 48000,
     buffer_size: 1024,
     cpu_usage: 0,
@@ -53,7 +55,11 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   fetchStatus: async () => {
     try {
       const status = await tauri.getAudioStatus();
-      set({ status });
+      set({
+        status,
+        isMuted: status.is_muted,
+        isLoopbackEnabled: status.loopback_enabled,
+      });
     } catch (error) {
       console.error('Failed to fetch audio status:', error);
     }

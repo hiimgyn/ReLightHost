@@ -1,18 +1,18 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { message } from 'antd';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAudioStore } from './stores/audioStore';
 import { usePluginStore } from './stores/pluginStore';
 
-const Layout = lazy(() => import('./components/Layout'));
-const PluginChain = lazy(() => import('./components/PluginChain'));
-const AudioSettings = lazy(() => import('./components/AudioSettings'));
+const Layout = lazy(() => import('./components/layout'));
+const PluginChain = lazy(() => import('./components/chain'));
+const AudioSettings = lazy(() => import('./components/audio'));
 
 function App() {
   const [showFirstTimeAudio, setShowFirstTimeAudio] = useState(false);
   const { syncFromBackend, fetchStatus, fetchDevices, toggleMonitoring } = useAudioStore();
-  const forceCloseRef = useRef(false);
+  const [messageApi, contextHolder] = message.useMessage();
 
   // ── Session restore on mount ──────────────────────────────────────────────
   useEffect(() => {
@@ -54,10 +54,10 @@ function App() {
           }
 
           if (result.plugins_restored > 0) {
-            message.success(
-              `Session restored — ${result.plugins_restored} plugin${result.plugins_restored > 1 ? 's' : ''} loaded`,
-              4
-            );
+              messageApi.success(
+                `Session restored — ${result.plugins_restored} plugin${result.plugins_restored > 1 ? 's' : ''} loaded`,
+                4
+              );
           }
         } else {
           // No session.json — try to start the stream with whatever device is
@@ -87,25 +87,32 @@ function App() {
   // ── Window resize / close listeners ──────────────────────────────────────
   useEffect(() => {
     const appWindow = getCurrentWindow();
-    // Sync minimizeToTray from persisted config into localStorage on startup.
-    invoke<boolean>('get_minimize_to_tray').then(val => {
-      localStorage.setItem('minimizeToTray', String(val));
-    }).catch(() => {});
+
+    // Use a ref to hold the minimize-to-tray preference so the close handler
+    // reads the most recent value without racing the async invoke call.
+    const minimizeToTrayRef = { current: localStorage.getItem('minimizeToTray') === 'true' } as { current: boolean };
+
+    // Sync minimizeToTray from persisted config into localStorage on startup
+    // and update the ref when the backend responds.
+    invoke<boolean>('get_minimize_to_tray')
+      .then(val => {
+        minimizeToTrayRef.current = val;
+        localStorage.setItem('minimizeToTray', String(val));
+      })
+      .catch(() => {});
 
     const closePromise = appWindow.onCloseRequested(async (event) => {
-      // Let the second close event pass through when we intentionally destroy.
-      if (forceCloseRef.current) {
-        return;
-      }
+      const minimizeToTray = minimizeToTrayRef.current;
 
-      // Always prevent default in async handlers — then decide explicitly.
-      event.preventDefault();
-      if (localStorage.getItem('minimizeToTray') === 'true') {
+      // Debug log to help trace behavior.
+      try { console.log('onCloseRequested fired; minimizeToTray=', minimizeToTray); } catch {}
+
+      // Only intercept the close to hide to tray when the option is enabled.
+      if (minimizeToTray) {
+        event.preventDefault();
         await appWindow.hide();
-      } else {
-        forceCloseRef.current = true;
-        await appWindow.destroy();
       }
+      // Otherwise allow the default close behavior to proceed.
     });
 
     return () => {
@@ -115,6 +122,7 @@ function App() {
 
   return (
     <Suspense fallback={<div className="h-screen" />}>
+      {contextHolder}
       <Layout>
         <div className="rh-main-inner h-full w-full max-w-[1820px] mx-auto px-4 py-4 md:px-7 md:py-5">
           <PluginChain />

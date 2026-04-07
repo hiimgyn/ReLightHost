@@ -1,6 +1,8 @@
 // Audio Types
 export interface AudioStatus {
   is_monitoring: boolean;
+  is_muted: boolean;
+  loopback_enabled: boolean;
   sample_rate: number;
   buffer_size: number;
   cpu_usage: number;
@@ -66,26 +68,6 @@ export interface PluginInstanceInfo {
   parameters: PluginParameter[];
   /** True while the native GUI window is open */
   gui_open: boolean;
-}
-
-export interface Preset {
-  name: string;
-  description: string;
-  created_at: string;
-  plugin_chain: PresetPlugin[];
-}
-
-export interface PresetPlugin {
-  plugin_id: string;
-  plugin_name: string;
-  bypassed: boolean;
-  parameters: PresetParameter[];
-}
-
-export interface PresetParameter {
-  id: number;
-  name: string;
-  value: number;
 }
 
 export interface SystemStats {

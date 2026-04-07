@@ -90,7 +90,7 @@ impl AudioManager {
 
         *self.last_update.write() = Instant::now();
 
-        log::info!("Audio engine started: {}Hz, {} samples", config.sample_rate, config.buffer_size);
+        log::info!("{} Audio engine started: {}Hz, {} samples", crate::core::threading::thread_prefix("audio/engine"), config.sample_rate, config.buffer_size);
         Ok(())
     }
 
@@ -100,7 +100,7 @@ impl AudioManager {
         status.is_monitoring = false;
         status.cpu_usage = 0.0;
         
-        log::info!("Audio engine stopped");
+        log::info!("{} Audio engine stopped", crate::core::threading::thread_prefix("audio/engine"));
         Ok(())
     }
 
@@ -119,7 +119,7 @@ impl AudioManager {
         if !enabled {
             *self.monitoring.lock().unwrap_or_else(|e| e.into_inner()) = None;
             self.status.write().is_monitoring = false;
-            log::info!("Input monitoring stopped");
+            log::info!("{} Input monitoring stopped", crate::core::threading::thread_prefix("audio/monitor"));
             return Ok(());
         }
 
@@ -129,7 +129,7 @@ impl AudioManager {
         // streams was dropped mid-callback.
         let mut monitoring_guard = self.monitoring.lock().unwrap_or_else(|e| e.into_inner());
         if monitoring_guard.is_some() {
-            log::info!("Audio stream already running — ignoring duplicate start");
+            log::info!("{} Audio stream already running — ignoring duplicate start", crate::core::threading::thread_prefix("audio/monitor"));
             return Ok(());
         }
 
@@ -159,7 +159,7 @@ impl AudioManager {
             let asio_name = in_asio_name
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| anyhow::anyhow!("ASIO insert mode requires a device name after 'asio_' prefix"))?;
-            log::info!("ASIO full-duplex insert mode: using shared host for '{}'", asio_name);
+            log::info!("{} ASIO full-duplex insert mode: using shared host for '{}'", crate::core::threading::thread_prefix("audio/monitor"), asio_name);
             let (inp, out) = AudioDevice::find_asio_device_pair(asio_name)
                 .ok_or_else(|| anyhow::anyhow!("ASIO device '{}' not found for insert mode", asio_name))?;
             (inp, Some(out))
@@ -450,7 +450,7 @@ impl AudioManager {
                         log::warn!("Failed to start virtual output stream: {e}");
                         None
                     } else {
-                        log::info!("Virtual output stream started");
+                        log::info!("{} Virtual output stream started", crate::core::threading::thread_prefix("audio/monitor"));
                         Some(stream)
                     }
                 }
@@ -471,7 +471,8 @@ impl AudioManager {
         });
         self.status.write().is_monitoring = true;
         log::info!(
-            "Input monitoring started ({}Hz, {} samples{})",
+            "{} Input monitoring started ({}Hz, {} samples{})",
+            crate::core::threading::thread_prefix("audio/monitor"),
             config.sample_rate,
             config.buffer_size,
             if has_virt { " + hardware out" } else { "" },
@@ -482,7 +483,7 @@ impl AudioManager {
     /// Set output mute state.
     pub fn set_muted(&self, muted: bool) {
         self.muted.store(muted, Ordering::Relaxed);
-        log::info!("Audio output {}", if muted { "muted" } else { "unmuted" });
+        log::info!("{} Audio output {}", crate::core::threading::thread_prefix("audio/control"), if muted { "muted" } else { "unmuted" });
     }
 
     /// Get current mute state.
@@ -495,7 +496,7 @@ impl AudioManager {
     /// so no stream restart is needed and toggling is glitch-free.
     pub fn set_loopback(&self, enabled: bool) -> Result<()> {
         self.loopback_enabled.store(enabled, Ordering::Relaxed);
-        log::info!("Hardware Out monitoring {}", if enabled { "enabled" } else { "disabled" });
+        log::info!("{} Hardware Out monitoring {}", crate::core::threading::thread_prefix("audio/control"), if enabled { "enabled" } else { "disabled" });
         Ok(())
     }
 
@@ -508,7 +509,10 @@ impl AudioManager {
     pub fn get_status(&self) -> AudioStatus {
         let elapsed = self.last_update.read().elapsed().as_secs_f32();
         self.status.write().cpu_usage = 8.0 + (elapsed.sin() * 4.0);
-        self.status.read().clone()
+        let mut status = self.status.read().clone();
+        status.is_muted = self.muted.load(Ordering::Relaxed);
+        status.loopback_enabled = self.loopback_enabled.load(Ordering::Relaxed);
+        status
     }
 
     /// Get current audio configuration
@@ -524,7 +528,7 @@ impl AudioManager {
     /// Set output device
     pub fn set_output_device(&self, device_id: Option<String>) -> Result<()> {
         self.config.write().output_device_id = device_id;
-        log::info!("Output device updated");
+        //log::info!("Output device updated");
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;
@@ -535,7 +539,7 @@ impl AudioManager {
     /// Set input device
     pub fn set_input_device(&self, device_id: Option<String>) -> Result<()> {
         self.config.write().input_device_id = device_id;
-        log::info!("Input device updated");
+        //log::info!("Input device updated");
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;
@@ -549,7 +553,7 @@ impl AudioManager {
     /// monitoring through speakers or headphones.
     pub fn set_virtual_output_device(&self, device_id: Option<String>) -> Result<()> {
         self.config.write().virtual_output_device_id = device_id;
-        log::info!("Virtual output device updated");
+        //log::info!("Virtual output device updated");
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;
@@ -565,7 +569,7 @@ impl AudioManager {
             status.sample_rate = rate;
             status.latency_ms = (status.buffer_size as f32 / rate as f32) * 1000.0;
         }
-        log::info!("Sample rate set to {}Hz", rate);
+        //log::info!("Sample rate set to {}Hz", rate);
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;
@@ -581,7 +585,7 @@ impl AudioManager {
             status.buffer_size = size;
             status.latency_ms = (size as f32 / status.sample_rate as f32) * 1000.0;
         }
-        log::info!("Buffer size set to {} samples", size);
+        //log::info!("Buffer size set to {} samples", size);
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;

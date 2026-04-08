@@ -2,11 +2,11 @@
 
 <h1><img src="public/logo.png" width="80" align="absmiddle"> ReLightHost </h1>
 
-**A modern, real-time audio plugin host built with Rust and React**
+**A modern, real-time audio plugin host built with Rust, React, and Tauri**
 
-*Designed for musicians and audio engineers who need low-latency, multi-format plugin processing with a clean, native-feeling UI.*
+*Designed for musicians and audio engineers who need low-latency, multi-format plugin processing, fast plugin browsing, and a clean native-feeling UI.*
 
-[![Version](https://img.shields.io/badge/version-1.7.5-9b72cf?style=for-the-badge)](https://github.com)
+[![Version](https://img.shields.io/badge/version-1.8.0-9b72cf?style=for-the-badge)](https://github.com)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0d7adf?style=for-the-badge)](https://github.com)
 [![Rust](https://img.shields.io/badge/rust-1.77%2B-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Tauri](https://img.shields.io/badge/tauri-2.x-24c8db?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app)
@@ -19,7 +19,7 @@
 
 ReLightHost is a lightweight, cross-platform audio plugin host. Load **VST2**, **VST3**, and **CLAP** plugins into a linear processing chain, route audio from any input device through that chain, and output to any output device — all in real time with sub-millisecond latency when using ASIO.
 
-Three built-in processors — **Compressor**, **RNNoise Noise Suppressor**, and **Voice EQ** — are included, so the host is useful out of the box even without a plugin library.
+Three built-in processors — **Compressor**, **RNNoise Noise Suppressor**, and **Voice EQ** — are included, so the host is useful out of the box even without an external plugin library.
 
 ---
 
@@ -28,18 +28,19 @@ Three built-in processors — **Compressor**, **RNNoise Noise Suppressor**, and 
 | | Feature | Description |
 |:---:|---|---|
 | 🔌 | **Multi-format hosting** | VST2 `.dll`, VST3 `.vst3`, CLAP `.clap`, and built-in processors |
-| 🔗 | **Linear plugin chain** | Drag-and-drop reordering; per-plugin bypass toggle |
-| 🖥 | **Native GUI support** | VST3 / VST2 plugins open their original UI in a native Win32 window |
-| ⚡ | **ASIO / WASAPI / ALSA / JACK** | Full audio API support via CPAL |
-| 🔊 | **Hardware Out** | Route processed audio to a second output device; loopback toggle |
+| 🔎 | **Plugin browser** | Search, filter, and group plugins by manufacturer before adding them to the chain |
+| 🔗 | **Linear plugin chain** | Drag-and-drop reordering; per-plugin bypass, rename, and GUI controls |
+| 🖥 | **Native GUI support** | VST2 / VST3 / CLAP editors open in native plugin windows when supported |
+| ⚡ | **ASIO / WASAPI / CoreAudio / ALSA / JACK** | Full audio API support via CPAL |
+| 🔊 | **Audio routing** | Route processed audio to a second output device; loopback toggle for hardware monitoring |
 | 📊 | **Real-time VU meter** | Live L/R peak and RMS level monitoring |
 | 📈 | **System stats** | Per-process CPU and RAM usage in real time |
-| 💾 | **Preset management** | Save/load named chains (params + VST3 binary state) |
-| 🔄 | **Auto-save session** | Plugin chain and audio config restored on every launch |
-| 🖱 | **System tray** | Minimize to tray, mute toggle, quick-access menu |
-| 🚀 | **Run on startup** | Optional Windows startup registry entry (show window or start hidden) |
+| 💾 | **Preset management** | Save/load named chains with parameters and preserved VST3 binary state |
+| 🔄 | **Auto-save session** | Plugin chain and audio config are restored automatically on launch |
+| 🖱 | **System tray** | Minimize to tray, mute toggle, hardware out toggle, quick-access menu |
+| 🚀 | **Run on startup** | Optional Windows startup registry entry with show-window or start-hidden mode |
 | 🌗 | **Dark / Light theme** | Persistent theme toggle |
-| 🛡 | **Crash isolation + cooldown recovery** | Crash is isolated, audio kept alive, then auto-recovery is attempted safely |
+| 🛡 | **Crash isolation + cooldown recovery** | Crash is isolated, audio stays alive, then auto-recovery is attempted safely |
 | 📦 | **Frontend code-splitting** | Heavy modals and plugin UIs are lazy-loaded to reduce initial bundle cost |
 
 ---
@@ -169,13 +170,39 @@ Tip: copy `.env.example` to `.env.local` for local reference, but do not commit 
 | CLAP | `.clap` | Custom | Plugin state |
 | Built-in | — | React (Ant Design) | Parameters in preset JSON |
 
-### Default Scan Paths — Windows
+### Default Scan Paths
+
+Windows:
 
 ```
 C:\Program Files\Common Files\VST3
+C:\Program Files\VSTPlugins
+C:\Program Files\Steinberg\VSTPlugins
 C:\Program Files\Common Files\CLAP
-%LOCALAPPDATA%\Programs\Common\VST3
 %LOCALAPPDATA%\Programs\Common\CLAP
+%LOCALAPPDATA%\Programs\Common\VST2
+```
+
+macOS:
+
+```
+/Library/Audio/Plug-Ins/VST3
+/Library/Audio/Plug-Ins/VST
+/Library/Audio/Plug-Ins/CLAP
+~/Library/Audio/Plug-Ins/VST3
+~/Library/Audio/Plug-Ins/VST
+~/Library/Audio/Plug-Ins/CLAP
+```
+
+Linux:
+
+```
+/usr/lib/vst3
+/usr/lib/vst
+/usr/lib/clap
+~/.vst3
+~/.vst
+~/.clap
 ```
 
 > Custom directories can be added via **Plugin Settings → ＋ Add Path**.
@@ -277,56 +304,72 @@ Powered by [RNNoise](https://jmvalin.ca/demo/rnnoise/) — a recurrent neural ne
 ```
 ReLightHost/
 ├── src/                            # Frontend (React + TypeScript)
-│   ├── App.tsx                     # Root component; session restore logic
+│   ├── App.tsx                     # Session restore + window lifecycle
 │   ├── main.tsx                    # Entry point
+│   ├── index.css                   # Global styles and theme overrides
+│   ├── theme.ts                    # Shared Ant Design theme tokens
 │   ├── components/
-│   │   ├── Layout.tsx              # Shell: header + footer (VU meter, stats)
-│   │   ├── Header.tsx              # Logo, mute, loopback, theme, settings
-│   │   ├── PluginChain.tsx         # IN → chain → OUT  (drag & drop)
-│   │   ├── PluginCard.tsx          # Per-plugin: bypass, rename, open GUI
-│   │   ├── PluginLibrary.tsx       # Browse & add plugins to chain
-│   │   ├── PluginSettings.tsx      # Custom scan paths + rescan
-│   │   ├── PluginInfoModal.tsx     # Plugin metadata viewer
-│   │   ├── AudioSettings.tsx       # Device / SR / buffer / Hardware Out
-│   │   ├── AppSettings.tsx         # Startup, tray, about
-│   │   ├── PresetManager.tsx       # Save / load / delete presets
-│   │   ├── VUMeter.tsx             # Real-time L/R dB bar meter
-│   │   ├── CompressorGui.tsx       # Built-in compressor UI
-│   │   ├── NoiseSuppressorGui.tsx  # Built-in noise suppressor UI
-│   │   └── VoiceGui.tsx            # Built-in voice EQ UI
+│   │   ├── layout/
+│   │   │   ├── Header.tsx          # Brand, engine state, mute, loopback, theme, settings
+│   │   │   ├── Layout.tsx          # Shell + footer meters + system stats
+│   │   │   └── VUMeter.tsx         # Real-time L/R meter
+│   │   ├── chain/
+│   │   │   ├── CurvedArrow.tsx     # Chain connectors
+│   │   │   ├── PluginCard.tsx      # Per-plugin controls and GUIs
+│   │   │   └── PluginChain.tsx     # Drag-and-drop plugin chain
+│   │   ├── plugin/
+│   │   │   ├── PluginInfoModal.tsx  # Plugin metadata details
+│   │   │   ├── PluginLibrary.tsx    # Search/filter/add plugins
+│   │   │   └── PluginSettings.tsx   # Scan paths + rescan
+│   │   ├── audio/
+│   │   │   └── AudioSettings.tsx    # Device, sample rate, buffer, hardware out
+│   │   ├── settings/
+│   │   │   └── AppSettings.tsx      # Startup, tray, about
+│   │   └── plugin-gui/
+│   │       ├── CompressorGui.tsx
+│   │       ├── NoiseSuppressorGui.tsx
+│   │       └── VoiceGui.tsx
 │   ├── stores/
-│   │   ├── audioStore.ts           # Device, SR, buffer, monitoring state
-│   │   ├── pluginStore.ts          # Plugin library + active chain
-│   │   ├── presetStore.ts          # Preset list
-│   │   └── themeStore.ts           # Dark / light theme
+│   │   ├── audioStore.ts            # Audio engine state
+│   │   ├── pluginStore.ts           # Plugin library and chain state
+│   │   ├── presetStore.ts           # Preset list / restore metadata
+│   │   └── themeStore.ts            # Dark / light theme
 │   └── lib/
-│       ├── tauri.ts                # Tauri IPC command wrappers
-│       ├── types.ts                # Shared TypeScript types
-│       └── index.ts                # Re-exports
+│       ├── tauri.ts                 # Tauri IPC wrappers
+│       ├── types.ts                 # Shared TypeScript types
+│       └── index.ts                 # Re-exports
 │
 └── src-tauri/                      # Backend (Rust)
     └── src/
-        ├── lib.rs                  # Commands, AppState, tray setup
-        ├── config.rs               # JSON config persistence
-        ├── preset.rs               # Preset serialization
-        ├── audio/
-        │   ├── manager.rs          # CPAL stream lifecycle
-        │   ├── device.rs           # Device enumeration
-        │   ├── types.rs            # AudioStatus, AudioConfig
-        │   └── vu_meter.rs         # Peak / RMS tracking
+        ├── lib.rs                  # App state, commands, tray setup
+        ├── main.rs                 # Native entry point
+        ├── bootstrap/
+        │   ├── tray.rs             # Tray menu and events
+        │   └── window.rs           # Window setup
+        ├── commands/
+        │   ├── audio.rs
+        │   ├── config.rs
+        │   ├── plugin.rs
+        │   ├── session.rs
+        │   ├── startup.rs
+        │   └── system.rs
+        ├── core/
+        │   ├── app_events.rs
+        │   ├── autosave.rs
+        │   ├── error.rs
+        │   ├── session.rs
+        │   ├── snapshot.rs
+        │   ├── threading.rs
+        │   └── timing.rs
+        ├── domain/
+        │   ├── config.rs
+        │   └── preset.rs
         └── plugins/
-            ├── scanner.rs          # VST/CLAP scanner + built-in registration
-            ├── instance.rs         # Per-plugin instance wrapper
-            ├── types.rs            # PluginInfo, PluginFormat
-            ├── crash_protection.rs # catch_unwind wrapper
-            ├── vst3_processor.rs / vst3_gui.rs
-            ├── vst2_processor.rs / vst2_gui.rs
-            ├── clap_processor.rs  / clap_gui.rs
-            └── builtin/
-                ├── mod.rs          # Factory + default params registry
-                ├── compressor.rs
-                ├── noise_suppressor.rs
-                └── voice.rs
+            ├── mod.rs
+            ├── builtin/
+            ├── core/
+            ├── gui/
+            └── processor/
 ```
 
 ---
@@ -340,7 +383,8 @@ Stored as JSON in the platform app-data directory:
 | OS | Location |
 |---|---|
 | Windows | `%LOCALAPPDATA%\ReLightHost\presets\` |
-| macOS / Linux | `~/.config/ReLightHost/presets/` |
+| macOS | `~/Library/Application Support/ReLightHost/presets/` |
+| Linux | `~/.local/share/ReLightHost/presets/` |
 
 <details>
 <summary>Example preset JSON</summary>
@@ -349,6 +393,7 @@ Stored as JSON in the platform app-data directory:
 ```json
 {
   "name": "My Chain",
+  "description": "Vocal chain",
   "created_at": "2026-03-12T10:00:00Z",
   "plugin_chain": [
     {
@@ -368,28 +413,28 @@ Stored as JSON in the platform app-data directory:
 
 ### Auto-save
 
-Every structural change to the plugin chain (add, remove, reorder, bypass toggle, rename) auto-saves to an `autosave` preset. The chain is silently restored on the next launch.
+Every structural change to the plugin chain (add, remove, reorder, bypass toggle, rename) writes to an `autosave` preset. The chain is restored silently on the next launch.
 
 ### Session Restore Sequence
 
 ```
-1. restore_session() called on frontend mount
-2. Audio config (device, SR, buffer) ← config.json
-3. Plugin chain                      ← autosave preset
-4. Audio stream started
-   └─ Voicemeeter ASIO: 2 s delay to let Voicemeeter finish its startup
-  └─ VST3 safety window may defer start a bit longer during restore
-5. Frontend stores sync from restored backend state
+1. restore_session() is called from the frontend on mount
+2. Audio config + mute + loopback are restored from session.json
+3. Plugin chain is restored from the autosave preset
+4. Audio stream is started
+   └─ Voicemeeter ASIO waits briefly so the driver can finish startup
+   └─ VST3 restore can defer the start a little longer during its safety window
+5. Frontend stores sync with the restored backend state
+```
 
 ### Startup Visibility
 
 In **Application Settings**, you can choose:
 
-- **Run on startup**: register/unregister Windows Run key
+- **Run on startup**: register or unregister the Windows Run key
 - **Show app window on startup**:
-  - ON: normal launch and show main window
-  - OFF: launch with `--start-hidden` and stay in tray until opened
-```
+  - ON: launch normally and show the main window
+  - OFF: launch with `--start-hidden` and stay in the tray until opened
 
 ### VB-Cable / Voicemeeter
 

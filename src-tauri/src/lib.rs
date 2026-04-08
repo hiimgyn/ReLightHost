@@ -197,6 +197,7 @@ pub fn run() {
             commands::plugin::reset_plugin_crash_protection,
             commands::plugin::get_noise_suppressor_vad,
             commands::plugin::get_plugin_parameters,
+            commands::system::quit_app,
             commands::session::restore_session,
             commands::system::check_for_update,
             commands::system::install_update,

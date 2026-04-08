@@ -365,7 +365,7 @@ export default function PluginCard({
           : `linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)`,
         display: 'flex',
         flexDirection: 'column',
-        height: 212,
+        height: 174,
         border: isCrashed
           ? `1px solid rgba(255,77,79,0.2)`
           : isActive
@@ -519,7 +519,7 @@ export default function PluginCard({
         ) : null}
 
         {/* ── Bottom status + actions ────────────────────────────── */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%', marginTop: '30px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%', marginTop: 'auto' }}>
           <div
             style={{
               minHeight: 16,

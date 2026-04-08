@@ -117,8 +117,18 @@ function App() {
       if (minimizeToTray) {
         event.preventDefault();
         await appWindow.hide();
+        return;
       }
-      // Otherwise allow the default close behavior to proceed.
+
+      // Otherwise close plugin GUIs first, then exit the app explicitly.
+      // This avoids shutdown getting stuck in plugin teardown during Drop.
+      event.preventDefault();
+      try {
+        await invoke('close_plugins');
+      } catch (error) {
+        console.error('Failed to close plugins before exit:', error);
+      }
+      await invoke('quit_app');
     });
 
     return () => {
@@ -130,7 +140,7 @@ function App() {
     <Suspense fallback={<div className="h-screen" />}>
       {contextHolder}
       <Layout>
-        <div className="glass-panel rh-main-inner h-full w-full max-w-[1820px] mx-auto px-4 py-4 md:px-7 md:py-5">
+        <div className="glass-panel rh-main-inner h-full w-full px-2 py-4 md:px-3 md:py-5">
           <PluginChain />
         </div>
         {showFirstTimeAudio && (

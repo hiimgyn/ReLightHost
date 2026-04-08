@@ -139,8 +139,6 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
     borderRadius: 8,
     border: `1px solid rgba(255,255,255,0.3)`,
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
     transition: 'all 200ms ease',
   };
 

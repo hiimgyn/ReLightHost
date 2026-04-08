@@ -336,7 +336,6 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           right: 0, 
           padding: '16px 24px', 
           background: 'linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%)',
-          backdropFilter: 'blur(10px)',
           borderTop: '1px solid var(--rh-minimal-border)'
         }}>
           {isChainInitializing && (

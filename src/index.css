@@ -108,8 +108,6 @@ body {
 }
 
 .glass-panel {
-  backdrop-filter: blur(15px) saturate(1.08);
-  -webkit-backdrop-filter: blur(15px) saturate(1.08);
   background: linear-gradient(135deg, var(--rh-glass-bg-strong) 0%, var(--rh-glass-bg) 100%);
   border: 1px solid var(--rh-glass-border);
   box-shadow: var(--rh-glass-shadow), var(--rh-glass-inset);
@@ -118,8 +116,6 @@ body {
 }
 
 .minimal-panel {
-  backdrop-filter: blur(10px) saturate(1.02);
-  -webkit-backdrop-filter: blur(10px) saturate(1.02);
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%);
   border: 1px solid var(--rh-minimal-border);
   box-shadow: var(--rh-minimal-shadow);
@@ -138,8 +134,6 @@ body {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
   border: 1px solid var(--rh-minimal-border) !important;
   box-shadow: var(--rh-minimal-shadow) !important;
-  backdrop-filter: blur(10px) saturate(1.02) !important;
-  -webkit-backdrop-filter: blur(10px) saturate(1.02) !important;
 }
 
 .glass-card.ant-card,
@@ -148,8 +142,6 @@ body {
   background: linear-gradient(135deg, var(--rh-glass-bg-strong) 0%, var(--rh-glass-bg) 100%) !important;
   border: 1px solid var(--rh-glass-border) !important;
   box-shadow: var(--rh-glass-shadow), var(--rh-glass-inset) !important;
-  backdrop-filter: blur(15px) saturate(1.08) !important;
-  -webkit-backdrop-filter: blur(15px) saturate(1.08) !important;
 }
 
 .glass-panel::before,
@@ -178,8 +170,6 @@ body {
 /* Ant Design Card default: minimal. Major shell cards opt into glass-card. */
 .ant-card {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  backdrop-filter: blur(10px) saturate(1.02) !important;
-  -webkit-backdrop-filter: blur(10px) saturate(1.02) !important;
   border: 1px solid var(--rh-minimal-border) !important;
   box-shadow: var(--rh-minimal-shadow) !important;
   position: relative;
@@ -375,8 +365,6 @@ body {
 .ant-input-number,
 .ant-select-selector {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  backdrop-filter: blur(10px) !important;
-  -webkit-backdrop-filter: blur(10px) !important;
   border: 1px solid var(--rh-minimal-border) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
   transition: all 200ms ease;
@@ -415,8 +403,6 @@ body {
 /* Tooltip with shared theme-aware styling */
 .ant-tooltip-inner {
   background: linear-gradient(180deg, var(--rh-tooltip-bg) 0%, color-mix(in srgb, var(--rh-tooltip-bg) 92%, var(--rh-glass-bg) 8%) 100%) !important;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--rh-tooltip-border);
   border-radius: 10px;
   box-shadow: var(--rh-tooltip-shadow);
@@ -451,8 +437,6 @@ body {
 /* Modal/Dialog and drawer with minimal styling */
 .ant-modal-content {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  backdrop-filter: blur(10px) !important;
-  -webkit-backdrop-filter: blur(10px) !important;
   border: 1px solid var(--rh-minimal-border) !important;
   box-shadow: var(--rh-minimal-shadow) !important;
   position: relative;
@@ -461,8 +445,6 @@ body {
 
 .ant-drawer-content {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  backdrop-filter: blur(10px) saturate(1.02) !important;
-  -webkit-backdrop-filter: blur(10px) saturate(1.02) !important;
   border-left: 1px solid var(--rh-minimal-border) !important;
   box-shadow: var(--rh-minimal-shadow) !important;
   position: relative;
@@ -541,8 +523,6 @@ body {
 .ant-dropdown-menu,
 .ant-picker-dropdown {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  backdrop-filter: blur(10px) !important;
-  -webkit-backdrop-filter: blur(10px) !important;
   border: 1px solid var(--rh-minimal-border) !important;
   box-shadow:
     0 10px 40px rgba(0, 0, 0, 0.14),
@@ -559,8 +539,9 @@ body {
 }
 
 .rh-plugin-live-pulse {
-  animation: rh-plugin-live-pulse 2.2s cubic-bezier(0.4, 0.0, 0.6, 1) infinite;
-  will-change: transform, filter, box-shadow;
+  animation: none;
+  will-change: auto;
+  box-shadow: 0 8px 22px rgba(127, 230, 183, 0.14);
 }
 
 @keyframes rh-plugin-live-pulse {
@@ -644,8 +625,6 @@ body {
 /* Popconfirm button styling */
 .ant-popconfirm-inner {
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.84) 0%, rgba(255, 255, 255, 0.78) 100%) !important;
-  backdrop-filter: blur(25px);
-  -webkit-backdrop-filter: blur(25px);
   border: 1px solid rgba(99, 103, 255, 0.18);
   box-shadow:
     0 12px 48px rgba(0, 0, 0, 0.15),

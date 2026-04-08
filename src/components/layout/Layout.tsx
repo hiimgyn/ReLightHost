@@ -35,7 +35,7 @@ function AppShell({ children, isDark }: { children: ReactNode; isDark: boolean }
     };
 
     poll();
-    const id = setInterval(poll, 2000);
+    const id = setInterval(poll, 4000);
     document.addEventListener('visibilitychange', onVisible);
 
     return () => {
@@ -150,7 +150,7 @@ function Footer({ status, pluginCount, isDark }: {
       } catch { /* backend not ready yet */ }
     };
     poll();
-    const id = setInterval(poll, 2000);
+    const id = setInterval(poll, 4000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
         poll();
@@ -181,8 +181,6 @@ function Footer({ status, pluginCount, isDark }: {
         boxShadow: isDark
           ? '0 -1px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04)'
           : '0 -1px 8px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.14)',
-        backdropFilter: 'blur(16px) saturate(1.08)',
-        WebkitBackdropFilter: 'blur(16px) saturate(1.08)',
         padding: '0 20px',
         flexShrink: 0,
         display: 'flex',

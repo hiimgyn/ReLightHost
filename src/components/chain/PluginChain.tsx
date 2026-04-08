@@ -85,7 +85,7 @@ export default function PluginChain() {
       if (document.visibilityState === 'visible') {
         fetchCrashStatuses();
       }
-    }, 5000);
+    }, 10000);
 
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
@@ -303,8 +303,6 @@ export default function PluginChain() {
             : token.colorBgElevated,
           border: `1px solid ${token.colorBorderSecondary.includes('255') ? 'rgba(255,255,255,0.34)' : 'rgba(210,216,255,0.24)'}`,
           borderBottom: 'none',
-          backdropFilter: 'blur(20px) saturate(1.1)',
-          WebkitBackdropFilter: 'blur(20px) saturate(1.1)',
           boxShadow: token.colorBorderSecondary.includes('255')
             ? '0 8px 24px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.05)'
             : '0 8px 20px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.16)',
@@ -382,8 +380,6 @@ export default function PluginChain() {
           borderRadius: `0 0 ${token.borderRadiusLG * 1.25}px ${token.borderRadiusLG * 1.25}px`,
           border: `1px solid ${token.colorBorderSecondary.includes('255') ? 'rgba(255,255,255,0.34)' : 'rgba(210,216,255,0.24)'}`,
           borderTop: 'none',
-          backdropFilter: 'blur(20px) saturate(1.1)',
-          WebkitBackdropFilter: 'blur(20px) saturate(1.1)',
           boxShadow: token.colorBorderSecondary.includes('255')
             ? '0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.05)'
             : '0 8px 24px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.16)',
@@ -421,8 +417,6 @@ export default function PluginChain() {
                     ? 'linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.14) 100%)'
                     : 'linear-gradient(135deg, rgba(58,64,96,0.22) 0%, rgba(45,50,78,0.16) 100%)')
                   : 'transparent',
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
               }}
             >
               <div

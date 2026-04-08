@@ -32,16 +32,12 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
         : 'linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.76) 100%)',
       border: `1px solid ${isDark ? 'rgba(132,148,255,0.24)' : 'rgba(99,103,255,0.18)'}`,
       boxShadow: isDark ? 'inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.16)',
-      backdropFilter: 'blur(8px)',
-      WebkitBackdropFilter: 'blur(8px)',
     }}>
       {/* RMS ghost */}
       <div style={{
         position: 'absolute', top: 0, left: 0, bottom: 0,
         width: rmsPct + '%', borderRadius: 3,
         background: isDark ? 'rgba(99,103,255,0.28)' : 'rgba(99,103,255,0.24)',
-        backdropFilter: 'blur(4px)',
-        WebkitBackdropFilter: 'blur(4px)',
       }} />
       {/* Peak fill */}
       <div style={{
@@ -65,7 +61,7 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
   );
 }
 
-export function VUMeter({ updateInterval = 50, isDark = true }: { updateInterval?: number; isDark?: boolean }) {
+export function VUMeter({ updateInterval = 100, isDark = true }: { updateInterval?: number; isDark?: boolean }) {
   const [vu, setVu] = useState<VUData>({
     left:  { peak: 0, peak_hold: 0, rms: 0 },
     right: { peak: 0, peak_hold: 0, rms: 0 },
@@ -125,8 +121,6 @@ export function VUMeter({ updateInterval = 50, isDark = true }: { updateInterval
       background: isDark
         ? 'linear-gradient(135deg, rgba(38,42,64,0.78) 0%, rgba(30,34,54,0.72) 100%)'
         : 'linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.76) 100%)',
-      backdropFilter: 'blur(12px)',
-      WebkitBackdropFilter: 'blur(12px)',
       border: `1px solid ${isDark ? 'rgba(132,148,255,0.24)' : 'rgba(99,103,255,0.18)'}`,
     }}>
       {/* L channel */}

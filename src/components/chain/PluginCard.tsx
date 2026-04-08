@@ -313,8 +313,6 @@ export default function PluginCard({
       letterSpacing: isPrimary ? 0.3 : 0.08,
       textTransform: isPrimary ? 'uppercase' : 'none',
       boxShadow: 'none',
-      backdropFilter: 'blur(4px)',
-      WebkitBackdropFilter: 'blur(4px)',
       overflow: 'visible',
       whiteSpace: 'nowrap',
       flexShrink: 0,
@@ -355,7 +353,7 @@ export default function PluginCard({
     {contextHolder}
     <Card
       size="small"
-      className={`glass-card transition-all ${plugin.bypassed ? 'opacity-70' : ''} ${isActive && plugin.gui_open ? 'rh-plugin-live-pulse' : ''}`}
+      className={`glass-card transition-all ${plugin.bypassed ? 'opacity-70' : ''}`}
       style={{
         borderRadius: 12,
         background: isCrashed
@@ -371,8 +369,6 @@ export default function PluginCard({
           : isActive
           ? `1px solid rgba(255,255,255,0.34)`
           : `1px solid rgba(255,255,255,0.3)`,
-        backdropFilter: 'blur(16px) saturate(1.1)',
-        WebkitBackdropFilter: 'blur(16px) saturate(1.1)',
         boxShadow: isCrashed
           ? `0 0 0 1px rgba(255,77,79,0.2), 0 12px 28px rgba(255,77,79,0.15), inset 0 1px 0 rgba(255,255,255,0.1)`
           : isActive

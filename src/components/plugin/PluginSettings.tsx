@@ -146,8 +146,6 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
                 background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
                 border: `1px solid rgba(255,255,255,0.3)`,
                 borderRadius: 6,
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
                 transition: 'all 200ms ease',
               }}
             >

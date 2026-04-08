@@ -49,7 +49,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
       setHistory(prev => [...prev.slice(1), v]);
     } catch { /* instance removed mid-flight */ }
     if (mountedRef.current) {
-      rafRef.current = window.setTimeout(pollVad, 50);
+      rafRef.current = window.setTimeout(pollVad, 100);
     }
   }, [plugin.instance_id]);
 
@@ -129,8 +129,6 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
               background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
               border: '1px solid rgba(255,255,255,0.3)',
               borderRadius: token.borderRadiusSM,
-              backdropFilter: 'blur(12px)',
-              WebkitBackdropFilter: 'blur(12px)',
               overflow: 'hidden',
             }}
           >
@@ -164,8 +162,6 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
                 background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
                 borderRadius: token.borderRadiusLG,
                 border: `1px solid ${vadColor}88`,
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
                 transition: 'all 200ms ease',
               }}
             >
@@ -235,8 +231,6 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
             background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
             border: '1px solid rgba(255,255,255,0.3)',
             borderRadius: token.borderRadiusSM,
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
             lineHeight: 1.6,
           }}
         >

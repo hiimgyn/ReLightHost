@@ -9,6 +9,8 @@ import {
   Space,
   message,
   Alert,
+  Typography,
+  theme,
 } from "antd";
 import {
   CheckOutlined,
@@ -23,6 +25,8 @@ interface AudioSettingsProps {
   isOpen: boolean;
   onClose: () => void;
 }
+
+const { Text } = Typography;
 
 const isAsioId = (id: string | null | undefined): boolean =>
   id?.startsWith("asio_") ?? false;
@@ -59,6 +63,7 @@ function DeviceOption({ device }: { device: AudioDeviceInfo }) {
 }
 
 export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
+  const { token } = theme.useToken();
   const {
     devices,
     selectedDevice,
@@ -213,8 +218,8 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
     <Modal
       title={
         <Space>
-          <AudioOutlined style={{ color: "#1677ff" }} />
-          <span>Audio Settings</span>
+          <AudioOutlined style={{ color: token.colorPrimary }} />
+          <Text strong style={{ fontSize: 15, letterSpacing: '-0.01em' }}>Audio Settings</Text>
         </Space>
       }
       open={isOpen}

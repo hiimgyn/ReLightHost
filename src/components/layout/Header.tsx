@@ -16,6 +16,7 @@ import {
 } from "@ant-design/icons";
 import { useThemeStore } from "../../stores/themeStore";
 import { useAudioStore } from "../../stores/audioStore";
+import { usePluginStore } from "../../stores/pluginStore";
 import AudioSettings from "../audio/AudioSettings";
 import AppSettings from "../settings/AppSettings";
 
@@ -97,9 +98,22 @@ export default function Header() {
     applyExternalMuteState,
     applyExternalLoopbackState,
   } = useAudioStore();
+  const { isChainInitializing, pluginChain, restoreTargetCount } = usePluginStore();
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
   const [appVersion, setAppVersion] = useState("");
+
+  const isEngineReady = status.is_monitoring && !isChainInitializing;
+  const restoredCount = restoreTargetCount == null
+    ? pluginChain.length
+    : Math.min(pluginChain.length, restoreTargetCount);
+  const engineLabel = status.is_monitoring
+    ? (isChainInitializing
+      ? (restoreTargetCount != null
+        ? `Preparing plugins... ${restoredCount}/${restoreTargetCount} restored`
+        : 'Preparing plugins...')
+      : 'Engine on')
+    : 'Engine off';
 
   useEffect(() => {
     getVersion()
@@ -129,23 +143,26 @@ export default function Header() {
   return (
     <>
       <header
+        className="glass-panel"
         style={{
-          margin: "12px 16px 0",
-          padding: "12px 20px",
+          margin: 0,
+          padding: "10px 20px",
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           gap: 16,
           minHeight: 64,
-          borderRadius: token.borderRadiusLG * 1.25,
-          background: token.colorBgElevated,
-          border: `1px solid ${token.colorBorderSecondary}`,
+          borderRadius: 0,
+          background: isDark
+            ? 'linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%)'
+            : 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.16) 100%)',
+          border: 'none',
           boxShadow: isDark
-            ? '0 8px 32px rgba(0,0,0,0.45)'
-            : '0 8px 28px rgba(15,23,42,0.06)',
-          backdropFilter: "blur(16px)",
-          WebkitBackdropFilter: "blur(16px)",
+            ? '0 1px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04)'
+            : '0 1px 8px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.14)',
+          backdropFilter: "blur(16px) saturate(1.08)",
+          WebkitBackdropFilter: "blur(16px) saturate(1.08)",
         }}
       >
         {/* Brand */}
@@ -200,23 +217,27 @@ export default function Header() {
         {/* Controls */}
         <Space size={10} wrap style={{ justifyContent: "flex-end" }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderRadius: 999, background: token.colorBgContainer, border: `1px solid ${token.colorBorderSecondary}` }}>
-            {status.is_monitoring ? (
+            {isEngineReady ? (
               <Badge status="processing" color={token.colorSuccess} />
-            ) : (
+            ) : status.is_monitoring ? (
               <LoadingOutlined
-                style={{ fontSize: 12, color: token.colorTextSecondary }}
+                style={{ fontSize: 12, color: token.colorWarning }}
               />
+            ) : (
+              <Badge status="default" color={token.colorTextQuaternary} />
             )}
             <Text
               style={{
                 fontSize: 12,
                 fontWeight: 600,
-                color: status.is_monitoring
+                color: isEngineReady
                   ? token.colorSuccess
+                  : status.is_monitoring
+                  ? token.colorWarning
                   : token.colorTextSecondary,
               }}
             >
-              {status.is_monitoring ? "Engine on" : "Starting…"}
+              {engineLabel}
             </Text>
           </div>
 
@@ -227,9 +248,9 @@ export default function Header() {
                 size="small"
                 icon={
                   isMuted ? (
-                    <MutedOutlined style={{ color: "#ff4d4f" }} />
+                    <MutedOutlined style={{ color: token.colorError }} />
                   ) : (
-                    <SoundOutlined style={{ color: "#52c41a" }} />
+                    <SoundOutlined style={{ color: token.colorSuccess }} />
                   )
                 }
                 onClick={() => setMuted(!isMuted)}
@@ -263,9 +284,9 @@ export default function Header() {
                 size="small"
                 icon={
                   appTheme === "dark" ? (
-                    <BulbFilled style={{ color: "#faad14" }} />
+                    <BulbFilled style={{ color: token.colorWarning }} />
                   ) : (
-                    <BulbOutlined style={{ color: "#faad14" }} />
+                    <BulbOutlined style={{ color: token.colorWarning }} />
                   )
                 }
                 onClick={toggleTheme}

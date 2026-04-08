@@ -5,10 +5,30 @@
 
 /* Brand — keep in sync with Layout ConfigProvider colorPrimary / colorInfo */
 :root {
-  --rh-primary: #9b72cf;
-  --rh-primary-soft: #b08ee0;
-  --rh-primary-glow: rgba(155, 114, 207, 0.38);
-  --rh-info: #1890ff;
+  --rh-primary: #6367FF;
+  --rh-primary-soft: #8494FF;
+  --rh-primary-glow: rgba(99, 103, 255, 0.4);
+  --rh-info: #8494FF;
+  --rh-wash-lilac: #C9BEFF;
+  --rh-wash-rose: #FFDBFD;
+  --rh-minimal-ink: #1F2333;
+  --rh-minimal-slate: #8B92A8;
+  --rh-minimal-mist: #EEF1FA;
+  --rh-glass-bg: rgba(255, 255, 255, 0.16);
+  --rh-glass-bg-strong: rgba(255, 255, 255, 0.22);
+  --rh-glass-border: rgba(255, 255, 255, 0.34);
+  --rh-glass-shadow: 0 8px 32px rgba(15, 23, 42, 0.12);
+  --rh-glass-inset:
+    inset 0 1px 0 rgba(255, 255, 255, 0.56),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 12px 6px rgba(255, 255, 255, 0.4);
+  --rh-minimal-bg: rgba(255, 255, 255, 0.92);
+  --rh-minimal-bg-strong: rgba(250, 251, 255, 0.98);
+  --rh-minimal-border: rgba(99, 103, 255, 0.14);
+  --rh-minimal-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  --rh-tooltip-bg: rgba(255, 255, 255, 0.96);
+  --rh-tooltip-border: rgba(99, 103, 255, 0.18);
+  --rh-tooltip-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
 
   font-family: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
   font-family: 'Inter', 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
@@ -29,6 +49,21 @@
   color-scheme: dark;
   color: rgba(255, 255, 255, 0.88);
   background-color: #08080c;
+  --rh-glass-bg: rgba(45, 50, 78, 0.18);
+  --rh-glass-bg-strong: rgba(58, 64, 96, 0.24);
+  --rh-glass-border: rgba(210, 216, 255, 0.26);
+  --rh-glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+  --rh-glass-inset:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 0 12px 6px rgba(167, 180, 255, 0.12);
+  --rh-minimal-bg: rgba(18, 20, 34, 0.92);
+  --rh-minimal-bg-strong: rgba(28, 31, 48, 0.96);
+  --rh-minimal-border: rgba(132, 148, 255, 0.16);
+  --rh-minimal-shadow: 0 10px 32px rgba(0, 0, 0, 0.34);
+  --rh-tooltip-bg: rgba(18, 20, 34, 0.96);
+  --rh-tooltip-border: rgba(132, 148, 255, 0.22);
+  --rh-tooltip-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
 }
 
 body {
@@ -37,11 +72,13 @@ body {
   place-items: center;
   min-width: 320px;
   min-height: 100vh;
+  /* Fluent Design System backdrop with enhanced depth */
   background:
-    radial-gradient(ellipse 900px 520px at 0% 0%, var(--rh-primary-glow), transparent 62%),
-    radial-gradient(ellipse 700px 480px at 100% 0%, rgba(24, 144, 255, 0.14), transparent 55%),
-    radial-gradient(ellipse 600px 400px at 50% 110%, rgba(16, 185, 129, 0.09), transparent 50%),
-    linear-gradient(165deg, #f6f4fc 0%, #e8ecf6 48%, #eef2f9 100%);
+    radial-gradient(1000px 640px at 8% 8%, rgba(99, 103, 255, 0.32), transparent 58%),
+    radial-gradient(920px 620px at 95% 10%, rgba(132, 148, 255, 0.34), transparent 56%),
+    radial-gradient(880px 560px at 15% 96%, rgba(201, 190, 255, 0.34), transparent 58%),
+    radial-gradient(760px 520px at 88% 88%, rgba(255, 219, 253, 0.36), transparent 55%),
+    linear-gradient(165deg, #f8f7fb 0%, #f5f2fb 36%, #f7f0f2 68%, #f3edf7 100%);
 }
 
 #root {
@@ -51,10 +88,11 @@ body {
 
 :root.dark body {
   background:
-    radial-gradient(ellipse 900px 520px at 0% 0%, rgba(155, 114, 207, 0.2), transparent 58%),
-    radial-gradient(ellipse 700px 480px at 100% 0%, rgba(24, 144, 255, 0.11), transparent 52%),
-    radial-gradient(ellipse 500px 360px at 80% 100%, rgba(16, 185, 129, 0.07), transparent 45%),
-    linear-gradient(165deg, #0c0a10 0%, #0f111a 40%, #0a0c12 100%);
+    radial-gradient(1000px 640px at 8% 8%, rgba(99, 103, 255, 0.3), transparent 58%),
+    radial-gradient(920px 620px at 95% 10%, rgba(132, 148, 255, 0.24), transparent 56%),
+    radial-gradient(880px 560px at 15% 96%, rgba(201, 190, 255, 0.2), transparent 58%),
+    radial-gradient(760px 520px at 88% 88%, rgba(255, 219, 253, 0.22), transparent 55%),
+    linear-gradient(165deg, #16172a 0%, #121427 34%, #181324 66%, #111320 100%);
 }
 
 * {
@@ -70,25 +108,109 @@ body {
 }
 
 .glass-panel {
-  backdrop-filter: blur(20px) saturate(1.12);
-  -webkit-backdrop-filter: blur(20px) saturate(1.12);
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.04);
-  box-shadow:
-    0 6px 18px rgba(2,6,23,0.6),
-    0 12px 40px -18px rgba(155,114,207,0.06);
+  backdrop-filter: blur(15px) saturate(1.08);
+  -webkit-backdrop-filter: blur(15px) saturate(1.08);
+  background: linear-gradient(135deg, var(--rh-glass-bg-strong) 0%, var(--rh-glass-bg) 100%);
+  border: 1px solid var(--rh-glass-border);
+  box-shadow: var(--rh-glass-shadow), var(--rh-glass-inset);
+  position: relative;
+  overflow: hidden;
 }
 
-:root.dark .glass-panel {
-  background: rgba(20,20,28,0.5);
-  border: 1px solid rgba(255,255,255,0.03);
-  box-shadow:
-    0 6px 20px rgba(0,0,0,0.6);
+.minimal-panel {
+  backdrop-filter: blur(10px) saturate(1.02);
+  -webkit-backdrop-filter: blur(10px) saturate(1.02);
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%);
+  border: 1px solid var(--rh-minimal-border);
+  box-shadow: var(--rh-minimal-shadow);
+  position: relative;
+  overflow: hidden;
+}
+
+.minimal-surface,
+.minimal-surface.ant-card,
+.minimal-surface.ant-modal-content,
+.minimal-surface.ant-drawer-content,
+.minimal-surface.ant-input,
+.minimal-surface.ant-input-affix-wrapper,
+.minimal-surface.ant-select-selector,
+.minimal-surface.ant-card .ant-card-body {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  box-shadow: var(--rh-minimal-shadow) !important;
+  backdrop-filter: blur(10px) saturate(1.02) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(1.02) !important;
+}
+
+.glass-card.ant-card,
+.glass-card.ant-modal-content,
+.glass-card.ant-drawer-content {
+  background: linear-gradient(135deg, var(--rh-glass-bg-strong) 0%, var(--rh-glass-bg) 100%) !important;
+  border: 1px solid var(--rh-glass-border) !important;
+  box-shadow: var(--rh-glass-shadow), var(--rh-glass-inset) !important;
+  backdrop-filter: blur(15px) saturate(1.08) !important;
+  -webkit-backdrop-filter: blur(15px) saturate(1.08) !important;
+}
+
+.glass-panel::before,
+.glass-panel::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+}
+
+.glass-panel::before {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.78), transparent);
+}
+
+.glass-panel::after {
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 100%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.74), transparent 55%, rgba(255, 255, 255, 0.3));
+}
+
+/* Ant Design Card default: minimal. Major shell cards opt into glass-card. */
+.ant-card {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  backdrop-filter: blur(10px) saturate(1.02) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(1.02) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  box-shadow: var(--rh-minimal-shadow) !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.glass-card.ant-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+  pointer-events: none;
+}
+
+.glass-card.ant-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 100%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.7), transparent 55%, rgba(255, 255, 255, 0.24));
+  pointer-events: none;
 }
 
 /* Signal chain dotted grid for a subtle technical texture */
 .signal-chain-container {
-  background-image: radial-gradient(circle at 0 0, rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-image: radial-gradient(circle at 0 0, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
   background-size: 20px 20px;
 }
 
@@ -101,8 +223,8 @@ body {
 }
 
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 
 *::-webkit-scrollbar-track {
@@ -111,79 +233,431 @@ body {
 
 *::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: color-mix(in srgb, var(--rh-primary) 32%, rgba(120, 140, 170, 0.45));
-  border: 2px solid transparent;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--rh-primary) 36%, rgba(120, 140, 170, 0.5)) 0%,
+    color-mix(in srgb, var(--rh-primary) 28%, rgba(120, 140, 170, 0.4)) 100%
+  );
+  border: 3px solid transparent;
   background-clip: content-box;
+  transition: all 240ms ease;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--rh-primary) 48%, rgba(120, 140, 170, 0.5));
-  border: 2px solid transparent;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--rh-primary) 48%, rgba(120, 140, 170, 0.6)) 0%,
+    color-mix(in srgb, var(--rh-primary) 38%, rgba(120, 140, 170, 0.5)) 100%
+  );
+  border: 3px solid transparent;
   background-clip: content-box;
 }
 
-/* Button styles: pill, tonal/ghost, pastel glow */
+/* Button styles: pill, tonal/ghost, pastel glow — Fluent Design */
 .btn-pill {
-  border-radius: var(--rh-border-radius);
-  padding: 6px 12px;
-  height: 34px;
+  border-radius: 8px;
+  padding: 8px 14px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   font-weight: 600;
+  font-size: 13px;
   cursor: pointer;
-  transition: background 120ms ease, box-shadow 120ms ease, transform 80ms ease;
-  border: none;
-}
-
-/* Tonal / ghost buttons */
-.btn-tonal {
-  background: rgba(0,0,0,0.04);
-  color: var(--rh-text);
+  transition: all 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
   border: 1px solid transparent;
+  position: relative;
+  overflow: hidden;
 }
-.dark .btn-tonal { background: rgba(255,255,255,0.04); }
-.btn-tonal:hover { background: rgba(0,0,0,0.06); }
-.dark .btn-tonal:hover { background: rgba(255,255,255,0.08); }
 
-/* Active (ON) button with pastel glow */
+/* Tonal / ghost buttons — subtle Fluent style with enhanced opacity */
+.btn-tonal {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--rh-text);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+.dark .btn-tonal {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
+}
+.btn-tonal:hover {
+  background: rgba(0, 0, 0, 0.14);
+  border-color: rgba(0, 0, 0, 0.14);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14);
+}
+.dark .btn-tonal:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+}
+
+/* Active (ON) button with pastel glow — Fluent vibrant accent */
 .btn-active {
-  background: var(--rh-active);
+  background: linear-gradient(135deg, #7ee6b7 0%, #5cd99f 100%);
   color: #042024;
-  box-shadow: 0 10px 30px var(--rh-active-glow);
-  border: none;
+  border: 1px solid rgba(126, 230, 183, 0.3);
+  box-shadow:
+    0 4px 16px rgba(126, 230, 183, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  font-weight: 700;
 }
-.btn-active:hover { transform: translateY(-1px); box-shadow: 0 18px 40px var(--rh-active-glow); }
+.btn-active:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 8px 24px rgba(126, 230, 183, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
 
-/* Off / muted button */
+/* Off / muted button — enhanced opacity */
 .btn-off {
-  background: rgba(0,0,0,0.03);
+  background: rgba(0, 0, 0, 0.05);
   color: var(--rh-text-secondary);
-  border: none;
+  border: 1px solid rgba(0, 0, 0, 0.08);
 }
-.dark .btn-off { background: rgba(255,255,255,0.03); }
-.btn-off:hover { background: rgba(0,0,0,0.06); }
+.dark .btn-off {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.btn-off:hover {
+  background: rgba(0, 0, 0, 0.1);
+  border-color: rgba(0, 0, 0, 0.12);
+}
 
-/* Small icon button */
+/* Small icon button — Fluent compact with enhanced opacity */
 .btn-icon {
   border-radius: 8px;
   color: var(--rh-text-tertiary);
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
   padding: 6px;
+  width: 32px;
+  height: 32px;
 }
-.btn-icon:hover { color: var(--rh-danger-pastel); background: rgba(255,255,255,0.02); }
+.btn-icon:hover {
+  color: var(--rh-danger-pastel);
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+.dark .btn-icon:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.12);
+}
 
-/* Reset / action button variant */
+/* Reset / action button variant — Fluent primary accent */
 .btn-reset {
-  background: var(--rh-accent);
+  background: linear-gradient(135deg, var(--rh-primary) 0%, var(--rh-primary-soft) 100%);
   color: #fff;
-  box-shadow: 0 12px 36px var(--rh-accent-glow);
-  border: none;
+  border: 1px solid rgba(99, 103, 255, 0.4);
+  box-shadow:
+    0 4px 16px rgba(99, 103, 255, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  font-weight: 700;
 }
-.btn-reset:hover { opacity: 0.96; transform: translateY(-1px); }
+.btn-reset:hover {
+  opacity: 0.95;
+  transform: translateY(-2px);
+  box-shadow:
+    0 8px 24px rgba(99, 103, 255, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
 
 /* Make sure icons inside buttons align with text weight */
 .btn-pill svg { height: 16px; width: 16px; }
+
+/* Fluent Design System component enhancements */
+
+/* Input fields with minimalism */
+.ant-input,
+.ant-input-number,
+.ant-select-selector {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  transition: all 200ms ease;
+}
+
+:root.dark .ant-input,
+:root.dark .ant-input-number,
+:root.dark .ant-select-selector {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.ant-input:hover,
+.ant-input-number:hover,
+.ant-select-selector:hover {
+  border-color: rgba(99, 103, 255, 0.26) !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(246, 248, 255, 0.92) 100%) !important;
+}
+
+:root.dark .ant-input:hover,
+:root.dark .ant-input-number:hover,
+:root.dark .ant-select-selector:hover {
+  border-color: rgba(132, 148, 255, 0.24) !important;
+  background: linear-gradient(135deg, rgba(28, 31, 48, 0.98) 0%, rgba(18, 20, 34, 0.94) 100%) !important;
+}
+
+/* Ant Design Tag with minimal styling */
+.ant-tag {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  color: var(--rh-text-secondary);
+  box-shadow: var(--rh-minimal-shadow);
+}
+
+/* Tooltip with shared theme-aware styling */
+.ant-tooltip-inner {
+  background: linear-gradient(180deg, var(--rh-tooltip-bg) 0%, color-mix(in srgb, var(--rh-tooltip-bg) 92%, var(--rh-glass-bg) 8%) 100%) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--rh-tooltip-border);
+  border-radius: 10px;
+  box-shadow: var(--rh-tooltip-shadow);
+  color: var(--rh-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ant-tooltip-arrow::before {
+  background: var(--rh-tooltip-bg) !important;
+  border: 1px solid var(--rh-tooltip-border);
+}
+
+.rh-floating-tip {
+  position: fixed;
+  pointer-events: none;
+  z-index: 2000;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--rh-tooltip-border);
+  background: linear-gradient(180deg, var(--rh-tooltip-bg), color-mix(in srgb, var(--rh-tooltip-bg) 84%, var(--rh-glass-bg) 16%));
+  box-shadow: var(--rh-tooltip-shadow);
+  color: var(--rh-text);
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Modal/Dialog and drawer with minimal styling */
+.ant-modal-content {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  box-shadow: var(--rh-minimal-shadow) !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.ant-drawer-content {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  backdrop-filter: blur(10px) saturate(1.02) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(1.02) !important;
+  border-left: 1px solid var(--rh-minimal-border) !important;
+  box-shadow: var(--rh-minimal-shadow) !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.ant-modal-header,
+.ant-drawer-header {
+  background: transparent !important;
+  border-bottom: 1px solid var(--rh-minimal-border) !important;
+  padding-bottom: 12px !important;
+}
+
+.ant-modal-title,
+.ant-drawer-title {
+  color: var(--rh-text) !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ant-modal-close,
+.ant-drawer-close {
+  color: var(--rh-text-secondary) !important;
+}
+
+.ant-modal-close:hover,
+.ant-drawer-close:hover {
+  color: var(--rh-text) !important;
+}
+
+.ant-tabs-nav {
+  margin-bottom: 12px !important;
+}
+
+.ant-tabs-tab {
+  border-radius: 10px !important;
+  color: var(--rh-text-secondary) !important;
+  transition: background 180ms ease, color 180ms ease, border-color 180ms ease;
+}
+
+.ant-tabs-tab:hover {
+  color: var(--rh-text) !important;
+  background: linear-gradient(135deg, rgba(99, 103, 255, 0.08) 0%, rgba(132, 148, 255, 0.08) 100%);
+}
+
+.ant-tabs-tab.ant-tabs-tab-active {
+  background: linear-gradient(135deg, rgba(99, 103, 255, 0.12) 0%, rgba(132, 148, 255, 0.12) 100%);
+}
+
+.ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--rh-text) !important;
+}
+
+.ant-tabs-ink-bar {
+  background: linear-gradient(90deg, var(--rh-primary) 0%, var(--rh-primary-soft) 100%) !important;
+  height: 3px !important;
+  border-radius: 999px;
+}
+
+.ant-btn-default {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  color: var(--rh-text) !important;
+}
+
+:root.dark .ant-btn-default {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+}
+
+/* Dropdown/Popover with minimal styling */
+.ant-dropdown-menu,
+.ant-picker-dropdown {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  box-shadow:
+    0 10px 40px rgba(0, 0, 0, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .ant-dropdown-menu,
+:root.dark .ant-picker-dropdown {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  box-shadow:
+    0 10px 40px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.rh-plugin-live-pulse {
+  animation: rh-plugin-live-pulse 2.2s cubic-bezier(0.4, 0.0, 0.6, 1) infinite;
+  will-change: transform, filter, box-shadow;
+}
+
+@keyframes rh-plugin-live-pulse {
+  0% {
+    transform: translateY(0) scale(1);
+    filter: saturate(1) brightness(1);
+    box-shadow: 0 8px 22px rgba(127, 230, 183, 0.15);
+  }
+  50% {
+    transform: translateY(-2px) scale(1.012);
+    filter: saturate(1.08) brightness(1.04);
+    box-shadow: 0 12px 28px rgba(127, 230, 183, 0.22);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    filter: saturate(1) brightness(1);
+    box-shadow: 0 8px 22px rgba(127, 230, 183, 0.15);
+  }
+}
+
+/* Additional Fluent Design System component styles */
+
+/* List item hover state */
+.ant-list-item,
+.ant-menu-item {
+  transition: all 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ant-list-item:hover,
+.ant-menu-item:hover {
+  background: linear-gradient(
+    135deg,
+    rgba(99, 103, 255, 0.2) 0%,
+    rgba(132, 148, 255, 0.18) 100%
+  );
+}
+
+/* Checkbox and Radio with Fluent */
+.ant-checkbox-wrapper,
+.ant-radio-wrapper {
+  transition: all 200ms ease;
+}
+
+.ant-checkbox-inner,
+.ant-radio-inner {
+  background: linear-gradient(
+    135deg,
+    rgba(99, 103, 255, 0.12) 0%,
+    rgba(132, 148, 255, 0.12) 100%
+  );
+  border: 2px solid rgba(99, 103, 255, 0.34);
+  transition: all 200ms ease;
+}
+
+.ant-checkbox-checked .ant-checkbox-inner,
+.ant-radio-checked .ant-radio-inner {
+  background: linear-gradient(
+    135deg,
+    var(--rh-primary) 0%,
+    var(--rh-primary-soft) 100%
+  );
+  border-color: var(--rh-primary);
+  box-shadow: 0 4px 12px rgba(99, 103, 255, 0.35);
+}
+
+/* Switch component */
+.ant-switch {
+  background-color: rgba(0, 0, 0, 0.35) !important;
+  transition: all 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+:root.dark .ant-switch {
+  background-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+.ant-switch-checked {
+  background-color: var(--rh-primary) !important;
+  box-shadow: 0 4px 12px rgba(99, 103, 255, 0.4);
+}
+
+/* Popconfirm button styling */
+.ant-popconfirm-inner {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.84) 0%, rgba(255, 255, 255, 0.78) 100%) !important;
+  backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
+  border: 1px solid rgba(99, 103, 255, 0.18);
+  box-shadow:
+    0 12px 48px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+:root.dark .ant-popconfirm-inner {
+  background: linear-gradient(135deg, rgba(38, 42, 64, 0.82) 0%, rgba(30, 34, 54, 0.78) 100%) !important;
+  border: 1px solid rgba(132, 148, 255, 0.24);
+  box-shadow:
+    0 12px 48px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
 
 

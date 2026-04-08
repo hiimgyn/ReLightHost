@@ -770,6 +770,24 @@ impl PluginInstanceManager {
         log::info!("Reordered plugin chain: {} -> {}", from_index, to_index);
         Ok(())
     }
+
+    /// Swap two instances in the chain
+    pub fn swap(&self, first_index: usize, second_index: usize) -> Result<()> {
+        let mut instances = self.instances.write();
+        let len = instances.len();
+        if first_index >= len || second_index >= len {
+            return Err(anyhow::anyhow!(
+                "Index out of bounds: first={}, second={}, len= {}",
+                first_index, second_index, len
+            ));
+        }
+        if first_index == second_index {
+            return Ok(());
+        }
+        instances.swap(first_index, second_index);
+        log::info!("Swapped plugin chain: {} <-> {}", first_index, second_index);
+        Ok(())
+    }
 }
 
 impl Default for PluginInstanceManager {

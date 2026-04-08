@@ -6,10 +6,13 @@ import {
   SettingOutlined, 
   InfoCircleOutlined,
   PlusCircleOutlined,
-  AppstoreOutlined
+  AppstoreOutlined,
+  DownOutlined,
+  RightOutlined,
 } from '@ant-design/icons';
 import { usePluginStore } from '../../stores/pluginStore';
 import type { PluginInfo } from '../../lib/types';
+import { theme } from 'antd';
 
 const PluginSettings = lazy(() => import('./PluginSettings'));
 const PluginInfoModal = lazy(() => import('./PluginInfoModal'));
@@ -22,6 +25,7 @@ interface PluginLibraryProps {
 }
 
 export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
+  const { token } = theme.useToken();
   const {
     availablePlugins,
     isScanning,
@@ -80,6 +84,18 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
     }
   };
 
+  const getAuthorLabel = (author: string) => {
+    return author === 'Unknown' ? 'Unknown folder' : author;
+  };
+
+  const getAuthorAccent = (author: string) => {
+    if (author === 'Unknown') return token.colorTextQuaternary;
+    const first = author.trim().charAt(0).toUpperCase();
+    const code = first ? first.charCodeAt(0) : 0;
+    const palette = [token.colorPrimary, token.colorInfo, token.colorSuccess, token.colorWarning];
+    return palette[code % palette.length];
+  };
+
   const tabItems = [
     {
       key: 'all',
@@ -111,10 +127,11 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   return (
     <>
       <Drawer
+        className="minimal-panel"
         title={
           <Space>
-            <AppstoreOutlined style={{ fontSize: 20, color: '#9b72cf' }} />
-            <span>Plugin Library</span>
+            <AppstoreOutlined style={{ fontSize: 20, color: token.colorPrimary }} />
+            <Text strong style={{ fontSize: 15, letterSpacing: '-0.01em', color: token.colorText }}>Plugin Library</Text>
           </Space>
         }
         placement="right"
@@ -135,12 +152,18 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
       >
         {/* Search Bar */}
         <Input
+          className="minimal-surface"
           size="large"
           placeholder="Search plugins..."
           prefix={<SearchOutlined />}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          style={{ marginBottom: 16 }}
+          style={{
+            marginBottom: 16,
+            borderRadius: 10,
+            border: '1px solid rgba(255,255,255,0.32)',
+            background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
+          }}
           allowClear
         />
 
@@ -166,42 +189,79 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
             {authorKeys.map((author) => {
               const group = groupedByAuthor[author];
               const isCollapsed = !!collapsedGroups[author];
+              const authorColor = getAuthorAccent(author);
               return (
                 <div key={author} style={{ marginBottom: 12 }}>
                   <div
+                    className="minimal-surface"
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      padding: '8px 12px',
-                      borderRadius: 8,
-                      background: 'rgba(255,255,255,0.02)',
+                      gap: 12,
+                      padding: '10px 12px',
+                      borderRadius: 10,
+                      background: `linear-gradient(135deg, ${token.colorBgElevated} 0%, ${token.colorBgContainer} 100%)`,
+                      border: `1px solid ${token.colorBorderSecondary}`,
+                      boxShadow: 'none',
                       cursor: 'pointer',
+                      transition: 'transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease',
                     }}
                     onClick={() => setCollapsedGroups(prev => ({ ...prev, [author]: !prev[author] }))}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <AppstoreOutlined style={{ color: '#9b72cf' }} />
-                      <Text strong style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{author}</Text>
-                      <Tag>{group.length}</Tag>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+                      <div
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 8,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          background: `linear-gradient(135deg, ${authorColor}22 0%, ${authorColor}12 100%)`,
+                          border: `1px solid ${authorColor}33`,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <AppstoreOutlined style={{ color: authorColor, fontSize: 14 }} />
+                      </div>
+                      <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <Space size={6} align="center" style={{ minWidth: 0 }}>
+                          <Text strong style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getAuthorLabel(author)}</Text>
+                          <Tag style={{ margin: 0 }}>{group.length}</Tag>
+                        </Space>
+                        <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.2 }}>
+                          {author === 'Unknown' ? 'Plugins without manufacturer metadata' : 'Grouped by manufacturer'}
+                        </Text>
+                      </div>
                     </div>
-                    <div style={{ color: '#999', fontSize: 12 }}>{isCollapsed ? 'Collapsed' : 'Expanded'}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                      <Text style={{ color: token.colorTextTertiary, fontSize: 12 }}>
+                        {isCollapsed ? 'Collapsed' : 'Expanded'}
+                      </Text>
+                      {isCollapsed ? (
+                        <RightOutlined style={{ color: token.colorTextQuaternary, fontSize: 11 }} />
+                      ) : (
+                        <DownOutlined style={{ color: token.colorTextQuaternary, fontSize: 11 }} />
+                      )}
+                    </div>
                   </div>
 
                   {!isCollapsed && (
-                    <div style={{ marginTop: 8 }}>
+                    <div style={{ marginTop: 8, paddingLeft: 10, borderLeft: `1px solid ${token.colorBorderSecondary}` }}>
                       {group.map((plugin) => (
                         <div
                           key={plugin.id}
+                          className="minimal-surface plugin-list-item"
                           style={{
                             padding: '12px 16px',
                             marginBottom: 8,
-                            background: 'rgba(255, 255, 255, 0.04)',
-                            borderRadius: 8,
+                            background: `linear-gradient(135deg, ${token.colorBgElevated} 0%, ${token.colorBgContainer} 100%)`,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                            borderRadius: 10,
                             cursor: 'pointer',
-                            transition: 'all 0.2s',
+                            transition: 'transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease',
                           }}
-                          className="plugin-list-item"
                           onClick={() => setSelectedPlugin(plugin)}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -255,7 +315,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           </div>
         ) : (
           <Empty
-            image={<AppstoreOutlined style={{ fontSize: 64, color: '#666' }} />}
+              image={<AppstoreOutlined style={{ fontSize: 64, color: token.colorTextTertiary }} />}
             description={
               <Space orientation="vertical" size={0}>
                 <Text type="secondary">No plugins found</Text>
@@ -275,9 +335,9 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           left: 0, 
           right: 0, 
           padding: '16px 24px', 
-          background: 'rgba(0, 0, 0, 0.45)',
+          background: 'linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%)',
           backdropFilter: 'blur(10px)',
-          borderTop: '1px solid rgba(255, 255, 255, 0.1)'
+          borderTop: '1px solid var(--rh-minimal-border)'
         }}>
           {isChainInitializing && (
             <div style={{ textAlign: 'center', marginBottom: 8, color: '#999', fontSize: 12 }}>

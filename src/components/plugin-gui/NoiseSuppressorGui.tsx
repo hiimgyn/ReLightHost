@@ -119,14 +119,18 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
 
           {/* History strip */}
           <div
+            className="minimal-surface"
             style={{
               display: 'flex',
               alignItems: 'flex-end',
               gap: 2,
               height: 48,
               padding: '4px 6px',
-              background: token.colorFillQuaternary,
+              background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
+              border: '1px solid rgba(255,255,255,0.3)',
               borderRadius: token.borderRadiusSM,
+              backdropFilter: 'blur(12px)',
+              WebkitBackdropFilter: 'blur(12px)',
               overflow: 'hidden',
             }}
           >
@@ -151,14 +155,18 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
           {/* Big live badge */}
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: 10 }}>
             <div
+              className="minimal-surface"
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 8,
                 padding: '6px 16px',
-                background: token.colorFillTertiary,
+                background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
                 borderRadius: token.borderRadiusLG,
-                border: `1px solid ${vadColor}44`,
+                border: `1px solid ${vadColor}88`,
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                transition: 'all 200ms ease',
               }}
             >
               <div
@@ -221,10 +229,14 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
 
         {/* ── Info footer ────────────────────────────────────── */}
         <div
+          className="minimal-surface"
           style={{
             padding: '8px 12px',
-            background: token.colorFillQuaternary,
+            background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
+            border: '1px solid rgba(255,255,255,0.3)',
             borderRadius: token.borderRadiusSM,
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
             lineHeight: 1.6,
           }}
         >

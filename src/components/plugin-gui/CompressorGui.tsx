@@ -48,7 +48,17 @@ function ParamRow({
   defaultValue, primaryColor, tertiaryColor, onChange,
 }: ParamRowProps) {
   return (
-    <div>
+    <div
+      className="minimal-surface"
+      style={{
+        padding: '10px 12px',
+        borderRadius: 10,
+        background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
+        border: '1px solid rgba(255,255,255,0.3)',
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
+      }}
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <Text style={{ fontSize: 13 }}>{label}</Text>
         <Space size={6} align="center">

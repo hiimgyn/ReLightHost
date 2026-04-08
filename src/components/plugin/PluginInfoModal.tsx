@@ -22,13 +22,14 @@ export default function PluginInfoModal({ plugin, isOpen, onClose, onLoad }: Plu
 
   return (
     <Modal
+      className="minimal-panel"
       open={isOpen}
       onCancel={onClose}
       width={600}
       title={
         <Space>
           <AppstoreOutlined style={{ color: token.colorPrimary }} />
-          <Text strong>{plugin.name}</Text>
+          <Text strong style={{ fontSize: 15, letterSpacing: '-0.01em' }}>{plugin.name}</Text>
           <Tag color={getFormatColor(plugin.format)}>{plugin.format.toUpperCase()}</Tag>
         </Space>
       }
@@ -59,7 +60,7 @@ export default function PluginInfoModal({ plugin, isOpen, onClose, onLoad }: Plu
         </Descriptions.Item>
       </Descriptions>
 
-      <div style={{
+      <div className="minimal-surface" style={{
         background: token.colorInfoBg,
         border: `1px solid ${token.colorInfoBorder}`,
         borderRadius: token.borderRadius,

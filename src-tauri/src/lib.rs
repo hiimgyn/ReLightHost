@@ -176,6 +176,7 @@ pub fn run() {
             commands::plugin::set_plugin_bypass,
             commands::plugin::set_plugin_parameter,
             commands::plugin::reorder_plugin_chain,
+            commands::plugin::swap_plugin_chain,
             commands::plugin::rename_plugin,
             commands::audio::play_test_sound,
             commands::config::get_custom_scan_paths,

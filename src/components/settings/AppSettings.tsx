@@ -136,9 +136,12 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '12px 16px',
-    background: token.colorBgContainer,
+    background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
     borderRadius: 8,
-    border: `1px solid ${token.colorBorderSecondary}`,
+    border: `1px solid rgba(255,255,255,0.3)`,
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
+    transition: 'all 200ms ease',
   };
 
   return (
@@ -146,7 +149,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
       title={
         <Space>
           <SettingOutlined style={{ color: token.colorPrimary }} />
-          <span>Application Settings</span>
+          <Text strong style={{ fontSize: 15, letterSpacing: '-0.01em', color: token.colorText }}>Application Settings</Text>
         </Space>
       }
       open={isOpen}
@@ -158,6 +161,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
 
       {/* Startup Settings */}
       <Card
+        className="minimal-panel"
         title={
           <Space>
             <RocketOutlined />
@@ -167,7 +171,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
         style={{ marginBottom: 24 }}
       >
         <Space orientation="vertical" style={{ width: '100%' }} size="middle">
-          <div style={settingRowStyle}>
+          <div className="minimal-surface" style={settingRowStyle}>
             <div style={{ flex: 1 }}>
               <Text strong>Run on System Startup</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
@@ -177,7 +181,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
             <Switch checked={runOnStartup} onChange={handleStartupToggle} />
           </div>
 
-          <div style={{ ...settingRowStyle, opacity: runOnStartup ? 1 : 0.6 }}>
+          <div className="minimal-surface" style={{ ...settingRowStyle, opacity: runOnStartup ? 1 : 0.6 }}>
             <div style={{ flex: 1 }}>
               <Text strong>Show App Window on Startup</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
@@ -191,7 +195,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
             />
           </div>
 
-          <div style={settingRowStyle}>
+          <div className="minimal-surface" style={settingRowStyle}>
             <div style={{ flex: 1 }}>
               <Text strong>Minimize to System Tray</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>

@@ -29,10 +29,10 @@ export default function PluginChain() {
     removeFromChain,
     toggleBypass,
     reorderChain,
+    swapChain,
     fetchChain,
     fetchCrashStatuses,
     isChainInitializing,
-    isMutating,
   } = usePluginStore();
   const {
     devices,
@@ -41,7 +41,8 @@ export default function PluginChain() {
     selectedVirtualOutputDevice,
   } = useAudioStore();
   const [showPluginLibrary, setShowPluginLibrary] = useState(false);
-  const addLocked = isMutating || isChainInitializing;
+  const [isDeleteAllBusy, setIsDeleteAllBusy] = useState(false);
+  const addLocked = isChainInitializing || isDeleteAllBusy;
 
   // draggedIndex: which card is being dragged
   // insertBefore: the index BEFORE which the dragged card will be inserted
@@ -51,11 +52,13 @@ export default function PluginChain() {
   //               (0 = before first,  pluginChain.length = after last)
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [insertBefore, setInsertBefore] = useState<number | null>(null);
+  const [swapTargetIndex, setSwapTargetIndex] = useState<number | null>(null);
   const [dragPointer, setDragPointer] = useState<{ x: number; y: number } | null>(null);
   const [dragLabel, setDragLabel] = useState('');
   const draggingRef = useRef(false);
   const draggedIndexRef = useRef<number | null>(null);
   const insertBeforeRef = useRef<number | null>(null);
+  const swapTargetIndexRef = useRef<number | null>(null);
 
   const getDeviceName = (deviceId: string | null) => {
     if (!deviceId) return 'None';
@@ -111,9 +114,10 @@ export default function PluginChain() {
   };
 
   const handleDeleteAll = async () => {
-    if (isMutating) return;
+    if (isDeleteAllBusy || isChainInitializing) return;
     console.debug('PluginChain: Delete All clicked', { pluginCount: pluginChain.length });
     try {
+      setIsDeleteAllBusy(true);
       // Remove sequentially to avoid overwhelming backend/mutations
       for (const p of [...pluginChain]) {
         // eslint-disable-next-line no-await-in-loop
@@ -125,12 +129,14 @@ export default function PluginChain() {
       console.debug('PluginChain: deleteAll error', err);
       console.error(err);
       messageApi.error('Failed to remove all plugins');
+    } finally {
+      setIsDeleteAllBusy(false);
     }
   };
 
   // Pointer-based drag session (more reliable than HTML5 DnD inside Tauri WebView).
   const startPointerDrag = (e: React.PointerEvent, index: number) => {
-    if (isMutating) return;
+    if (isChainInitializing || isDeleteAllBusy) return;
     if (e.button !== 0) return;
     e.preventDefault();
 
@@ -140,14 +146,45 @@ export default function PluginChain() {
     setDragPointer({ x: e.clientX, y: e.clientY });
     setDraggedIndex(index);
     setInsertBefore(null);
+    setSwapTargetIndex(null);
+    swapTargetIndexRef.current = null;
 
     const onPointerMove = (ev: PointerEvent) => {
       if (draggedIndexRef.current === null) return;
       setDragPointer({ x: ev.clientX, y: ev.clientY });
 
       const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      
+      // Check if hovering over arrow element
+      const arrowEl = el?.closest('[data-plugin-arrow]') as HTMLElement | null;
+      if (arrowEl) {
+        const arrowPosRaw = arrowEl.dataset.pluginArrowPos;
+        if (arrowPosRaw != null) {
+          const pos = Number(arrowPosRaw);
+          if (Number.isFinite(pos) && insertBeforeRef.current !== pos) {
+            insertBeforeRef.current = pos;
+            setInsertBefore(pos);
+          }
+        }
+        if (swapTargetIndexRef.current !== null) {
+          swapTargetIndexRef.current = null;
+          setSwapTargetIndex(null);
+        }
+        return;
+      }
+
       const cardEl = el?.closest('[data-plugin-card-index]') as HTMLElement | null;
-      if (!cardEl) return;
+      if (!cardEl) {
+        if (insertBeforeRef.current !== null) {
+          insertBeforeRef.current = null;
+          setInsertBefore(null);
+        }
+        if (swapTargetIndexRef.current !== null) {
+          swapTargetIndexRef.current = null;
+          setSwapTargetIndex(null);
+        }
+        return;
+      }
 
       const indexRaw = cardEl.dataset.pluginCardIndex;
       if (indexRaw == null) return;
@@ -155,10 +192,37 @@ export default function PluginChain() {
       if (!Number.isFinite(cardIndex)) return;
 
       const rect = cardEl.getBoundingClientRect();
-      const pos = ev.clientX < rect.left + rect.width / 2 ? cardIndex : cardIndex + 1;
-      if (insertBeforeRef.current !== pos) {
-        insertBeforeRef.current = pos;
-        setInsertBefore(pos);
+      
+      // Check if pointer is within reasonable Y range of the card (with tolerance for multi-row layouts)
+      const tolerance = 60;
+      const isWithinVerticalBounds = 
+        ev.clientY >= rect.top - tolerance && 
+        ev.clientY <= rect.bottom + tolerance;
+      
+      if (!isWithinVerticalBounds) {
+        if (insertBeforeRef.current !== null) {
+          insertBeforeRef.current = null;
+          setInsertBefore(null);
+        }
+        if (swapTargetIndexRef.current !== null) {
+          swapTargetIndexRef.current = null;
+          setSwapTargetIndex(null);
+        }
+        return;
+      }
+
+      const from = draggedIndexRef.current;
+      if (from === null) return;
+
+      // Hovering a card means swap target. Hovering an arrow means insert target.
+      if (insertBeforeRef.current !== null) {
+        insertBeforeRef.current = null;
+        setInsertBefore(null);
+      }
+      const nextSwapTarget = cardIndex === from ? null : cardIndex;
+      if (swapTargetIndexRef.current !== nextSwapTarget) {
+        swapTargetIndexRef.current = nextSwapTarget;
+        setSwapTargetIndex(nextSwapTarget);
       }
     };
 
@@ -169,20 +233,31 @@ export default function PluginChain() {
 
       const from = draggedIndexRef.current;
       const pos = insertBeforeRef.current;
+      const swapTo = swapTargetIndexRef.current;
 
       draggingRef.current = false;
       draggedIndexRef.current = null;
       insertBeforeRef.current = null;
+      swapTargetIndexRef.current = null;
       setDragPointer(null);
       setDragLabel('');
       setDraggedIndex(null);
       setInsertBefore(null);
+      setSwapTargetIndex(null);
 
-      if (from === null || pos === null) return;
-      const to = pos > from ? pos - 1 : pos;
-      if (from === to) return;
+      if (from === null) return;
 
       try {
+        if (swapTo !== null && swapTo !== from) {
+          await swapChain(from, swapTo);
+          messageApi.success('Plugins swapped');
+          return;
+        }
+
+        if (pos === null) return;
+        const to = pos > from ? pos - 1 : pos;
+        if (from === to) return;
+
         await reorderChain(from, to);
         messageApi.success('Plugin order updated');
       } catch (error) {
@@ -200,16 +275,9 @@ export default function PluginChain() {
   };
 
   //  Visual indicator helpers 
-  // Suppress indicator when insertion is a no-op (card stays in same place).
-  const showInsertLeft  = (index: number) =>
+  const showInsertAt = (pos: number) =>
     draggedIndex !== null &&
-    insertBefore === index &&
-    insertBefore !== draggedIndex &&
-    insertBefore !== draggedIndex + 1;
-
-  const showInsertRight = (index: number) =>
-    draggedIndex !== null &&
-    insertBefore === index + 1 &&
+    insertBefore === pos &&
     insertBefore !== draggedIndex &&
     insertBefore !== draggedIndex + 1;
 
@@ -220,14 +288,26 @@ export default function PluginChain() {
       <div
         className="glass-panel"
         style={{
-          marginBottom: 16,
-          padding: '16px 20px',
-          borderRadius: token.borderRadiusLG * 1.25,
+          marginBottom: 0,
+          padding: '14px 18px',
+          borderRadius: `${token.borderRadiusLG * 1.25}px ${token.borderRadiusLG * 1.25}px 0 0`,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: 16,
           flexWrap: 'wrap',
+          background: token.colorBgElevated.includes('rgb') 
+            ? (token.colorBgElevated.includes('255')
+              ? 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.16) 100%)'
+              : 'linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%)')
+            : token.colorBgElevated,
+          border: `1px solid ${token.colorBorderSecondary.includes('255') ? 'rgba(255,255,255,0.34)' : 'rgba(210,216,255,0.24)'}`,
+          borderBottom: 'none',
+          backdropFilter: 'blur(20px) saturate(1.1)',
+          WebkitBackdropFilter: 'blur(20px) saturate(1.1)',
+          boxShadow: token.colorBorderSecondary.includes('255')
+            ? '0 8px 24px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.05)'
+            : '0 8px 20px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.16)',
         }}
       >
         <Space orientation="vertical" size={2}>
@@ -254,12 +334,15 @@ export default function PluginChain() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
-              size="large"
+              size="middle"
+              className="btn-pill"
               loading={addLocked}
               disabled={addLocked}
               onClick={() => setShowPluginLibrary(true)}
               aria-label={isChainInitializing ? 'Preparing plugin library' : 'Add plugin'}
-            />
+            >
+              Add Plugin
+            </Button>
           </Tooltip>
 
           <Popconfirm
@@ -269,11 +352,16 @@ export default function PluginChain() {
             cancelText="Cancel"
           >
             <Button
-              size="small"
-              danger
+              size="middle"
+              type="default"
               icon={<DeleteOutlined />}
-              disabled={pluginChain.length === 0 || isMutating}
-              className="btn-icon"
+              loading={isDeleteAllBusy}
+              disabled={pluginChain.length === 0 || isDeleteAllBusy || isChainInitializing}
+              className="btn-pill btn-tonal"
+              style={{
+                borderColor: 'rgba(99,103,255,0.2)',
+                color: token.colorTextSecondary,
+              }}
             >
             </Button>
           </Popconfirm>
@@ -282,13 +370,23 @@ export default function PluginChain() {
 
       {/* Plugin Chain Area */}
       <Card
+        className="glass-card"
         style={{
           flex: 1,
           minHeight: 0,
-          background: token.colorBgContainer,
-          borderRadius: token.borderRadiusLG * 1.25,
-          border: `1px solid ${token.colorBorderSecondary}`,
-          boxShadow: token.boxShadowTertiary,
+          background: token.colorBgElevated.includes('rgb')
+            ? (token.colorBgElevated.includes('255')
+              ? 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.16) 100%)'
+              : 'linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%)')
+            : token.colorBgElevated,
+          borderRadius: `0 0 ${token.borderRadiusLG * 1.25}px ${token.borderRadiusLG * 1.25}px`,
+          border: `1px solid ${token.colorBorderSecondary.includes('255') ? 'rgba(255,255,255,0.34)' : 'rgba(210,216,255,0.24)'}`,
+          borderTop: 'none',
+          backdropFilter: 'blur(20px) saturate(1.1)',
+          WebkitBackdropFilter: 'blur(20px) saturate(1.1)',
+          boxShadow: token.colorBorderSecondary.includes('255')
+            ? '0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.05)'
+            : '0 8px 24px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.16)',
         }}
         styles={{ body: { height: '100%', padding: '20px', overflow: 'hidden' } }}
         onContextMenu={handleContextMenu}
@@ -313,11 +411,18 @@ export default function PluginChain() {
             <div
               style={{
                 height: 'calc(100% - 15px)',
-                border: `1px dashed ${token.colorBorderSecondary}`,
+                border: `1px dashed ${token.colorBorderSecondary.includes('255') ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.15)'}`,
                 borderRadius: 10,
                 padding: 12,
                 overflowX: 'hidden',
                 overflowY: 'auto',
+                background: token.colorBgElevated.includes('rgb')
+                  ? (token.colorBgElevated.includes('255')
+                    ? 'linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.14) 100%)'
+                    : 'linear-gradient(135deg, rgba(58,64,96,0.22) 0%, rgba(45,50,78,0.16) 100%)')
+                  : 'transparent',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
               }}
             >
               <div
@@ -325,7 +430,8 @@ export default function PluginChain() {
                   display: 'flex',
                   flexWrap: 'wrap',
                   alignItems: 'center',
-                  alignContent: 'flex-start',
+                  justifyContent: 'center',
+                  alignContent: 'center',
                   columnGap: 0,
                   rowGap: 30,
                   minHeight: 138,
@@ -335,9 +441,9 @@ export default function PluginChain() {
             {/* IN node */}
             <Tooltip
               title={
-                <Space direction="vertical" size={0} style={{ minWidth: 160 }}>
-                  <Text strong style={{ color: token.colorText }}>Input</Text>
-                  <Text style={{ color: token.colorTextSecondary }}>Device: {inputDeviceName}</Text>
+                <Space orientation="vertical" size={0} style={{ minWidth: 190 }}>
+                  <Text strong style={{ color: token.colorText }}>Input Node</Text>
+                  <Text style={{ color: token.colorTextSecondary }}>{inputDeviceName}</Text>
                 </Space>
               }
             >
@@ -350,6 +456,7 @@ export default function PluginChain() {
                 }}
               >
                 <Card
+                  className="glass-card"
                   style={{ width: '100%', height: 145, flexShrink: 0, overflow: 'hidden' }}
                   styles={{ body: {
                     position: 'relative',
@@ -359,7 +466,7 @@ export default function PluginChain() {
                     justifyContent: 'space-between',
                     padding: 12,
                     height: '100%',
-                    borderRadius: 18,
+                  
                     background: `linear-gradient(160deg, ${token.colorSuccessBg} 0%, ${token.colorBgContainer} 55%, ${token.colorFillQuaternary} 100%)`,
                     border: `1px solid ${token.colorSuccessBorder}`,
                     boxShadow: `0 14px 32px rgba(2,6,23,0.42), inset 0 1px 0 rgba(255,255,255,0.06)`,
@@ -419,14 +526,34 @@ export default function PluginChain() {
 
             {/* Plugin cards with drop zones between theme*/}
             {pluginChain.map((plugin, index) => {
-              const isLeft  = showInsertLeft(index);
-              const isRight = showInsertRight(index);
+              const isSwapTarget = draggedIndex !== null && swapTargetIndex === index && draggedIndex !== index;
               return (
               <div key={plugin.instance_id} style={{ display: 'flex', alignItems: 'center' }}>
 
                 {/* Arrow separator (curved/dashed) */}
-                <div style={{ display: 'flex', alignItems: 'center', margin: '0 6px', flexShrink: 0 }}>
-                  <CurvedArrow color={isLeft ? token.colorPrimary : token.colorTextQuaternary} />
+                <div
+                  data-plugin-arrow
+                  data-plugin-arrow-pos={index}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    margin: '0 6px',
+                    flexShrink: 0,
+                    padding: '3px 4px',
+                    borderRadius: 999,
+                    transform: showInsertAt(index) ? 'translateY(-2px) scale(1.08)' : 'none',
+                    background: showInsertAt(index)
+                      ? (token.colorBgElevated.includes('255')
+                        ? 'linear-gradient(135deg, rgba(99,103,255,0.26), rgba(132,148,255,0.22))'
+                        : 'linear-gradient(135deg, rgba(99,103,255,0.34), rgba(132,148,255,0.28))')
+                      : 'transparent',
+                    boxShadow: showInsertAt(index)
+                      ? `0 0 0 1px ${token.colorPrimaryBorder}, 0 6px 16px ${token.colorPrimaryBg}`
+                      : 'none',
+                    transition: 'transform 120ms ease, box-shadow 120ms ease, background 120ms ease',
+                  }}
+                >
+                  <CurvedArrow color={showInsertAt(index) ? token.colorPrimary : token.colorTextQuaternary} />
                 </div>
 
                 {/* Card wrapper — full drop target */}
@@ -440,23 +567,24 @@ export default function PluginChain() {
                     flexDirection: 'column',
                     flexShrink: 0,
                     opacity: draggedIndex === index ? 0.2 : 1,
-                    transform: draggedIndex === index ? 'translateY(-2px) scale(1.01)' : 'none',
-                    transition: 'opacity 0.15s ease, box-shadow 0.14s ease, transform 0.14s ease',
+                    transform: draggedIndex === index
+                      ? 'translateY(-2px) scale(1.01)'
+                      : isSwapTarget
+                      ? 'translateY(-8px) scale(1.018)'
+                      : 'none',
+                    transition: 'opacity 0.15s ease, transform 0.16s ease, filter 0.16s ease',
                     borderRadius: 8,
-                    boxShadow: isLeft
-                      ? `0 0 0 1px ${token.colorPrimary}55`
-                      : isRight
-                        ? `0 0 0 1px ${token.colorPrimary}55`
-                        : 'none',
+                    filter: isSwapTarget ? 'brightness(1.04) saturate(1.05)' : 'none',
+                    zIndex: isSwapTarget ? 2 : 1,
                   }}
                 >
                   <div style={{ paddingTop: 12 }}>
                     <PluginCard
                       plugin={plugin}
                       crashStatus={crashStatusByInstanceId[plugin.instance_id]}
-                      interactionLocked={isMutating}
-                      onRemove={() => removeFromChain(plugin.instance_id)}
-                      onToggleBypass={() => toggleBypass(plugin.instance_id)}
+                      interactionLocked={isChainInitializing || isDeleteAllBusy || draggedIndex !== null}
+                      onRemove={async () => { await removeFromChain(plugin.instance_id); }}
+                      onToggleBypass={async () => { await toggleBypass(plugin.instance_id); }}
                       onCrashStatusChanged={fetchCrashStatuses}
                       onDragHandlePointerDown={(e) => startPointerDrag(e, index)}
                       isDragging={draggedIndex === index}
@@ -475,16 +603,37 @@ export default function PluginChain() {
             })}
 
             {/* Arrow after last card */}
-            <div style={{ display: 'flex', alignItems: 'center', margin: '0 6px', flexShrink: 0 }}>
-              <CurvedArrow color={showInsertRight(pluginChain.length - 1) ? token.colorPrimary : token.colorTextQuaternary} />
+            <div
+              data-plugin-arrow
+              data-plugin-arrow-pos={pluginChain.length}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                margin: '0 6px',
+                flexShrink: 0,
+                padding: '3px 4px',
+                borderRadius: 999,
+                transform: showInsertAt(pluginChain.length) ? 'translateY(-2px) scale(1.08)' : 'none',
+                background: showInsertAt(pluginChain.length)
+                  ? (token.colorBgElevated.includes('255')
+                    ? 'linear-gradient(135deg, rgba(99,103,255,0.26), rgba(132,148,255,0.22))'
+                    : 'linear-gradient(135deg, rgba(99,103,255,0.34), rgba(132,148,255,0.28))')
+                  : 'transparent',
+                boxShadow: showInsertAt(pluginChain.length)
+                  ? `0 0 0 1px ${token.colorPrimaryBorder}, 0 6px 16px ${token.colorPrimaryBg}`
+                  : 'none',
+                transition: 'transform 120ms ease, box-shadow 120ms ease, background 120ms ease',
+              }}
+            >
+              <CurvedArrow color={showInsertAt(pluginChain.length) ? token.colorPrimary : token.colorTextQuaternary} />
             </div>
 
             {/* OUT node */}
             <Tooltip
               title={
-                <Space direction="vertical" size={0} style={{ minWidth: 180 }}>
-                  <Text strong style={{ color: token.colorText }}>Output</Text>
-                  <Text style={{ color: token.colorTextSecondary }}>Device: {outputDeviceName}</Text>
+                <Space orientation="vertical" size={0} style={{ minWidth: 210 }}>
+                  <Text strong style={{ color: token.colorText }}>Output Node</Text>
+                  <Text style={{ color: token.colorTextSecondary }}>{outputDeviceName}</Text>
                   <Text style={{ color: token.colorTextSecondary }}>Virtual output: {virtualOutputDeviceName}</Text>
                 </Space>
               }
@@ -498,6 +647,7 @@ export default function PluginChain() {
                 }}
               >
                 <Card
+                  className="glass-card"
                   style={{ width: '100%', height: 145, flexShrink: 0, overflow: 'hidden' }}
                   styles={{ body: {
                     position: 'relative',
@@ -507,7 +657,7 @@ export default function PluginChain() {
                     justifyContent: 'space-between',
                     padding: 12,
                     height: '100%',
-                    borderRadius: 18,
+                   
                     background: `linear-gradient(160deg, ${token.colorInfoBg} 0%, ${token.colorBgContainer} 55%, ${token.colorFillQuaternary} 100%)`,
                     border: `1px solid ${token.colorInfoBorder}`,
                     boxShadow: `0 14px 32px rgba(2,6,23,0.42), inset 0 1px 0 rgba(255,255,255,0.06)`,
@@ -569,24 +719,10 @@ export default function PluginChain() {
 
             {dragPointer && (
               <div
+                className="rh-floating-tip"
                 style={{
-                  position: 'fixed',
-                  left: dragPointer.x + 14,
-                  top: dragPointer.y + 14,
-                  pointerEvents: 'none',
-                  zIndex: 2000,
-                  padding: '8px 10px',
-                  borderRadius: 10,
-                  border: `1px solid ${token.colorPrimaryBorder}`,
-                  background: `linear-gradient(180deg, ${token.colorBgElevated}, ${token.colorFillSecondary})`,
-                  boxShadow: `0 12px 28px ${token.colorFillSecondary}`,
-                  color: token.colorText,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  maxWidth: 220,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
+                  left: dragPointer.x,
+                  top: dragPointer.y,
                 }}
               >
                 <Space size={6}>

@@ -133,6 +133,17 @@ pub fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to
 }
 
 #[tauri::command]
+pub fn swap_plugin_chain(state: tauri::State<AppState>, first_index: usize, second_index: usize) -> Result<(), String> {
+    state
+        .plugin_manager
+        .read()
+        .swap(first_index, second_index)
+        .map_err(|e| format!("Failed to swap plugin chain: {}", e))?;
+    crate::app_events::emit_plugin_chain_changed("swap", None);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
     let instance_opt = {
         let manager = state.plugin_manager.read();

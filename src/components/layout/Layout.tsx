@@ -71,7 +71,7 @@ export default function Layout({ children }: LayoutProps) {
     }
     // Apply CSS variables to :root for non-AntD styles
     const tokens = getThemeTokens(theme === 'dark');
-    applyThemeCssVars(tokens);
+    applyThemeCssVars(tokens, theme === 'dark');
   }, [theme]);
 
   const isDark = theme === 'dark';
@@ -83,7 +83,7 @@ export default function Layout({ children }: LayoutProps) {
     token: themeTokens,
     components: {
       Card: { headerBg: 'transparent' },
-      Button: { primaryShadow: '0 4px 14px -2px rgba(155, 114, 207, 0.45)' },
+      Button: { primaryShadow: '0 4px 14px -2px rgba(99, 103, 255, 0.45)' },
       Modal: { contentBg: themeTokens.colorBgElevated, headerBg: themeTokens.colorBgElevated },
       Select: { optionSelectedBg: isDark ? themeTokens.colorBgElevated : themeTokens.colorBgContainer },
       Slider: {
@@ -104,18 +104,19 @@ export default function Layout({ children }: LayoutProps) {
 }
 
 function MiniMeter({ value, color, width = 60 }: { value: number; color: string; width?: number }) {
-  const { token } = antTheme.useToken();
   const clamped = Math.min(100, Math.max(0, value));
   return (
     <div
       style={{
         width,
         height: 6,
-        background: token.colorFillTertiary,
+        background: 'linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.08) 100%)',
         borderRadius: 3,
         overflow: 'hidden',
         display: 'inline-block',
         verticalAlign: 'middle',
+        border: '1px solid rgba(255,255,255,0.1)',
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.15)',
       }}
     >
       <div
@@ -125,6 +126,7 @@ function MiniMeter({ value, color, width = 60 }: { value: number; color: string;
           background: color,
           borderRadius: 3,
           transition: 'width 0.4s ease',
+          boxShadow: `0 0 8px ${color}60`,
         }}
       />
     </div>
@@ -170,12 +172,17 @@ function Footer({ status, pluginCount, isDark }: {
     <footer
       className="glass-panel"
       style={{
-        margin: '0 16px 12px',
-        borderRadius: token.borderRadiusLG * 1.2,
-        background: token.colorBgElevated,
-        borderTop: 'none',
-        border: `1px solid ${token.colorBorderSecondary}`,
-        boxShadow: isDark ? '0 -4px 24px rgba(0,0,0,0.35)' : '0 -2px 20px rgba(15,23,42,0.06)',
+        margin: 0,
+        borderRadius: 0,
+        background: isDark
+          ? 'linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%)'
+          : 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.16) 100%)',
+        border: 'none',
+        boxShadow: isDark
+          ? '0 -1px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04)'
+          : '0 -1px 8px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.14)',
+        backdropFilter: 'blur(16px) saturate(1.08)',
+        WebkitBackdropFilter: 'blur(16px) saturate(1.08)',
         padding: '0 20px',
         flexShrink: 0,
         display: 'flex',
@@ -247,7 +254,7 @@ function Footer({ status, pluginCount, isDark }: {
         </Tooltip>
         {sep}
         <Text style={{ fontSize: 11, color: token.colorTextSecondary }}>
-          <HeartFilled style={{ color: '#ff4d4f', fontSize: 10 }} /> HiimGyn
+          <HeartFilled style={{ color: token.colorError, fontSize: 10 }} /> HiimGyn
         </Text>
       </Space>
       </div>

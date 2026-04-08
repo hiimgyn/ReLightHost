@@ -9,6 +9,7 @@ interface PluginStore {
   crashStatusByInstanceId: Record<string, PluginStatus>;
   isScanning: boolean;
   isChainInitializing: boolean;
+  restoreTargetCount: number | null;
   hasFetchedChainOnce: boolean;
   mutationCount: number;
   isMutating: boolean;
@@ -19,8 +20,10 @@ interface PluginStore {
   removeFromChain: (instanceId: string) => Promise<void>;
   toggleBypass: (instanceId: string) => Promise<void>;
   reorderChain: (fromIndex: number, toIndex: number) => Promise<void>;
+  swapChain: (firstIndex: number, secondIndex: number) => Promise<void>;
   fetchChain: () => Promise<void>;
   fetchCrashStatuses: () => Promise<void>;
+  setRestoreTargetCount: (count: number | null) => void;
 }
 
 export const usePluginStore = create<PluginStore>((set, get) => ({
@@ -29,6 +32,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   crashStatusByInstanceId: {},
   isScanning: false,
   isChainInitializing: true,
+  restoreTargetCount: null,
   hasFetchedChainOnce: false,
   mutationCount: 0,
   isMutating: false,
@@ -86,22 +90,12 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   toggleBypass: async (instanceId: string) => {
     const instance = get().pluginChain.find(p => p.instance_id === instanceId);
     if (!instance) return;
-
-    set((state) => {
-      const next = state.mutationCount + 1;
-      return { mutationCount: next, isMutating: next > 0 };
-    });
     try {
       await tauri.setPluginBypass(instanceId, !instance.bypassed);
       await get().fetchChain();
     } catch (error) {
       console.error('Failed to toggle bypass:', error);
       throw error;
-    } finally {
-      set((state) => {
-        const next = Math.max(0, state.mutationCount - 1);
-        return { mutationCount: next, isMutating: next > 0 };
-      });
     }
   },
 
@@ -129,6 +123,45 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       await tauri.reorderPluginChain(fromIndex, toIndex);
     } catch (error) {
       // Revert immediately on failure, then resync with backend snapshot.
+      set({ pluginChain: current });
+      await get().fetchChain();
+      throw error;
+    } finally {
+      set((state) => {
+        const count = Math.max(0, state.mutationCount - 1);
+        return { mutationCount: count, isMutating: count > 0 };
+      });
+    }
+  },
+
+  swapChain: async (firstIndex: number, secondIndex: number) => {
+    const current = get().pluginChain;
+    const len = current.length;
+    if (
+      firstIndex < 0 ||
+      secondIndex < 0 ||
+      firstIndex >= len ||
+      secondIndex >= len ||
+      firstIndex === secondIndex
+    ) {
+      return;
+    }
+
+    const next = [...current];
+    const temp = next[firstIndex];
+    next[firstIndex] = next[secondIndex];
+    next[secondIndex] = temp;
+
+    set({ pluginChain: next });
+
+    set((state) => {
+      const count = state.mutationCount + 1;
+      return { mutationCount: count, isMutating: count > 0 };
+    });
+
+    try {
+      await tauri.swapPluginChain(firstIndex, secondIndex);
+    } catch (error) {
       set({ pluginChain: current });
       await get().fetchChain();
       throw error;
@@ -169,6 +202,10 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     } catch (error) {
       console.error('Failed to fetch plugin crash statuses:', error);
     }
+  },
+
+  setRestoreTargetCount: (count: number | null) => {
+    set({ restoreTargetCount: count });
   },
 
 }));

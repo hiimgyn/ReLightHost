@@ -77,10 +77,11 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
 
   return (
     <Modal
+      className="minimal-panel"
       title={
         <Space>
           <SettingOutlined style={{ color: token.colorPrimary }} />
-          <span>Plugin Scan Paths</span>
+          <Text strong style={{ fontSize: 15, letterSpacing: '-0.01em', color: token.colorText }}>Plugin Scan Paths</Text>
         </Space>
       }
       open={isOpen}
@@ -104,7 +105,7 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
       <Divider />
 
       {/* Info banner */}
-      <div style={{
+      <div className="minimal-surface" style={{
         background: 'var(--rh-primary-glow)',
         border: `1px solid ${token.colorPrimary}`,
         borderRadius: 8,
@@ -135,15 +136,19 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {customPaths.map((path, i) => (
             <div
+              className="minimal-surface"
               key={i}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 10,
                 padding: '8px 12px',
-                background: token.colorBgContainer,
-                border: `1px solid ${token.colorBorderSecondary}`,
+                background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
+                border: `1px solid rgba(255,255,255,0.3)`,
                 borderRadius: 6,
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                transition: 'all 200ms ease',
               }}
             >
               <FolderOpenOutlined style={{ color: token.colorPrimary, flexShrink: 0 }} />
@@ -161,7 +166,7 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
           ))}
         </div>
       ) : (
-        <div style={{
+        <div className="minimal-surface" style={{
           textAlign: 'center',
           padding: '24px 0',
           color: token.colorTextTertiary,

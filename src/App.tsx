@@ -18,11 +18,16 @@ function App() {
   useEffect(() => {
     const restoreSession = async () => {
       try {
+        usePluginStore.getState().setRestoreTargetCount(null);
         const result = await invoke<{
           audio_restored: boolean;
           plugins_restored: number;
           needs_deferred_start: boolean;
         }>('restore_session');
+
+        usePluginStore
+          .getState()
+          .setRestoreTargetCount(result.plugins_restored > 0 ? result.plugins_restored : null);
 
         // Startup race guard: ensure chain store is refreshed even if
         // plugin-chain-changed event was emitted before listener attached.
@@ -74,6 +79,7 @@ function App() {
         }
       } catch (error) {
         console.error('Failed to restore session:', error);
+        usePluginStore.getState().setRestoreTargetCount(null);
         if (!localStorage.getItem('audioConfigured')) {
           setTimeout(() => setShowFirstTimeAudio(true), 600);
         }
@@ -124,7 +130,7 @@ function App() {
     <Suspense fallback={<div className="h-screen" />}>
       {contextHolder}
       <Layout>
-        <div className="rh-main-inner h-full w-full max-w-[1820px] mx-auto px-4 py-4 md:px-7 md:py-5">
+        <div className="glass-panel rh-main-inner h-full w-full max-w-[1820px] mx-auto px-4 py-4 md:px-7 md:py-5">
           <PluginChain />
         </div>
         {showFirstTimeAudio && (

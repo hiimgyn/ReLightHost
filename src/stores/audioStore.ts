@@ -118,7 +118,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   toggleMonitoring: async (enabled: boolean) => {
     try {
       await tauri.toggleMonitoring(enabled);
-      set(state => ({ status: { ...state.status, is_monitoring: enabled } }));
+      await get().fetchStatus();
     } catch (error) {
       console.error('Failed to toggle monitoring:', error);
       throw error;

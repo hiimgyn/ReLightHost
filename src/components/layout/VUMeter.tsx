@@ -2,10 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import * as tauri from '../../lib/tauri';
 import type { VUData } from '../../lib/types';
 
-function toDb(v: number) { return v <= 0.0031623 ? -50 : Math.min(0, Math.max(20 * Math.log10(v), -50)); }
-function toFrac(db: number) { return Math.min(1, Math.max(0, (db + 50) / 50)); }
+const MIN_DB = -72;
+const MAX_DB = 6;
 
-const BAR_GRAD = 'linear-gradient(to right, #9b72cf 0%, #b08ee0 45%, #e478a8 75%, #ff4d4f 100%)';
+function toDb(v: number) {
+  if (v <= 0.000001) return MIN_DB;
+  return Math.min(MAX_DB, Math.max(20 * Math.log10(v), MIN_DB));
+}
+
+function toFrac(db: number) {
+  return Math.min(1, Math.max(0, (db - MIN_DB) / (MAX_DB - MIN_DB)));
+}
+
+const BAR_GRAD = 'linear-gradient(to right, #6367FF 0%, #8494FF 45%, #C9BEFF 75%, #FFDBFD 100%)';
 const BAR_GRAD_CLIP = 'linear-gradient(to right, #f97316 0%, #ef4444 60%, #ff4d4f 100%)';
 
 function HBar({ peak, rms, peak_hold, clip, isDark }: {
@@ -14,21 +23,25 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
   const peakPct = toFrac(toDb(peak)) * 100;
   const rmsPct  = toFrac(toDb(rms))  * 100;
   const holdPct = toFrac(toDb(peak_hold)) * 100;
-  const trackBg = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.08)';
-  const trackBorder = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(155,114,207,0.12)';
-  const rmsGhost = isDark ? 'rgba(155,114,207,0.22)' : 'rgba(155,114,207,0.28)';
 
   return (
     <div style={{
       position: 'relative', flex: 1, height: 5, borderRadius: 3,
-      background: trackBg,
-      border: `1px solid ${trackBorder}`,
+      background: isDark
+        ? 'linear-gradient(135deg, rgba(38,42,64,0.78) 0%, rgba(30,34,54,0.72) 100%)'
+        : 'linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.76) 100%)',
+      border: `1px solid ${isDark ? 'rgba(132,148,255,0.24)' : 'rgba(99,103,255,0.18)'}`,
+      boxShadow: isDark ? 'inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.16)',
+      backdropFilter: 'blur(8px)',
+      WebkitBackdropFilter: 'blur(8px)',
     }}>
       {/* RMS ghost */}
       <div style={{
         position: 'absolute', top: 0, left: 0, bottom: 0,
         width: rmsPct + '%', borderRadius: 3,
-        background: rmsGhost,
+        background: isDark ? 'rgba(99,103,255,0.28)' : 'rgba(99,103,255,0.24)',
+        backdropFilter: 'blur(4px)',
+        WebkitBackdropFilter: 'blur(4px)',
       }} />
       {/* Peak fill */}
       <div style={{
@@ -36,7 +49,7 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
         width: peakPct + '%', borderRadius: 3,
         background: clip ? BAR_GRAD_CLIP : BAR_GRAD,
         transition: 'width 35ms linear',
-        boxShadow: peakPct > 5 ? (clip ? '0 0 6px rgba(255,77,79,.5)' : '0 0 6px rgba(155,114,207,.5)') : undefined,
+        boxShadow: peakPct > 5 ? (clip ? '0 0 6px rgba(255,77,79,.6)' : '0 0 6px rgba(155,114,207,.6)') : undefined,
       }} />
       {/* Peak-hold tick */}
       {peak_hold > 0.001 && holdPct < 99 && (
@@ -44,8 +57,8 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
           position: 'absolute', top: -1, bottom: -1,
           left: 'calc(' + holdPct + '% - 1px)',
           width: 2, borderRadius: 1,
-          background: 'rgba(255,255,255,0.8)',
-          boxShadow: '0 0 4px rgba(255,255,255,0.5)',
+          background: isDark ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.95)',
+          boxShadow: isDark ? '0 0 4px rgba(255,255,255,0.4)' : '0 0 4px rgba(255,255,255,0.6)',
         }} />
       )}
     </div>
@@ -97,7 +110,7 @@ export function VUMeter({ updateInterval = 50, isDark = true }: { updateInterval
 
   const labelCss: React.CSSProperties = {
     fontSize: 8, fontWeight: 700, letterSpacing: 0.8, width: 8, flexShrink: 0,
-    color: isDark ? 'rgba(176,142,224,0.8)' : 'rgba(109,40,217,0.7)', textTransform: 'uppercase',
+    color: isDark ? 'rgba(201,190,255,0.86)' : 'rgba(99,103,255,0.74)', textTransform: 'uppercase',
   };
 
 
@@ -108,6 +121,13 @@ export function VUMeter({ updateInterval = 50, isDark = true }: { updateInterval
       width: '100%',
       maxWidth: 'clamp(240px, 42vw, 760px)',
       minWidth: 0,
+      borderRadius: 6,
+      background: isDark
+        ? 'linear-gradient(135deg, rgba(38,42,64,0.78) 0%, rgba(30,34,54,0.72) 100%)'
+        : 'linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.76) 100%)',
+      backdropFilter: 'blur(12px)',
+      WebkitBackdropFilter: 'blur(12px)',
+      border: `1px solid ${isDark ? 'rgba(132,148,255,0.24)' : 'rgba(99,103,255,0.18)'}`,
     }}>
       {/* L channel */}
       <span style={labelCss}>L</span>

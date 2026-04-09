@@ -617,6 +617,10 @@ body {
   background-color: rgba(255, 255, 255, 0.3) !important;
 }
 
+:root.dark .ant-switch-checked {
+  background-color: var(--rh-primary-soft) !important;
+}
+
 .ant-switch-checked {
   background-color: var(--rh-primary) !important;
   box-shadow: 0 4px 12px rgba(99, 103, 255, 0.4);

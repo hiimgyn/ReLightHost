@@ -1,3 +1,5 @@
+use tauri::Manager;
+
 use crate::audio::{AudioConfig, AudioDevice, AudioDeviceInfo, AudioStatus, VUData};
 use crate::AppState;
 
@@ -99,8 +101,14 @@ pub fn toggle_monitoring(state: tauri::State<AppState>, enabled: bool) -> Result
 }
 
 #[tauri::command]
-pub fn set_muted(state: tauri::State<AppState>, muted: bool) -> Result<(), String> {
+pub fn set_muted(
+    app: tauri::AppHandle<tauri::Wry>,
+    state: tauri::State<AppState>,
+    muted: bool,
+) -> Result<(), String> {
     state.audio_manager.read().set_muted(muted);
+    let tray_state = app.state::<crate::TrayState>();
+    crate::bootstrap::tray::sync_audio_tray_state(&app, &tray_state, muted);
     crate::save_audio_session_to_disk(&state);
     Ok(())
 }

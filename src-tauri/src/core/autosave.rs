@@ -22,12 +22,19 @@ pub fn init_autosave_worker(state: &crate::AppState) {
     let preset_manager = Arc::clone(&state.preset_manager);
     let autosave_last_hash = Arc::clone(&state.autosave.last_hash);
 
-    let _ = AUTOSAVE_TX.set(tx);
-
-    std::thread::Builder::new()
+    match std::thread::Builder::new()
         .name("autosave-worker".into())
         .spawn(move || run_autosave_worker(rx, plugin_manager, preset_manager, autosave_last_hash))
-        .expect("failed to spawn autosave worker");
+    {
+        Ok(_) => {
+            if AUTOSAVE_TX.set(tx).is_err() {
+                log::warn!("Autosave worker started but sender was already initialized; using existing worker");
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to spawn autosave worker: {e}; autosave will be disabled for this session");
+        }
+    }
 }
 
 pub fn request_plugin_chain_autosave() {

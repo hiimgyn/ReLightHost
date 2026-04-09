@@ -11,8 +11,8 @@ export function getThemeTokens(isDark: boolean): ThemeTokens {
       '"Inter", "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
     colorBgLayout: 'transparent',
     // Glassmorphism surfaces: low alpha with blur from CSS layer.
-    colorBgContainer: isDark ? 'rgba(45, 50, 78, 0.18)' : 'rgba(255, 255, 255, 0.16)',
-    colorBgElevated: isDark ? 'rgba(58, 64, 96, 0.24)' : 'rgba(255, 255, 255, 0.22)',
+    colorBgContainer: isDark ? 'rgba(28, 31, 48, 0.96)' : 'rgba(255, 255, 255, 0.16)',
+    colorBgElevated: isDark ? 'rgba(28, 31, 48, 0.96)' : 'rgba(255, 255, 255, 1)',
     // Border — Fluent enhanced opacity
     colorBorder: isDark ? 'rgba(209, 212, 255, 0.22)' : 'rgba(99, 103, 255, 0.2)',
     colorBorderSecondary: isDark ? 'rgba(209, 212, 255, 0.14)' : 'rgba(99, 103, 255, 0.14)',

@@ -2,9 +2,14 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use tauri::Manager;
+
 use crate::timing::{VST3_STATE_REPLAY_DELAY, VST3_STARTUP_DELAY_MS, VOICEMEETER_STARTUP_DELAY_MS, VST3_POST_START_SETTLE_MS};
 
-pub fn restore_session_impl(state: &crate::AppState) -> Result<crate::SessionRestoreResult, String> {
+pub fn restore_session_impl(
+    state: &crate::AppState,
+    app: &tauri::AppHandle<tauri::Wry>,
+) -> Result<crate::SessionRestoreResult, String> {
     use crate::plugins::PluginInfo;
     let restore_t0 = Instant::now();
 
@@ -37,6 +42,8 @@ pub fn restore_session_impl(state: &crate::AppState) -> Result<crate::SessionRes
         let _ = state.audio_manager.read().toggle_monitoring(false);
         state.audio_manager.read().restore_config(session.audio);
         state.audio_manager.read().set_muted(session.muted);
+        let tray_state = app.state::<crate::TrayState>();
+        crate::bootstrap::tray::sync_audio_tray_state(app, &tray_state, session.muted);
         let _ = state.audio_manager.read().set_loopback(session.loopback_enabled);
         audio_restored = true;
         log::info!("{} ✅ Audio session restored", crate::core::threading::thread_prefix("restore/main"));
@@ -193,7 +200,8 @@ pub fn restore_session_impl(state: &crate::AppState) -> Result<crate::SessionRes
                 state.startup.vst3_restore_ready.store(false, Ordering::Release);
                 let plugin_manager = Arc::clone(&state.plugin_manager);
                 let vst3_restore_ready = Arc::clone(&state.startup.vst3_restore_ready);
-                std::thread::Builder::new()
+                let vst3_restore_ready_fallback = Arc::clone(&state.startup.vst3_restore_ready);
+                match std::thread::Builder::new()
                     .name("vst3-replay".to_string())
                     .spawn(move || {
                     log::info!(
@@ -220,7 +228,17 @@ pub fn restore_session_impl(state: &crate::AppState) -> Result<crate::SessionRes
                     vst3_restore_ready.store(true, Ordering::Release);
                     log::info!("{} VST3 replay thread finished", crate::core::threading::thread_prefix("restore/replay"));
                     crate::app_events::emit_plugin_chain_changed("restore_session_vst3_replay_done", None);
-                }).expect("failed to spawn VST3 replay thread");
+                }) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::error!(
+                            "{} Failed to spawn VST3 replay thread: {e}; continuing without deferred replay",
+                            crate::core::threading::thread_prefix("restore/replay")
+                        );
+                        vst3_restore_ready_fallback.store(true, Ordering::Release);
+                        crate::app_events::emit_plugin_chain_changed("restore_session_vst3_replay_failed", None);
+                    }
+                }
             } else if plugins_restored > 0 {
                 state.startup.vst3_restore_ready.store(true, Ordering::Release);
                 crate::app_events::emit_plugin_chain_changed("restore_session", None);

@@ -1,4 +1,15 @@
 use crate::AppState;
+use tauri::Manager;
+
+pub(crate) fn shutdown_for_exit(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+
+    if let Err(e) = state.audio_manager.read().stop() {
+        log::warn!("Failed to stop audio during shutdown: {e}");
+    }
+
+    state.plugin_manager.read().clear();
+}
 
 #[derive(serde::Serialize)]
 pub struct SystemStats {
@@ -85,5 +96,6 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
+    shutdown_for_exit(&app);
     app.exit(0);
 }

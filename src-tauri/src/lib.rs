@@ -46,10 +46,12 @@ struct StartupState {
     vst3_restore_ready: Arc<AtomicBool>,
 }
 
-/// Holds dynamic menu items so they can be updated from commands and tray events.
-struct TrayState {
-    mute_item:     tauri::menu::MenuItem<tauri::Wry>,
-    loopback_item: tauri::menu::MenuItem<tauri::Wry>,
+/// Holds dynamic tray state so commands and tray events stay in sync.
+pub(crate) struct TrayState {
+    mute_item:             tauri::menu::MenuItem<tauri::Wry>,
+    loopback_item:         tauri::menu::MenuItem<tauri::Wry>,
+    audio_tray_icon:       tauri::image::Image<'static>,
+    audio_tray_icon_muted: tauri::image::Image<'static>,
 }
 
 pub(crate) use crate::session::restore_session_impl;

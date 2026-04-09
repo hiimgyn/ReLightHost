@@ -1,6 +1,6 @@
 {
   "productName": "ReLightHost",
-  "version": "1.8.2",
+  "version": "1.8.5",
   "identifier": "com.HiimGyn.relighthost",
   "build": {
     "frontendDist": "../dist",

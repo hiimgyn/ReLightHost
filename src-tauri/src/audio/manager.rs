@@ -96,6 +96,7 @@ impl AudioManager {
 
     /// Stop audio engine
     pub fn stop(&self) -> Result<()> {
+        self.toggle_monitoring(false)?;
         let mut status = self.status.write();
         status.is_monitoring = false;
         status.cpu_usage = 0.0;
@@ -117,7 +118,22 @@ impl AudioManager {
     /// latency.
     pub fn toggle_monitoring(&self, enabled: bool) -> Result<()> {
         if !enabled {
-            *self.monitoring.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            let mut monitoring_guard = self.monitoring.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(streams) = monitoring_guard.take() {
+                if let Some(ref stream) = streams._virtual_output {
+                    if let Err(e) = stream.pause() {
+                        log::warn!("{} Failed to pause virtual output stream: {e}", crate::core::threading::thread_prefix("audio/monitor"));
+                    }
+                }
+                if let Some(ref stream) = streams._output {
+                    if let Err(e) = stream.pause() {
+                        log::warn!("{} Failed to pause output stream: {e}", crate::core::threading::thread_prefix("audio/monitor"));
+                    }
+                }
+                if let Err(e) = streams._input.pause() {
+                    log::warn!("{} Failed to pause input stream: {e}", crate::core::threading::thread_prefix("audio/monitor"));
+                }
+            }
             self.status.write().is_monitoring = false;
             log::info!("{} Input monitoring stopped", crate::core::threading::thread_prefix("audio/monitor"));
             return Ok(());

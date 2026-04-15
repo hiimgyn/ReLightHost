@@ -30,7 +30,7 @@ function paramValue(plugin: PluginInstanceInfo, id: number, fallback: number) {
 interface SectionProps { title: string; color: string; }
 function SectionHeader({ title, color }: SectionProps) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
       <span style={{ fontSize: 10, letterSpacing: 2, color, textTransform: 'uppercase', fontWeight: 700 }}>
         {title}
       </span>
@@ -65,13 +65,13 @@ function ParamRow({
     <div
       className="minimal-surface"
       style={{
-        padding: '10px 12px',
-        borderRadius: 10,
-        background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
-        border: '1px solid rgba(255,255,255,0.3)',
+        padding: '8px 10px',
+        borderRadius: 8,
+        background: 'var(--rh-surface-soft-gradient)',
+        border: '1px solid var(--rh-surface-soft-border)',
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
         <Text style={{ fontSize: 13 }}>{label}</Text>
         <Space size={6} align="center">
           {value !== defaultValue && (
@@ -107,6 +107,7 @@ function ParamRow({
 export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
   const { token } = theme.useToken();
   const tc = token.colorTextTertiary;
+  const modalWidth = typeof window === 'undefined' ? 540 : 'clamp(300px, 32vw, 540px)';
 
   const [low,     setLow]     = useState(() => paramValue(plugin, P_LOW,      0));
   const [mid,     setMid]     = useState(() => paramValue(plugin, P_MID,      0));
@@ -162,15 +163,16 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
       open={isOpen}
       onCancel={onClose}
       footer={null}
-      width={460}
-      styles={{ body: { padding: '16px 24px 24px' } }}
+      width={modalWidth}
+      style={{ top: 12, maxWidth: 540 }}
+      styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'hidden', padding: '12px 16px 16px' } }}
     >
-      <Space orientation="vertical" size={20} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={14} style={{ width: '100%' }}>
 
         {/* ── EQ ───────────────────────────────────────────── */}
         <div>
           <SectionHeader title="EQ" color={EQ_COLOR} />
-          <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={10} style={{ width: '100%' }}>
             <ParamRow
               label="Low" value={low} defaultValue={0} min={-12} max={12} step={0.5}
               format={fmtDb}

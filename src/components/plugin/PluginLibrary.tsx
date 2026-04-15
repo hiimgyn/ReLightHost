@@ -161,14 +161,15 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           style={{
             marginBottom: 16,
             borderRadius: 10,
-            border: '1px solid rgba(255,255,255,0.32)',
-            background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
+            border: '1px solid var(--rh-surface-soft-border-strong)',
+            background: 'var(--rh-surface-soft-gradient)',
           }}
           allowClear
         />
 
         {/* Filter Tabs */}
         <Tabs
+          className="plugin-library-tabs"
           activeKey={filterFormat}
           onChange={(key) => setFilterFormat(key as any)}
           items={tabItems}
@@ -180,7 +181,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
         {isScanning ? (
           <div style={{ textAlign: 'center', padding: '60px 0' }}>
             <Spin size="large" />
-            <div style={{ marginTop: 16, color: '#999' }}>
+            <div style={{ marginTop: 16, color: 'var(--rh-text-muted)' }}>
               Scanning for plugins...
             </div>
           </div>
@@ -339,7 +340,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           borderTop: '1px solid var(--rh-minimal-border)'
         }}>
           {isChainInitializing && (
-            <div style={{ textAlign: 'center', marginBottom: 8, color: '#999', fontSize: 12 }}>
+            <div style={{ textAlign: 'center', marginBottom: 8, color: 'var(--rh-text-muted)', fontSize: 12 }}>
               Initial chain is loading, adding plugins is temporarily locked.
             </div>
           )}
@@ -353,7 +354,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           >
             {isScanning ? 'Scanning...' : 'Scan for Plugins'}
           </Button>
-          <div style={{ textAlign: 'center', marginTop: 8, color: '#999', fontSize: 12 }}>
+          <div style={{ textAlign: 'center', marginTop: 8, color: 'var(--rh-text-muted)', fontSize: 12 }}>
             {availablePlugins.length} plugin{availablePlugins.length !== 1 ? 's' : ''} available
           </div>
         </div>

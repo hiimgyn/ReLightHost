@@ -220,7 +220,7 @@ export default function PluginCard({
     : 'Active';
   const bypassButtonColor = statusPalette.color;
   const bypassButtonBg = statusKind === 'bypassed'
-    ? 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)'
+    ? 'var(--rh-surface-soft-gradient)'
     : `linear-gradient(135deg, ${statusPalette.bg} 0%, ${statusPalette.bg} 100%)`;
   const bypassButtonBorder = statusPalette.border;
   const statusDotColor = statusPalette.color;
@@ -360,20 +360,20 @@ export default function PluginCard({
           ? 'linear-gradient(135deg, rgba(255,77,79,0.15) 0%, rgba(255,77,79,0.08) 100%)'
           : isActive
           ? `linear-gradient(135deg, rgba(99,103,255,0.24) 0%, rgba(132,148,255,0.2) 50%, rgba(255,255,255,0.14) 100%)`
-          : `linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)`,
+          : `var(--rh-surface-soft-gradient)`,
         display: 'flex',
         flexDirection: 'column',
         height: 174,
         border: isCrashed
           ? `1px solid rgba(255,77,79,0.2)`
           : isActive
-          ? `1px solid rgba(255,255,255,0.34)`
-          : `1px solid rgba(255,255,255,0.3)`,
+          ? `1px solid var(--rh-surface-soft-border-strong)`
+          : `1px solid var(--rh-surface-soft-border)`,
         boxShadow: isCrashed
           ? `0 0 0 1px rgba(255,77,79,0.2), 0 12px 28px rgba(255,77,79,0.15), inset 0 1px 0 rgba(255,255,255,0.1)`
           : isActive
-          ? `0 0 0 1px rgba(99,103,255,0.3), 0 12px 28px rgba(99,103,255,0.2), inset 0 1px 0 rgba(255,255,255,0.16)`
-          : `0 8px 20px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.16)`,
+          ? `0 0 0 1px rgba(99,103,255,0.3), 0 12px 28px rgba(99,103,255,0.2), var(--rh-inset-soft)`
+          : `0 8px 20px rgba(0,0,0,0.12), var(--rh-inset-soft)`,
       }}
       styles={{ body: { padding: '16px', display: 'flex', flexDirection: 'column', height: '100%' } }}
     >

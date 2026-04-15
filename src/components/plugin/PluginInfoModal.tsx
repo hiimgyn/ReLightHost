@@ -1,4 +1,4 @@
-import { Modal, Button, Tag, Typography, Space, Descriptions, theme } from 'antd';
+import { Modal, Button, Tag, Typography, Space, Descriptions, theme, Grid } from 'antd';
 import { FolderOpenOutlined, InfoCircleOutlined, AppstoreOutlined } from '@ant-design/icons';
 import type { PluginInfo } from '../../lib/types';
 
@@ -20,12 +20,25 @@ function getFormatColor(format: string) {
 export default function PluginInfoModal({ plugin, isOpen, onClose, onLoad }: PluginInfoModalProps) {
   const { token } = theme.useToken();
 
+  const modalWidth = typeof window === 'undefined' ? 448 : 'clamp(300px, 58vw, 448px)';
+  const screens = Grid.useBreakpoint();
+  const descColumns = screens.md ? 2 : 1;
+
   return (
     <Modal
       className="minimal-panel"
       open={isOpen}
       onCancel={onClose}
-      width={600}
+      width={modalWidth}
+      style={{ top: 12, maxWidth: 448 }}
+      styles={{
+        body: {
+          maxHeight: 'calc(100vh - 220px)',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          padding: '12px 14px 14px',
+        },
+      }}
       title={
         <Space>
           <AppstoreOutlined style={{ color: token.colorPrimary }} />
@@ -45,7 +58,7 @@ export default function PluginInfoModal({ plugin, isOpen, onClose, onLoad }: Plu
       }
     >
 
-      <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+      <Descriptions column={descColumns} size="small" bordered style={{ marginBottom: 16 }}>
         <Descriptions.Item label="Manufacture">{plugin.manufacture || '—'}</Descriptions.Item>
         <Descriptions.Item label="Version">{plugin.version || '—'}</Descriptions.Item>
         <Descriptions.Item label="Format">

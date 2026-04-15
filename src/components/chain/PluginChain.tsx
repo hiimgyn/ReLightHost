@@ -296,16 +296,10 @@ export default function PluginChain() {
           justifyContent: 'space-between',
           gap: 16,
           flexWrap: 'wrap',
-          background: token.colorBgElevated.includes('rgb') 
-            ? (token.colorBgElevated.includes('255')
-              ? 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.16) 100%)'
-              : 'linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%)')
-            : token.colorBgElevated,
-          border: `1px solid ${token.colorBorderSecondary.includes('255') ? 'rgba(255,255,255,0.34)' : 'rgba(210,216,255,0.24)'}`,
+          background: 'var(--rh-surface-soft-gradient)',
+          border: '1px solid var(--rh-surface-soft-border-strong)',
           borderBottom: 'none',
-          boxShadow: token.colorBorderSecondary.includes('255')
-            ? '0 8px 24px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.05)'
-            : '0 8px 20px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.16)',
+          boxShadow: 'var(--rh-chain-toolbar-shadow)',
         }}
       >
         <Space orientation="vertical" size={2}>
@@ -372,17 +366,11 @@ export default function PluginChain() {
         style={{
           flex: 1,
           minHeight: 0,
-          background: token.colorBgElevated.includes('rgb')
-            ? (token.colorBgElevated.includes('255')
-              ? 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.16) 100%)'
-              : 'linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%)')
-            : token.colorBgElevated,
+          background: 'var(--rh-surface-soft-gradient)',
           borderRadius: `0 0 ${token.borderRadiusLG * 1.25}px ${token.borderRadiusLG * 1.25}px`,
-          border: `1px solid ${token.colorBorderSecondary.includes('255') ? 'rgba(255,255,255,0.34)' : 'rgba(210,216,255,0.24)'}`,
+          border: '1px solid var(--rh-surface-soft-border-strong)',
           borderTop: 'none',
-          boxShadow: token.colorBorderSecondary.includes('255')
-            ? '0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.05)'
-            : '0 8px 24px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.16)',
+          boxShadow: 'var(--rh-chain-panel-shadow)',
         }}
         styles={{ body: { height: '100%', padding: '20px', overflow: 'hidden' } }}
         onContextMenu={handleContextMenu}
@@ -407,16 +395,12 @@ export default function PluginChain() {
             <div
               style={{
                 height: 'calc(100% - 15px)',
-                border: `1px dashed ${token.colorBorderSecondary.includes('255') ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.15)'}`,
+                border: '1px dashed var(--rh-chain-well-border)',
                 borderRadius: 10,
                 padding: 12,
                 overflowX: 'hidden',
                 overflowY: 'auto',
-                background: token.colorBgElevated.includes('rgb')
-                  ? (token.colorBgElevated.includes('255')
-                    ? 'linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.14) 100%)'
-                    : 'linear-gradient(135deg, rgba(58,64,96,0.22) 0%, rgba(45,50,78,0.16) 100%)')
-                  : 'transparent',
+                background: 'var(--rh-chain-well-bg)',
               }}
             >
               <div
@@ -433,14 +417,7 @@ export default function PluginChain() {
               >
 
             {/* IN node */}
-            <Tooltip
-              title={
-                <Space orientation="vertical" size={0} style={{ minWidth: 190 }}>
-                  <Text strong style={{ color: token.colorText }}>Input Node</Text>
-                  <Text style={{ color: token.colorTextSecondary }}>{inputDeviceName}</Text>
-                </Space>
-              }
-            >
+            <Tooltip title={inputDeviceName}>
               <div
                 style={{
                   position: 'relative',
@@ -536,11 +513,7 @@ export default function PluginChain() {
                     padding: '3px 4px',
                     borderRadius: 999,
                     transform: showInsertAt(index) ? 'translateY(-2px) scale(1.08)' : 'none',
-                    background: showInsertAt(index)
-                      ? (token.colorBgElevated.includes('255')
-                        ? 'linear-gradient(135deg, rgba(99,103,255,0.26), rgba(132,148,255,0.22))'
-                        : 'linear-gradient(135deg, rgba(99,103,255,0.34), rgba(132,148,255,0.28))')
-                      : 'transparent',
+                    background: showInsertAt(index) ? 'var(--rh-chain-insert-bg)' : 'transparent',
                     boxShadow: showInsertAt(index)
                       ? `0 0 0 1px ${token.colorPrimaryBorder}, 0 6px 16px ${token.colorPrimaryBg}`
                       : 'none',
@@ -608,11 +581,7 @@ export default function PluginChain() {
                 padding: '3px 4px',
                 borderRadius: 999,
                 transform: showInsertAt(pluginChain.length) ? 'translateY(-2px) scale(1.08)' : 'none',
-                background: showInsertAt(pluginChain.length)
-                  ? (token.colorBgElevated.includes('255')
-                    ? 'linear-gradient(135deg, rgba(99,103,255,0.26), rgba(132,148,255,0.22))'
-                    : 'linear-gradient(135deg, rgba(99,103,255,0.34), rgba(132,148,255,0.28))')
-                  : 'transparent',
+                background: showInsertAt(pluginChain.length) ? 'var(--rh-chain-insert-bg)' : 'transparent',
                 boxShadow: showInsertAt(pluginChain.length)
                   ? `0 0 0 1px ${token.colorPrimaryBorder}, 0 6px 16px ${token.colorPrimaryBg}`
                   : 'none',
@@ -624,14 +593,8 @@ export default function PluginChain() {
 
             {/* OUT node */}
             <Tooltip
-              title={
-                <Space orientation="vertical" size={0} style={{ minWidth: 210 }}>
-                  <Text strong style={{ color: token.colorText }}>Output Node</Text>
-                  <Text style={{ color: token.colorTextSecondary }}>{outputDeviceName}</Text>
-                  <Text style={{ color: token.colorTextSecondary }}>Virtual output: {virtualOutputDeviceName}</Text>
-                </Space>
-              }
-            >
+          
+              title={<span>Output: {outputDeviceName} <br />Virtual Output: {virtualOutputDeviceName}</span>}>
               <div
                 style={{
                   position: 'relative',

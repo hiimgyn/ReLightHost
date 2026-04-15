@@ -163,8 +163,8 @@ function Footer({ status, pluginCount, isDark }: {
     };
   }, []);
 
-  const cpuColor = sys.cpu_percent > 80 ? '#ff4d4f' : sys.cpu_percent > 50 ? '#faad14' : '#52c41a';
-  const ramColor = sys.ram_percent > 85 ? '#ff4d4f' : sys.ram_percent > 65 ? '#faad14' : '#1677ff';
+  const cpuColor = sys.cpu_percent > 80 ? 'var(--rh-error)' : sys.cpu_percent > 50 ? 'var(--rh-warning)' : 'var(--rh-success)';
+  const ramColor = sys.ram_percent > 85 ? 'var(--rh-error)' : sys.ram_percent > 65 ? 'var(--rh-warning)' : 'var(--rh-info)';
 
   const sep = <Divider orientation="vertical" style={{ margin: '0 6px', height: 12 }} />;
 
@@ -174,13 +174,9 @@ function Footer({ status, pluginCount, isDark }: {
       style={{
         margin: 0,
         borderRadius: 0,
-        background: isDark
-          ? 'linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%)'
-          : 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.16) 100%)',
+        background: 'var(--rh-surface-soft-gradient)',
         border: 'none',
-        boxShadow: isDark
-          ? '0 -1px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04)'
-          : '0 -1px 8px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.14)',
+        boxShadow: 'var(--rh-footer-shadow)',
         padding: '0 20px',
         flexShrink: 0,
         display: 'flex',

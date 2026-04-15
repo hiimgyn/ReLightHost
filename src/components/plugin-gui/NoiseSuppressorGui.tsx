@@ -17,6 +17,7 @@ const VAD_HISTORY = 40;
 
 export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
   const { token } = theme.useToken();
+  const modalWidth = typeof window === 'undefined' ? 320 : 'clamp(300px, 30vw, 320px)';
 
   const mixParam          = plugin.parameters.find(p => p.id === 0);
   const vadGateParam      = plugin.parameters.find(p => p.id === 1);
@@ -101,10 +102,11 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
       open={isOpen}
       onCancel={onClose}
       footer={null}
-      width={420}
-      styles={{ body: { padding: '20px 24px 24px' } }}
+      width={modalWidth}
+      style={{ top: 12, maxWidth: 320 }}
+      styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'hidden', padding: '12px 16px 16px' } }}
     >
-      <Space orientation="vertical" size="large" style={{ width: '100%' }}>
+      <Space orientation="vertical" size={16} style={{ width: '100%' }}>
 
         {/* ── Voice Activity Meter ───────────────────────────── */}
         <div>
@@ -124,10 +126,10 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
               display: 'flex',
               alignItems: 'flex-end',
               gap: 2,
-              height: 48,
-              padding: '4px 6px',
-              background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
-              border: '1px solid rgba(255,255,255,0.3)',
+              height: 40,
+              padding: '3px 5px',
+              background: 'var(--rh-surface-soft-gradient)',
+              border: '1px solid var(--rh-surface-soft-border)',
               borderRadius: token.borderRadiusSM,
               overflow: 'hidden',
             }}
@@ -158,8 +160,8 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 8,
-                padding: '6px 16px',
-                background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
+                padding: '5px 12px',
+                background: 'var(--rh-surface-soft-gradient)',
                 borderRadius: token.borderRadiusLG,
                 border: `1px solid ${vadColor}88`,
                 transition: 'all 200ms ease',
@@ -228,8 +230,8 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
           className="minimal-surface"
           style={{
             padding: '8px 12px',
-            background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
-            border: '1px solid rgba(255,255,255,0.3)',
+            background: 'var(--rh-surface-soft-gradient)',
+            border: '1px solid var(--rh-surface-soft-border)',
             borderRadius: token.borderRadiusSM,
             lineHeight: 1.6,
           }}

@@ -27,10 +27,23 @@
   --rh-minimal-border: rgba(99, 103, 255, 0.14);
   --rh-minimal-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
   --rh-tooltip-bg: rgba(255, 255, 255, 0.96);
+  --rh-tooltip-surface: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(247,249,255,0.92) 100%);
   --rh-tooltip-border: rgba(99, 103, 255, 0.18);
   --rh-tooltip-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+  --rh-surface-soft-gradient: linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%);
+  --rh-surface-soft-border: rgba(255,255,255,0.3);
+  --rh-surface-soft-border-strong: rgba(255,255,255,0.34);
+  --rh-divider-subtle: rgba(0, 0, 0, 0.14);
+  --rh-text-muted: rgba(0, 0, 0, 0.52);
+  --rh-inset-soft: inset 0 1px 0 rgba(255,255,255,0.16);
+  --rh-header-shadow: 0 1px 8px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.14);
+  --rh-footer-shadow: 0 -1px 8px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.14);
+  --rh-chain-toolbar-shadow: 0 8px 20px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.16);
+  --rh-chain-panel-shadow: 0 8px 24px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.16);
+  --rh-chain-well-bg: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.14) 100%);
+  --rh-chain-well-border: rgba(0,0,0,0.15);
+  --rh-chain-insert-bg: linear-gradient(135deg, rgba(99,103,255,0.26), rgba(132,148,255,0.22));
 
-  font-family: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
   font-family: 'Inter', 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
   line-height: 1.5;
   font-weight: 400;
@@ -62,8 +75,22 @@
   --rh-minimal-border: rgba(132, 148, 255, 0.16);
   --rh-minimal-shadow: 0 10px 32px rgba(0, 0, 0, 0.34);
   --rh-tooltip-bg: rgba(18, 20, 34, 0.96);
+  --rh-tooltip-surface: linear-gradient(180deg, rgba(28,31,48,0.96) 0%, rgba(18,20,34,0.94) 100%);
   --rh-tooltip-border: rgba(132, 148, 255, 0.22);
   --rh-tooltip-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
+  --rh-surface-soft-gradient: linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%);
+  --rh-surface-soft-border: rgba(210,216,255,0.24);
+  --rh-surface-soft-border-strong: rgba(210,216,255,0.28);
+  --rh-divider-subtle: rgba(255, 255, 255, 0.16);
+  --rh-text-muted: rgba(255, 255, 255, 0.52);
+  --rh-inset-soft: inset 0 1px 0 rgba(255,255,255,0.08);
+  --rh-header-shadow: 0 1px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04);
+  --rh-footer-shadow: 0 -1px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04);
+  --rh-chain-toolbar-shadow: 0 8px 24px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.05);
+  --rh-chain-panel-shadow: 0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.05);
+  --rh-chain-well-bg: linear-gradient(135deg, rgba(58,64,96,0.22) 0%, rgba(45,50,78,0.16) 100%);
+  --rh-chain-well-border: rgba(255,255,255,0.12);
+  --rh-chain-insert-bg: linear-gradient(135deg, rgba(99,103,255,0.34), rgba(132,148,255,0.28));
 }
 
 body {
@@ -263,25 +290,23 @@ body {
 
 /* Tonal / ghost buttons — subtle Fluent style with enhanced opacity */
 .btn-tonal {
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--rh-muted-bg);
   color: var(--rh-text);
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--rh-divider-subtle);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 .dark .btn-tonal {
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
 }
 .btn-tonal:hover {
-  background: rgba(0, 0, 0, 0.14);
-  border-color: rgba(0, 0, 0, 0.14);
+  background: color-mix(in srgb, var(--rh-muted-bg) 85%, var(--rh-primary) 15%);
+  border-color: var(--rh-divider-subtle);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14);
 }
 .dark .btn-tonal:hover {
-  background: rgba(255, 255, 255, 0.16);
-  border-color: rgba(255, 255, 255, 0.16);
+  background: color-mix(in srgb, var(--rh-muted-bg) 82%, var(--rh-primary-soft) 18%);
+  border-color: var(--rh-divider-subtle);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
 }
 
@@ -304,17 +329,13 @@ body {
 
 /* Off / muted button — enhanced opacity */
 .btn-off {
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--rh-muted-bg-light);
   color: var(--rh-text-secondary);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-}
-.dark .btn-off {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--rh-divider-subtle);
 }
 .btn-off:hover {
-  background: rgba(0, 0, 0, 0.1);
-  border-color: rgba(0, 0, 0, 0.12);
+  background: var(--rh-muted-bg);
+  border-color: var(--rh-divider-subtle);
 }
 
 /* Small icon button — Fluent compact with enhanced opacity */
@@ -329,12 +350,8 @@ body {
 }
 .btn-icon:hover {
   color: var(--rh-danger-pastel);
-  background: rgba(0, 0, 0, 0.08);
-  border-color: rgba(0, 0, 0, 0.1);
-}
-.dark .btn-icon:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--rh-muted-bg);
+  border-color: var(--rh-divider-subtle);
 }
 
 /* Reset / action button variant — Fluent primary accent */
@@ -366,16 +383,8 @@ body {
 .ant-select-selector {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
   border: 1px solid var(--rh-minimal-border) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  box-shadow: var(--rh-inset-soft);
   transition: all 200ms ease;
-}
-
-:root.dark .ant-input,
-:root.dark .ant-input-number,
-:root.dark .ant-select-selector {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  border: 1px solid var(--rh-minimal-border) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .ant-input:hover,
@@ -400,34 +409,48 @@ body {
   box-shadow: var(--rh-minimal-shadow);
 }
 
-/* Tooltip with shared theme-aware styling */
-.ant-tooltip-inner {
-  background: linear-gradient(180deg, var(--rh-tooltip-bg) 0%, color-mix(in srgb, var(--rh-tooltip-bg) 92%, var(--rh-glass-bg) 8%) 100%) !important;
-  border: 1px solid var(--rh-tooltip-border);
+/* Tooltip skin shared with drag pointer bubble */
+.ant-tooltip-inner,
+.rh-floating-tip {
+  padding: 8px 10px;
   border-radius: 10px;
+  border: 1px solid var(--rh-tooltip-border);
+  background: var(--rh-tooltip-surface) !important;
   box-shadow: var(--rh-tooltip-shadow);
   color: var(--rh-text);
   font-size: 12px;
   font-weight: 600;
+  line-height: 1.2;
 }
 
-.ant-tooltip-arrow::before {
-  background: var(--rh-tooltip-bg) !important;
-  border: 1px solid var(--rh-tooltip-border);
+.ant-tooltip-inner {
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ant-tooltip .ant-tooltip-arrow {
+  display: none;
+}
+
+.io-node-tooltip .ant-tooltip-inner {
+  max-width: 320px;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  color: var(--rh-text) !important;
+}
+
+.io-node-tooltip .ant-typography {
+  margin: 0;
+  color: var(--rh-text) !important;
 }
 
 .rh-floating-tip {
   position: fixed;
   pointer-events: none;
   z-index: 2000;
-  padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px solid var(--rh-tooltip-border);
-  background: linear-gradient(180deg, var(--rh-tooltip-bg), color-mix(in srgb, var(--rh-tooltip-bg) 84%, var(--rh-glass-bg) 16%));
-  box-shadow: var(--rh-tooltip-shadow);
-  color: var(--rh-text);
-  font-size: 12px;
-  font-weight: 600;
   max-width: 220px;
   white-space: nowrap;
   overflow: hidden;
@@ -502,6 +525,48 @@ body {
   color: var(--rh-text) !important;
 }
 
+.plugin-library-tabs .ant-tabs-tab {
+  padding: 8px 14px !important;
+}
+
+.plugin-library-tabs .ant-tabs-nav {
+  min-height: 42px;
+}
+
+.plugin-library-tabs .ant-tabs-nav-list {
+  width: 100%;
+  align-items: center;
+}
+
+.plugin-library-tabs .ant-tabs-tab {
+  position: relative;
+  margin: 0 0 0 -6px !important;
+  opacity: 0.86;
+  transform: translateY(0) scale(1);
+  transition: opacity 160ms ease, transform 160ms ease, z-index 160ms ease;
+  z-index: 1;
+}
+
+.plugin-library-tabs .ant-tabs-tab:first-child {
+  margin-left: 0 !important;
+}
+
+.plugin-library-tabs .ant-tabs-tab:hover {
+  opacity: 0.94;
+  z-index: 3;
+  transform: translateY(-1px);
+}
+
+.plugin-library-tabs .ant-tabs-tab.ant-tabs-tab-active {
+  opacity: 1;
+  z-index: 4;
+  transform: translateY(-1px);
+}
+
+.plugin-library-tabs .ant-tabs-ink-bar {
+  display: none !important;
+}
+
 .ant-tabs-ink-bar {
   background: linear-gradient(90deg, var(--rh-primary) 0%, var(--rh-primary-soft) 100%) !important;
   height: 3px !important;
@@ -512,11 +577,6 @@ body {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
   border: 1px solid var(--rh-minimal-border) !important;
   color: var(--rh-text) !important;
-}
-
-:root.dark .ant-btn-default {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  border: 1px solid var(--rh-minimal-border) !important;
 }
 
 /* Dropdown/Popover with minimal styling */

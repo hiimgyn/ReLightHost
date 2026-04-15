@@ -4,7 +4,6 @@ import {
   Form,
   Select,
   Button,
-  Divider,
   Tag,
   Space,
   message,
@@ -82,6 +81,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   } = useAudioStore();
   const [form] = Form.useForm();
   const [selectedHostType, setSelectedHostType] = useState<string>("");
+  const modalWidth = typeof window === 'undefined' ? 544 : 'clamp(360px, 66vw, 544px)';
   const handleClose = () => {
     setSelectedHostType("");
     onClose();
@@ -224,7 +224,16 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       }
       open={isOpen}
       onCancel={handleClose}
-      width={600}
+      width={modalWidth}
+      style={{ top: 12, maxWidth: 544 }}
+      styles={{
+        body: {
+          maxHeight: 'calc(100vh - 220px)',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          padding: '12px 16px 16px',
+        },
+      }}
       footer={[
         <Button key="cancel" onClick={handleClose}>
           Cancel
@@ -242,7 +251,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
         </Button>,
       ]}
     >
-      <Divider />
+   
       <Form
         form={form}
         layout="vertical"
@@ -280,7 +289,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
               showIcon
               icon={<ThunderboltOutlined />}
               style={{ marginBottom: 16 }}
-              message="ASIO — Full-Duplex"
+              title="ASIO — Full-Duplex"
               description={
                 <>
                   ASIO drivers manage input and output through a single device.

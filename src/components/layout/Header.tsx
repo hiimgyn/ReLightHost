@@ -138,8 +138,6 @@ export default function Header() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const isDark = appTheme === "dark";
-
   return (
     <>
       <header
@@ -154,13 +152,9 @@ export default function Header() {
           gap: 16,
           minHeight: 64,
           borderRadius: 0,
-          background: isDark
-            ? 'linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%)'
-            : 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.16) 100%)',
+          background: 'var(--rh-surface-soft-gradient)',
           border: 'none',
-          boxShadow: isDark
-            ? '0 1px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04)'
-            : '0 1px 8px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.14)',
+          boxShadow: 'var(--rh-header-shadow)',
         }}
       >
         {/* Brand */}

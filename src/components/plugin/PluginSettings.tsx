@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Modal, Button, Space, Typography, Tag, Divider, message, theme } from 'antd';
-import { FolderOpenOutlined, DeleteOutlined, PlusOutlined, SettingOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Modal, Button, Space, Typography, Tag, Divider, message, theme, Tooltip } from 'antd';
+import { FolderOpenOutlined, DeleteOutlined, PlusOutlined, SettingOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { usePluginStore } from '../../stores/pluginStore';
@@ -18,6 +18,7 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
   const { scanPlugins, isScanning } = usePluginStore();
   const [messageApi, contextHolder] = message.useMessage();
   const { token } = theme.useToken();
+  const modalWidth = typeof window === 'undefined' ? 416 : 'clamp(300px, 54vw, 416px)';
 
   useEffect(() => {
     if (isOpen) loadPaths();
@@ -68,12 +69,20 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
     }
   };
 
-  const DEFAULT_PATHS = [
-    'C:\\Program Files\\Common Files\\VST3',
-    'C:\\Program Files\\Common Files\\CLAP',
-    '%LOCALAPPDATA%\\Programs\\Common\\VST3',
-    '%LOCALAPPDATA%\\Programs\\Common\\CLAP',
-  ];
+  const ua = typeof window !== 'undefined' ? window.navigator.userAgent : '';
+  const isWindows = ua.includes('Windows');
+  const isMac = ua.includes('Macintosh') || ua.includes('Mac OS');
+
+  const DEFAULT_PATHS = isWindows
+    ? [
+        'C:\\Program Files\\Common Files\\VST3',
+        'C:\\Program Files\\Common Files\\CLAP',
+        '%LOCALAPPDATA%\\Programs\\Common\\VST3',
+        '%LOCALAPPDATA%\\Programs\\Common\\CLAP',
+      ]
+    : isMac
+    ? ['/Library/Audio/Plug-Ins/VST3', '/Library/Audio/Plug-Ins/Components']
+    : ['/usr/lib/vst', '/usr/local/lib/vst'];
 
   return (
     <Modal
@@ -86,7 +95,16 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
       }
       open={isOpen}
       onCancel={onClose}
-      width={580}
+      width={modalWidth}
+      style={{ top: 12, maxWidth: 416 }}
+      styles={{
+        body: {
+          maxHeight: 'calc(100vh - 220px)',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          padding: '12px 14px 14px',
+        },
+      }}
       zIndex={1200}
       footer={[
         <Button key="close" onClick={onClose}>Close</Button>,
@@ -102,7 +120,7 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
       ]}
     >
       {contextHolder}
-      <Divider />
+
 
       {/* Info banner */}
       <div className="minimal-surface" style={{
@@ -122,7 +140,9 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
       <Text strong style={{ fontSize: 12, letterSpacing: '0.05em' }}>DEFAULT SYSTEM PATHS</Text>
       <div style={{ marginTop: 8, marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {DEFAULT_PATHS.map(p => (
-          <Text key={p} code style={{ fontSize: 12 }}>{p}</Text>
+          <Tooltip key={p} title={p}>
+            <Text code style={{ fontSize: 12, display: 'inline-block', maxWidth: '100%', overflowWrap: 'anywhere' }}>{p}</Text>
+          </Tooltip>
         ))}
       </div>
 
@@ -141,18 +161,33 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 10,
+                gap: 8,
                 padding: '8px 12px',
-                background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
-                border: `1px solid rgba(255,255,255,0.3)`,
+                background: 'var(--rh-surface-soft-gradient)',
+                border: `1px solid var(--rh-surface-soft-border)`,
                 borderRadius: 6,
                 transition: 'all 200ms ease',
               }}
             >
               <FolderOpenOutlined style={{ color: token.colorPrimary, flexShrink: 0 }} />
-              <Text style={{ flex: 1, fontSize: 12, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {path}
-              </Text>
+              <Tooltip title={path}>
+                <Text style={{ flex: 1, fontSize: 12, fontFamily: 'monospace', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>
+                  {path}
+                </Text>
+              </Tooltip>
+              <Button
+                type="text"
+                size="small"
+                icon={<CopyOutlined />}
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(path);
+                    messageApi.success('Path copied');
+                  } catch {
+                    messageApi.error('Failed to copy');
+                  }
+                }}
+              />
               <Button
                 type="text"
                 danger

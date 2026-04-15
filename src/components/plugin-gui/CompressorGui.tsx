@@ -51,13 +51,13 @@ function ParamRow({
     <div
       className="minimal-surface"
       style={{
-        padding: '10px 12px',
-        borderRadius: 10,
-        background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
-        border: '1px solid rgba(255,255,255,0.3)',
+        padding: '8px 10px',
+        borderRadius: 8,
+        background: 'var(--rh-surface-soft-gradient)',
+        border: '1px solid var(--rh-surface-soft-border)',
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <Text style={{ fontSize: 13 }}>{label}</Text>
         <Space size={6} align="center">
           {value !== defaultValue && (
@@ -92,6 +92,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
   const { token } = theme.useToken();
   const pc = token.colorPrimary;
   const tc = token.colorTextTertiary;
+  const modalWidth = typeof window === 'undefined' ? 320 : 'clamp(300px, 30vw, 320px)';
 
   const [threshold,  setThreshold]  = useState(() => paramValue(plugin, P_THRESHOLD, -18));
   const [ratio,      setRatio]      = useState(() => paramValue(plugin, P_RATIO,       4));
@@ -129,10 +130,11 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
       open={isOpen}
       onCancel={onClose}
       footer={null}
-      width={440}
-      styles={{ body: { padding: '20px 24px 24px' } }}
+      width={modalWidth}
+      style={{ top: 12, maxWidth: 320 }}
+      styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'hidden', padding: '12px 16px 16px' } }}
     >
-      <Space orientation="vertical" size="large" style={{ width: '100%' }}>
+      <Space orientation="vertical" size={16} style={{ width: '100%' }}>
 
         {/* ── Dynamics ──────────────────────────────────────── */}
         <ParamRow

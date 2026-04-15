@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import type { PluginInfo, PluginInstanceInfo, PluginStatus } from '../lib/types';
 import * as tauri from '../lib/tauri';
 
+let scanPluginsInFlight: Promise<void> | null = null;
+
 interface PluginStore {
   // State
   availablePlugins: PluginInfo[];
@@ -38,15 +40,31 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   isMutating: false,
 
   scanPlugins: async () => {
-    set({ isScanning: true });
-    try {
-      const plugins = await tauri.scanPlugins();
-      set({ availablePlugins: plugins });
-    } catch (error) {
-      console.error('Failed to scan plugins:', error);
-    } finally {
-      set({ isScanning: false });
+    if (scanPluginsInFlight) {
+      return scanPluginsInFlight;
     }
+
+    const task = (async () => {
+      if (get().isScanning) {
+        return;
+      }
+
+      set({ isScanning: true });
+      try {
+        const plugins = await tauri.scanPlugins();
+        set({ availablePlugins: plugins });
+      } catch (error) {
+        console.error('Failed to scan plugins:', error);
+      } finally {
+        set({ isScanning: false });
+      }
+    })();
+
+    scanPluginsInFlight = task.finally(() => {
+      scanPluginsInFlight = null;
+    });
+
+    return scanPluginsInFlight;
   },
 
   addToChain: async (plugin: PluginInfo) => {

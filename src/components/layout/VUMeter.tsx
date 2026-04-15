@@ -31,7 +31,7 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
         ? 'linear-gradient(135deg, rgba(38,42,64,0.78) 0%, rgba(30,34,54,0.72) 100%)'
         : 'linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.76) 100%)',
       border: `1px solid ${isDark ? 'rgba(132,148,255,0.24)' : 'rgba(99,103,255,0.18)'}`,
-      boxShadow: isDark ? 'inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.16)',
+      boxShadow: isDark ? 'inset 0 1px 0 rgba(255,255,255,0.05)' : 'var(--rh-inset-soft)',
     }}>
       {/* RMS ghost */}
       <div style={{

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Modal, Switch, Descriptions, Divider, Space, Typography, Card, Button, theme } from 'antd';
+import { Modal, Switch, Descriptions, Space, Typography, Card, Button, theme } from 'antd';
 import { 
   SettingOutlined, 
   RocketOutlined, 
@@ -38,6 +38,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   const [installing, setInstalling] = useState(false);
 
   const { token } = theme.useToken();
+  const modalWidth = typeof window === 'undefined' ? 660 : 'clamp(300px, 60vw, 660px)';
 
   const hasLoadedRef = useRef(false);
 
@@ -135,10 +136,10 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '12px 16px',
-    background: 'linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%)',
+    padding: '10px 12px',
+    background: 'var(--rh-surface-soft-gradient)',
     borderRadius: 8,
-    border: `1px solid rgba(255,255,255,0.3)`,
+    border: `1px solid var(--rh-surface-soft-border)`,
     transition: 'all 200ms ease',
   };
 
@@ -152,10 +153,19 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
       }
       open={isOpen}
       onCancel={onClose}
-      width={700}
+      width={modalWidth}
+      style={{ top: 12, maxWidth: 660 }}
+      styles={{
+        body: {
+          maxHeight: 'calc(100vh - 180px)',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          padding: '14px 16px 16px',
+        },
+      }}
       footer={null}
     >
-      <Divider />
+   
 
       {/* Startup Settings */}
       <Card
@@ -166,7 +176,8 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
             <span>Startup Behavior</span>
           </Space>
         }
-        style={{ marginBottom: 24 }}
+        style={{ marginBottom: 20 }}
+        styles={{ body: { padding: 16 } }}
       >
         <Space orientation="vertical" style={{ width: '100%' }} size="middle">
           <div className="minimal-surface" style={settingRowStyle}>
@@ -213,6 +224,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
             <span>About</span>
           </Space>
         }
+        styles={{ body: { padding: 16 } }}
       >
         <Descriptions bordered column={1} size="small">
           <Descriptions.Item label="Application">

@@ -251,8 +251,8 @@ export default function Header() {
             <Tooltip
               title={
                 isLoopbackEnabled
-                  ? "Monitoring off — hardware out silent"
-                  : "Monitoring on — hear processed audio on hardware out"
+                  ? "Monitor Output on — hear processed audio"
+                  : "Monitor Output off — hardware out silent"
               }
             >
               <Button

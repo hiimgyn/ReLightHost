@@ -93,8 +93,9 @@ export default function PluginChain() {
       }
     };
 
-    const unlistenPromise = listen<PluginChainChangedEvent>('plugin-chain-changed', () => {
+    const unlistenPromise = listen<PluginChainChangedEvent>('plugin-chain-changed', (event) => {
       if (draggingRef.current) return;
+      if (event.payload?.reason === 'parameter') return;
       syncAll();
     });
 

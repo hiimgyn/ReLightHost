@@ -94,7 +94,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   // than waiting for the async setSelectedHostType state update.
   const asioMode =
     isAsioHost(selectedHostType) ||
-    (!selectedHostType && isAsioId(selectedDevice));
+    (!selectedHostType && isAsioId(selectedInputDevice ?? selectedDevice));
 
   // Partition devices for the current host type
   const filteredDevices = selectedHostType
@@ -112,6 +112,10 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   const inputDevices = filteredDevices.filter(
     (d) => d.input_channels > 0 && d.output_channels === 0,
   );
+  const monitorOutputDevices = devices.filter(
+    (d) => d.output_channels > 0 && d.input_channels === 0 && !isAsioHost(d.host_type),
+  );
+  const defaultMonitorOutputId = monitorOutputDevices.find((d) => d.is_default)?.id;
 
   useEffect(() => {
     if (!isOpen) {
@@ -129,21 +133,26 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
 
     // Auto-detect host type from the currently stored device (runs immediately if
     // the devices list is already populated; otherwise the effect below will catch it).
-    if (selectedDevice && devices.length > 0) {
-      const found = devices.find((d) => d.id === selectedDevice);
+    const hostDeviceId = isAsioId(selectedInputDevice) ? selectedInputDevice : selectedDevice;
+    if (hostDeviceId && devices.length > 0) {
+      const found = devices.find((d) => d.id === hostDeviceId);
       if (found) {
         setSelectedHostType(found.host_type);
       }
     }
 
-    const currentIsAsio = isAsioId(selectedDevice);
+    const currentIsAsio = isAsioId(selectedInputDevice ?? selectedDevice);
+    const storedMonitorOutput = !isAsioId(selectedVirtualOutputDevice)
+      ? selectedVirtualOutputDevice
+      : null;
+    const monitorOutputToUse = storedMonitorOutput ?? defaultMonitorOutputId ?? undefined;
     form.setFieldsValue({
-      asioDevice: currentIsAsio ? selectedDevice : undefined,
+      asioDevice: currentIsAsio ? (selectedInputDevice ?? selectedDevice) : undefined,
       outputDevice: !currentIsAsio ? (selectedDevice ?? undefined) : undefined,
       inputDevice: !currentIsAsio ? selectedInputDevice || "" : "",
-      virtualOutputDevice: !currentIsAsio
-        ? selectedVirtualOutputDevice || ""
-        : "",
+      virtualOutputDevice: currentIsAsio
+        ? monitorOutputToUse
+        : (selectedVirtualOutputDevice || ""),
       sampleRate: String(sampleRate),
       bufferSize: String(bufferSize),
     });
@@ -153,11 +162,19 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   // When devices finish loading (async) while the modal is already open,
   // re-detect the host type so the Audio API dropdown shows the correct entry.
   useEffect(() => {
-    if (!isOpen || !selectedDevice || !devices.length || selectedHostType)
-      return;
-    const found = devices.find((d) => d.id === selectedDevice);
-    if (found) {
-      setSelectedHostType(found.host_type);
+    const hostDeviceId = isAsioId(selectedInputDevice) ? selectedInputDevice : selectedDevice;
+    if (!isOpen || !devices.length) return;
+    if (hostDeviceId && !selectedHostType) {
+      const found = devices.find((d) => d.id === hostDeviceId);
+      if (found) {
+        setSelectedHostType(found.host_type);
+      }
+    }
+    if (asioMode) {
+      const currentMonitorOutput = form.getFieldValue("virtualOutputDevice");
+      if (!currentMonitorOutput && defaultMonitorOutputId) {
+        form.setFieldsValue({ virtualOutputDevice: defaultMonitorOutputId });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [devices]);
@@ -169,6 +186,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       asioDevice: undefined,
       outputDevice: undefined,
       inputDevice: "",
+      virtualOutputDevice: isAsioHost(ht) ? (defaultMonitorOutputId ?? undefined) : "",
     });
   };
 
@@ -184,8 +202,11 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       if (asioMode) {
         // ASIO is full-duplex: one device ID handles both I/O
         if (values.asioDevice) {
-          tasks.push(setOutputDevice(values.asioDevice));
+          const monitorOutputId =
+            values.virtualOutputDevice || defaultMonitorOutputId || null;
           tasks.push(setInputDevice(values.asioDevice));
+          tasks.push(setOutputDevice(values.asioDevice));
+          tasks.push(setVirtualOutputDevice(monitorOutputId));
         }
       } else {
         const outputToSet = values.outputDevice || null;
@@ -323,6 +344,32 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
                 ))}
               </Select>
             </Form.Item>
+
+            <Form.Item
+              label="Monitor Output"
+              name="virtualOutputDevice"
+              extra="WASAPI monitor output used with the Monitor Output toggle to check audio."
+            >
+              <Select
+                size="large"
+                placeholder="None (disabled)"
+                allowClear
+                optionLabelProp="label"
+              >
+                <Select.Option value="" label="None (disabled)">
+                  <span>None (disabled)</span>
+                </Select.Option>
+                {monitorOutputDevices.map((device) => (
+                  <Select.Option
+                    key={device.id}
+                    value={device.id}
+                    label={device.name}
+                  >
+                    <DeviceOption device={device} />
+                  </Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
           </>
         ) : (
           /* ── NON-ASIO MODE: separate output / input ── */
@@ -349,7 +396,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
               </Select>
             </Form.Item>
             
-            <Form.Item label="Virtual Output Device" name="virtualOutputDevice">
+            <Form.Item label="Virtual Output" name="virtualOutputDevice">
               <Select
                 size="large"
                 placeholder="None (disabled)"
@@ -372,9 +419,9 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
             </Form.Item>
 
             <Form.Item
-              label="Output Device"
+              label="Monitor Output"
               name="outputDevice"
-              extra="Hardware monitoring device (speakers/headphones). Routed when loopback is ON."
+              extra="Hardware monitoring device (speakers/headphones). Enabled when Monitor Output is ON."
             >
               <Select
                 size="large"

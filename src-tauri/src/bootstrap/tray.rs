@@ -52,7 +52,7 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, "show", "Show ReLightHost", true, None::<&str>)?;
     let mute_item = MenuItem::with_id(app, "toggle_mute", "Mute Audio", true, None::<&str>)?;
     let loopback_item =
-        MenuItem::with_id(app, "toggle_loopback", "Enable Hardware Out", true, None::<&str>)?;
+        MenuItem::with_id(app, "toggle_loopback", "Enable Monitor Output", true, None::<&str>)?;
     let audio_item =
         MenuItem::with_id(app, "audio_settings", "Audio Settings…", true, None::<&str>)?;
     let app_item =
@@ -116,9 +116,9 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                         }
                         let tray_state = app.state::<crate::TrayState>();
                         let new_text = if new_enabled {
-                            "Disable Hardware Out"
+                            "Disable Monitor Output"
                         } else {
-                            "Enable Hardware Out"
+                            "Enable Monitor Output"
                         };
                         let _ = tray_state.loopback_item.set_text(new_text);
                     }

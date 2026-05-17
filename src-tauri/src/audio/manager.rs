@@ -5,7 +5,7 @@ use std::time::Instant;
 use std::sync::Mutex;
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{BufferSize, SampleRate, StreamConfig};
+use cpal::{BufferSize, SampleFormat, SampleRate, StreamConfig};
 use ringbuf::{HeapRb, traits::{Producer, Consumer, Split}};
 
 use crate::audio::types::{AudioStatus, AudioConfig};
@@ -44,6 +44,23 @@ pub struct AudioManager {
 }
 
 impl AudioManager {
+    fn clamp_sample(value: f32) -> f32 {
+        value.max(-1.0).min(1.0)
+    }
+
+    fn f32_to_i16(value: f32) -> i16 {
+        (Self::clamp_sample(value) * i16::MAX as f32) as i16
+    }
+
+    fn f32_to_u16(value: f32) -> u16 {
+        let normalized = (Self::clamp_sample(value) * 0.5) + 0.5;
+        (normalized * u16::MAX as f32) as u16
+    }
+
+    fn f32_to_i32(value: f32) -> i32 {
+        (Self::clamp_sample(value) * i32::MAX as f32) as i32
+    }
+
     pub fn new() -> Self {
         Self {
             config:           Arc::new(RwLock::new(AudioConfig::default())),
@@ -242,6 +259,137 @@ impl AudioManager {
             Ok((stream_cfg, channels))
         };
 
+        let select_virtual_output_config = |device: &cpal::Device, is_asio: bool| -> Result<(StreamConfig, usize, SampleFormat)> {
+            let device_name = device.name().unwrap_or_else(|_| "<unknown>".to_string());
+            let default_cfg = device.default_output_config()
+                .map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
+            log::info!(
+                "Virtual output default config for '{}': {}ch @ {}Hz ({:?})",
+                device_name,
+                default_cfg.channels(),
+                default_cfg.sample_rate().0,
+                default_cfg.sample_format()
+            );
+            let default_stream_cfg = StreamConfig {
+                channels: default_cfg.channels(),
+                sample_rate: default_cfg.sample_rate(),
+                buffer_size: BufferSize::Default,
+            };
+            let mut candidates = vec![
+                (default_stream_cfg, default_cfg.channels() as usize, default_cfg.sample_format()),
+            ];
+
+            if !is_asio && default_cfg.channels() > 2 {
+                let stereo_cfg = StreamConfig {
+                    channels: 2,
+                    sample_rate: default_cfg.sample_rate(),
+                    buffer_size: BufferSize::Default,
+                };
+                candidates.push((stereo_cfg, 2, default_cfg.sample_format()));
+            }
+
+            if let Ok(ranges) = device.supported_output_configs() {
+                for range in ranges {
+                    log::info!(
+                        "Virtual output supported: {}ch @ {}-{}Hz ({:?})",
+                        range.channels(),
+                        range.min_sample_rate().0,
+                        range.max_sample_rate().0,
+                        range.sample_format()
+                    );
+                    let min_rate = range.min_sample_rate().0;
+                    let max_rate = range.max_sample_rate().0;
+                    let requested = config.sample_rate;
+                    let rate = if is_asio {
+                        max_rate
+                    } else if requested >= min_rate && requested <= max_rate {
+                        requested
+                    } else {
+                        max_rate
+                    };
+                    let stream_cfg = StreamConfig {
+                        channels: range.channels(),
+                        sample_rate: SampleRate(rate),
+                        buffer_size: BufferSize::Default,
+                    };
+                    candidates.push((stream_cfg, range.channels() as usize, range.sample_format()));
+                    if !is_asio && range.channels() > 2 {
+                        let stereo_cfg = StreamConfig {
+                            channels: 2,
+                            sample_rate: SampleRate(rate),
+                            buffer_size: BufferSize::Default,
+                        };
+                        candidates.push((stereo_cfg, 2, range.sample_format()));
+                    }
+                }
+            }
+
+            let try_build = |cfg: &StreamConfig, fmt: SampleFormat| -> Result<()> {
+                let result = match fmt {
+                    SampleFormat::F32 => device.build_output_stream(
+                        cfg,
+                        |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                            for sample in data.iter_mut() {
+                                *sample = 0.0;
+                            }
+                        },
+                        |_| {},
+                        None,
+                    ),
+                    SampleFormat::I16 => device.build_output_stream(
+                        cfg,
+                        |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                            for sample in data.iter_mut() {
+                                *sample = 0;
+                            }
+                        },
+                        |_| {},
+                        None,
+                    ),
+                    SampleFormat::U16 => device.build_output_stream(
+                        cfg,
+                        |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+                            for sample in data.iter_mut() {
+                                *sample = u16::MAX / 2;
+                            }
+                        },
+                        |_| {},
+                        None,
+                    ),
+                    SampleFormat::I32 => device.build_output_stream(
+                        cfg,
+                        |data: &mut [i32], _: &cpal::OutputCallbackInfo| {
+                            for sample in data.iter_mut() {
+                                *sample = 0;
+                            }
+                        },
+                        |_| {},
+                        None,
+                    ),
+                    other => {
+                        return Err(anyhow::anyhow!("Unsupported probe format: {other:?}"));
+                    }
+                };
+                result.map(|_| ()).map_err(Into::into)
+            };
+
+            for (cfg, channels, fmt) in candidates {
+                match try_build(&cfg, fmt) {
+                    Ok(()) => return Ok((cfg, channels, fmt)),
+                    Err(e) => {
+                        log::warn!(
+                            "Virtual output config rejected: {}ch @ {}Hz ({:?}) -> {e}",
+                            cfg.channels,
+                            cfg.sample_rate.0,
+                            fmt
+                        );
+                    }
+                }
+            }
+
+            Err(anyhow::anyhow!("No supported virtual output config"))
+        };
+
         let (in_cfg, input_channels)  = build_config(&input_device,  true,  input_is_asio)?;
         let (out_cfg_opt, output_channels_opt) = if let Some(ref out_dev) = output_device_opt {
             let (cfg, ch) = build_config(out_dev, false, output_is_asio)?;
@@ -315,11 +463,11 @@ impl AudioManager {
             .unwrap_or(false);
         let (mut virt_producer_opt, virt_consumer_data) =
             if let Some(ref dev) = virt_output_device {
-                match build_config(dev, false, virtual_is_asio) {
-                    Ok((virt_cfg, virt_ch)) => {
+                match select_virtual_output_config(dev, virtual_is_asio) {
+                    Ok((virt_cfg, virt_ch, virt_fmt)) => {
                         let virt_rb = HeapRb::<f32>::new(buf_capacity);
                         let (prod, cons) = virt_rb.split();
-                        (Some(prod), Some((virt_cfg, virt_ch, cons)))
+                        (Some(prod), Some((virt_cfg, virt_ch, virt_fmt, cons)))
                     }
                     Err(e) => {
                         log::warn!("Virtual output config error: {e}; skipping");
@@ -379,11 +527,16 @@ impl AudioManager {
                     // Read mute and loopback flags once so both output paths use the same state.
                     let is_muted = muted.load(Ordering::Relaxed);
                     let is_loopback = loopback_flag.load(Ordering::Relaxed);
+                    let monitor_virtual_enabled = if output_is_asio {
+                        is_loopback
+                    } else {
+                        !is_muted
+                    };
 
                     // Mirror processed audio to the virtual output when configured.
-                    // Block virtual loopback when muted so routing to OBS/Discord/etc.
-                    // does not send audio while the user has muted output locally.
-                    if !is_muted {
+                    // ASIO: use loopback to drive the monitor output (virtual device).
+                    // Non-ASIO: block virtual output when muted.
+                    if monitor_virtual_enabled {
                         if let Some(ref mut vp) = virt_producer_opt {
                             for frame in 0..frames_to_process {
                                 let _ = vp.try_push(left_buf[frame]);
@@ -393,17 +546,19 @@ impl AudioManager {
                     }
 
                     // Step 3: Re-interleave L/R → CPAL output buffer.
-                    // Hardware output receives processed audio only when Loopback
-                    // is enabled. When loopback is ON, bypass the global mute so
-                    // local monitoring remains audible; when loopback is OFF,
-                    // hardware out stays silent.
+                    // ASIO: main output follows mute state. Non-ASIO: loopback
+                    // gates monitor output.
                     // Write out processed frames; if the host requested more
                     // frames than we processed, zero the remainder to avoid
                     // leaking uninitialized data.
                     for frame in 0..frames {
                         for ch in 0..output_channels {
                             if frame < frames_to_process {
-                                data[frame * output_channels + ch] = if is_loopback {
+                                data[frame * output_channels + ch] = if output_is_asio {
+                                    if !is_muted {
+                                        if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] }
+                                    } else { 0.0 }
+                                } else if is_loopback {
                                     if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] }
                                 } else { 0.0 };
                             } else {
@@ -443,24 +598,79 @@ impl AudioManager {
         // Virtual output stream — consumes from the virtual ring buffer that
         // the main output callback fills after plugin-chain processing.
         // -----------------------------------------------------------------
-        let virtual_out_stream = if let (Some(dev), Some((virt_cfg, virt_ch, mut virt_cons))) =
+        let virtual_out_stream = if let (Some(dev), Some((virt_cfg, virt_ch, virt_fmt, mut virt_cons))) =
             (virt_output_device, virt_consumer_data)
         {
-            match dev.build_output_stream(
-                &virt_cfg,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let frames = data.len() / virt_ch.max(1);
-                    for frame in 0..frames {
-                        let l = virt_cons.try_pop().unwrap_or(0.0);
-                        let r = virt_cons.try_pop().unwrap_or(0.0);
-                        for ch in 0..virt_ch {
-                            data[frame * virt_ch + ch] = if ch % 2 == 0 { l } else { r };
+            let stream_result: anyhow::Result<cpal::Stream> = match virt_fmt {
+                SampleFormat::F32 => dev.build_output_stream(
+                    &virt_cfg,
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        let frames = data.len() / virt_ch.max(1);
+                        for frame in 0..frames {
+                            let l = virt_cons.try_pop().unwrap_or(0.0);
+                            let r = virt_cons.try_pop().unwrap_or(0.0);
+                            for ch in 0..virt_ch {
+                                data[frame * virt_ch + ch] = if ch % 2 == 0 { l } else { r };
+                            }
                         }
-                    }
-                },
-                |err| log::error!("Virtual output stream error: {err}"),
-                None,
-            ) {
+                    },
+                    |err| log::error!("Virtual output stream error: {err}"),
+                    None,
+                ).map_err(Into::into),
+                SampleFormat::I16 => dev.build_output_stream(
+                    &virt_cfg,
+                    move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                        let frames = data.len() / virt_ch.max(1);
+                        for frame in 0..frames {
+                            let l = virt_cons.try_pop().unwrap_or(0.0);
+                            let r = virt_cons.try_pop().unwrap_or(0.0);
+                            for ch in 0..virt_ch {
+                                let sample = if ch % 2 == 0 { l } else { r };
+                                data[frame * virt_ch + ch] = Self::f32_to_i16(sample);
+                            }
+                        }
+                    },
+                    |err| log::error!("Virtual output stream error: {err}"),
+                    None,
+                ).map_err(Into::into),
+                SampleFormat::U16 => dev.build_output_stream(
+                    &virt_cfg,
+                    move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+                        let frames = data.len() / virt_ch.max(1);
+                        for frame in 0..frames {
+                            let l = virt_cons.try_pop().unwrap_or(0.0);
+                            let r = virt_cons.try_pop().unwrap_or(0.0);
+                            for ch in 0..virt_ch {
+                                let sample = if ch % 2 == 0 { l } else { r };
+                                data[frame * virt_ch + ch] = Self::f32_to_u16(sample);
+                            }
+                        }
+                    },
+                    |err| log::error!("Virtual output stream error: {err}"),
+                    None,
+                ).map_err(Into::into),
+                SampleFormat::I32 => dev.build_output_stream(
+                    &virt_cfg,
+                    move |data: &mut [i32], _: &cpal::OutputCallbackInfo| {
+                        let frames = data.len() / virt_ch.max(1);
+                        for frame in 0..frames {
+                            let l = virt_cons.try_pop().unwrap_or(0.0);
+                            let r = virt_cons.try_pop().unwrap_or(0.0);
+                            for ch in 0..virt_ch {
+                                let sample = if ch % 2 == 0 { l } else { r };
+                                data[frame * virt_ch + ch] = Self::f32_to_i32(sample);
+                            }
+                        }
+                    },
+                    |err| log::error!("Virtual output stream error: {err}"),
+                    None,
+                ).map_err(Into::into),
+                other => {
+                    Err(anyhow::anyhow!("Unsupported virtual output sample format: {other:?}"))
+                }
+            };
+
+            match stream_result {
                 Ok(stream) => {
                     if let Err(e) = stream.play() {
                         log::warn!("Failed to start virtual output stream: {e}");

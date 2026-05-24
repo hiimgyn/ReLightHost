@@ -1,9 +1,10 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { message } from 'antd';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAudioStore } from './stores/audioStore';
 import { usePluginStore } from './stores/pluginStore';
+import LoadingScreen from './components/layout/LoadingScreen';
 
 const Layout = lazy(() => import('./components/layout'));
 const PluginChain = lazy(() => import('./components/chain'));
@@ -11,6 +12,9 @@ const AudioSettings = lazy(() => import('./components/audio'));
 
 function App() {
   const [showFirstTimeAudio, setShowFirstTimeAudio] = useState(false);
+  const [isBooting, setIsBooting] = useState(true);
+  const bootStartRef = useRef(Date.now());
+  const asioRetryRef = useRef(false);
   const { syncFromBackend, fetchStatus, fetchDevices, toggleMonitoring } = useAudioStore();
   const [messageApi, contextHolder] = message.useMessage();
 
@@ -83,6 +87,39 @@ function App() {
         if (!localStorage.getItem('audioConfigured')) {
           setTimeout(() => setShowFirstTimeAudio(true), 600);
         }
+      } finally {
+        if (!asioRetryRef.current) {
+          const retryPlan = [
+            { delay: 1200, forceRestart: false },
+            { delay: 3200, forceRestart: true },
+            { delay: 5200, forceRestart: false },
+          ];
+          asioRetryRef.current = true;
+          retryPlan.forEach(({ delay, forceRestart }) => {
+            setTimeout(async () => {
+              const state = useAudioStore.getState();
+              const isAsio = (state.selectedInputDevice ?? state.selectedDevice)?.startsWith('asio_');
+              if (!isAsio) return;
+              try {
+                if (forceRestart && state.status.is_monitoring) {
+                  await state.toggleMonitoring(false);
+                  await state.fetchStatus();
+                }
+
+                if (!state.status.is_monitoring) {
+                  await state.toggleMonitoring(true);
+                  await state.fetchStatus();
+                }
+              } catch (e) {
+                console.warn('ASIO auto-start retry failed:', e);
+              }
+            }, delay);
+          });
+        }
+        const elapsed = Date.now() - bootStartRef.current;
+        const minBootMs = 700;
+        const delay = Math.max(0, minBootMs - elapsed);
+        setTimeout(() => setIsBooting(false), delay);
       }
     };
 
@@ -137,7 +174,7 @@ function App() {
   }, []);
 
   return (
-    <Suspense fallback={<div className="h-screen" />}>
+    <Suspense fallback={<LoadingScreen />}>
       {contextHolder}
       <Layout>
         <div className="glass-panel rh-main-inner h-full w-full px-2 py-4 md:px-3 md:py-5">
@@ -152,6 +189,7 @@ function App() {
           </Suspense>
         )}
       </Layout>
+      {isBooting && <LoadingScreen />}
     </Suspense>
   )
 }

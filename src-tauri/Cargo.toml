@@ -1,6 +1,6 @@
 [package]
 name = "ReLightHost"
-version = "1.9.5"
+version = "2.0.0"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
 license = "CC-BY-NC-SA-4.0"

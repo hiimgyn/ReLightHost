@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAudioStore } from './stores/audioStore';
 import { usePluginStore } from './stores/pluginStore';
 import LoadingScreen from './components/layout/LoadingScreen';
+import { getMinimizeToTray } from './lib/tauri';
 
 const Layout = lazy(() => import('./components/layout'));
 const PluginChain = lazy(() => import('./components/chain'));
@@ -131,35 +132,28 @@ function App() {
   useEffect(() => {
     const appWindow = getCurrentWindow();
 
-    // Use a ref to hold the minimize-to-tray preference so the close handler
-    // reads the most recent value without racing the async invoke call.
-    const minimizeToTrayRef = { current: localStorage.getItem('minimizeToTray') === 'true' } as { current: boolean };
-
-    // Sync minimizeToTray from persisted config into localStorage on startup
-    // and update the ref when the backend responds.
-    invoke<boolean>('get_minimize_to_tray')
-      .then(val => {
-        minimizeToTrayRef.current = val;
-        localStorage.setItem('minimizeToTray', String(val));
-      })
-      .catch(() => {});
-
     const closePromise = appWindow.onCloseRequested(async (event) => {
-      const minimizeToTray = minimizeToTrayRef.current;
+      event.preventDefault();
 
-      // Debug log to help trace behavior.
+      let minimizeToTray = false;
+      try {
+        minimizeToTray = await getMinimizeToTray();
+        localStorage.setItem('minimizeToTray', String(minimizeToTray));
+      } catch (error) {
+        console.warn('Failed to read minimize_to_tray during close:', error);
+        minimizeToTray = localStorage.getItem('minimizeToTray') === 'true';
+      }
+
       try { console.log('onCloseRequested fired; minimizeToTray=', minimizeToTray); } catch {}
 
       // Only intercept the close to hide to tray when the option is enabled.
       if (minimizeToTray) {
-        event.preventDefault();
         await appWindow.hide();
         return;
       }
 
       // Otherwise close plugin GUIs first, then exit the app explicitly.
       // This avoids shutdown getting stuck in plugin teardown during Drop.
-      event.preventDefault();
       try {
         await invoke('close_plugins');
       } catch (error) {

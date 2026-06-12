@@ -1,5 +1,5 @@
 import { useState, useEffect, useId } from "react";
-import { Button, Space, Tooltip, Typography, theme, Badge } from "antd";
+import { Button, Space, Tooltip, Typography, theme, Badge, message } from "antd";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 
@@ -10,6 +10,7 @@ import {
   BulbOutlined,
   BulbFilled,
   LoadingOutlined,
+  ReloadOutlined,
   SoundOutlined,
   MutedOutlined,
   RetweetOutlined,
@@ -97,11 +98,13 @@ export default function Header() {
     setLoopback,
     applyExternalMuteState,
     applyExternalLoopbackState,
+    reloadDeviceConfig,
   } = useAudioStore();
   const { isChainInitializing, pluginChain, restoreTargetCount } = usePluginStore();
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
   const [appVersion, setAppVersion] = useState("");
+  const [isReloadingDevice, setIsReloadingDevice] = useState(false);
 
   const isEngineReady = status.is_monitoring && !isChainInitializing;
   const restoredCount = restoreTargetCount == null
@@ -137,6 +140,19 @@ export default function Header() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleReloadDevice = async () => {
+    setIsReloadingDevice(true);
+    try {
+      await reloadDeviceConfig();
+      message.success("Audio device reloaded");
+    } catch (error) {
+      console.error("Failed to reload audio device:", error);
+      message.error("Failed to reload audio device");
+    } finally {
+      setIsReloadingDevice(false);
+    }
+  };
 
   return (
     <>
@@ -270,21 +286,20 @@ export default function Header() {
                 onClick={() => setLoopback(!isLoopbackEnabled)}
               />
             </Tooltip>
-            <Tooltip title={appTheme === "dark" ? "Light theme" : "Dark theme"}>
+            <Tooltip title="Reapply the current audio device configuration">
               <Button
                 type="text"
                 size="small"
-                icon={
-                  appTheme === "dark" ? (
-                    <BulbFilled style={{ color: token.colorWarning }} />
-                  ) : (
-                    <BulbOutlined style={{ color: token.colorWarning }} />
-                  )
-                }
-                onClick={toggleTheme}
-              />
+                icon={<ReloadOutlined style={{ color: token.colorInfo }} />}
+                loading={isReloadingDevice}
+                onClick={handleReloadDevice}
+              >
+              </Button>
             </Tooltip>
-            <Tooltip title="Audio devices & engine">
+          </div>
+
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2, padding: 4, borderRadius: 12, background: token.colorBgContainer, border: `1px solid ${token.colorBorderSecondary}` }}>
+             <Tooltip title="Audio devices & engine">
               <Button
                 type="text"
                 size="small"
@@ -298,6 +313,24 @@ export default function Header() {
                 size="small"
                 icon={<SettingOutlined style={{ color: token.colorPrimary }} />}
                 onClick={() => setShowAppSettings(true)}
+              />
+            </Tooltip>
+          
+          </div>
+
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2, padding: 4, borderRadius: 12, background: token.colorBgContainer, border: `1px solid ${token.colorBorderSecondary}` }}>
+             <Tooltip title={appTheme === "dark" ? "Light theme" : "Dark theme"}>
+              <Button
+                type="text"
+                size="small"
+                icon={
+                  appTheme === "dark" ? (
+                    <BulbFilled style={{ color: token.colorWarning }} />
+                  ) : (
+                    <BulbOutlined style={{ color: token.colorWarning }} />
+                  )
+                }
+                onClick={toggleTheme}
               />
             </Tooltip>
           </div>

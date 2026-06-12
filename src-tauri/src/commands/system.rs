@@ -63,6 +63,12 @@ pub fn get_system_stats(state: tauri::State<AppState>) -> Result<SystemStats, St
 }
 
 #[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    webbrowser::open(&url).map_err(|e| format!("Failed to open external URL: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn check_for_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;

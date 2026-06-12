@@ -7,7 +7,8 @@ import { VUMeter } from './VUMeter';
 import { useThemeStore } from '../../stores/themeStore';
 import { useAudioStore } from '../../stores/audioStore';
 import { usePluginStore } from '../../stores/pluginStore';
-import { getSystemStats } from '../../lib/tauri';
+import { getSystemStats, openExternalUrl } from '../../lib/tauri';
+import { APP_AUTHOR, APP_GITHUB_URL } from '../../lib/appInfo';
 import type { SystemStats } from '../../lib/types';
 
 const { Text } = Typography;
@@ -141,6 +142,14 @@ function Footer({ status, pluginCount, isDark }: {
   const { token } = antTheme.useToken();
   const [sys, setSys] = useState<SystemStats>({ cpu_percent: 0, ram_percent: 0, ram_used_mb: 0, ram_total_mb: 0 });
 
+  const handleOpenGitHub = async () => {
+    try {
+      await openExternalUrl(APP_GITHUB_URL);
+    } catch (error) {
+      console.error('Failed to open GitHub repository:', error);
+    }
+  };
+
   useEffect(() => {
     const poll = async () => {
       if (document.visibilityState !== 'visible') return;
@@ -248,7 +257,24 @@ function Footer({ status, pluginCount, isDark }: {
         </Tooltip>
         {sep}
         <Text style={{ fontSize: 11, color: token.colorTextSecondary }}>
-          <HeartFilled style={{ color: token.colorError, fontSize: 10 }} /> HiimGyn
+          <HeartFilled style={{ color: token.colorError, fontSize: 10 }} />{' '}
+          <Tooltip title="Open GitHub repository">
+            <button
+              type="button"
+              onClick={handleOpenGitHub}
+              style={{
+                color: 'inherit',
+                textDecoration: 'none',
+                background: 'transparent',
+                border: 'none',
+                padding: 0,
+                cursor: 'pointer',
+                font: 'inherit',
+              }}
+            >
+              {APP_AUTHOR}
+            </button>
+          </Tooltip>
         </Text>
       </Space>
       </div>

@@ -1,6 +1,6 @@
 [package]
 name = "ReLightHost"
-version = "2.0.0"
+version = "2.1.0"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
 license = "CC-BY-NC-SA-4.0"
@@ -27,6 +27,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 thiserror = "1"
+auto-launch = "0.6.0"
+webbrowser = "1.0"
 
 # Audio Engine
 # ASIO support: requires ASIO SDK (https://www.steinberg.net/asiosdk) and env var CPAL_ASIO_DIR
@@ -63,4 +65,3 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Gdi",             # RedrawWindow, InvalidateRect
     "Win32_UI_HiDpi",                 # GetDpiForWindow (DPI scale factor)
 ] }
-winreg = "0.52"

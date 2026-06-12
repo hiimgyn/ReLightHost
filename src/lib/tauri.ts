@@ -114,6 +114,14 @@ export async function getSystemStats(): Promise<SystemStats> {
   return invoke('get_system_stats');
 }
 
+export async function getMinimizeToTray(): Promise<boolean> {
+  return invoke('get_minimize_to_tray');
+}
+
+export async function openExternalUrl(url: string): Promise<void> {
+  return invoke('open_external_url', { url });
+}
+
 export async function launchPlugin(instanceId: string): Promise<void> {
   return invoke('launch_plugin', { instanceId });
 }

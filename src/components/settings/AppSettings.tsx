@@ -9,6 +9,8 @@ import {
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
+import { APP_AUTHOR, APP_GITHUB_URL, APP_NAME } from '../../lib/appInfo';
+import { openExternalUrl } from '../../lib/tauri';
 
 const { Text, Paragraph } = Typography;
 
@@ -228,13 +230,28 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
       >
         <Descriptions bordered column={1} size="small">
           <Descriptions.Item label="Application">
-            <Text strong>ReLightHost</Text>
+            <Text strong>{APP_NAME}</Text>
           </Descriptions.Item>
           <Descriptions.Item label="Version">
             <Text strong>{appVersion ? `v${appVersion}` : 'Beta'}</Text>
           </Descriptions.Item>
           <Descriptions.Item label="Author">
-            <Text strong>HiimGyn</Text>
+            <Text strong>{APP_AUTHOR}</Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="GitHub">
+            <Button
+              type="link"
+              style={{ padding: 0, height: 'auto' }}
+              onClick={async () => {
+                try {
+                  await openExternalUrl(APP_GITHUB_URL);
+                } catch (error) {
+                  console.error('Failed to open GitHub repository:', error);
+                }
+              }}
+            >
+              {APP_GITHUB_URL}
+            </Button>
           </Descriptions.Item>
           <Descriptions.Item label="Updates">
             <Space orientation="vertical" size={4}>

@@ -1,66 +1,58 @@
 use crate::AppState;
+use log::info;
 
-pub(crate) fn is_startup_enabled_inner() -> Result<bool, String> {
-    #[cfg(target_os = "windows")]
-    {
-        use winreg::{enums::*, RegKey};
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        match hkcu.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_READ) {
-            Ok(run_key) => match run_key.get_value::<String, _>("ReLightHost") {
-                Ok(_) => Ok(true),
-                Err(_) => Ok(false),
-            },
-            Err(e) => Err(format!("Failed to open registry key: {e}")),
-        }
-    }
+fn create_auto_launch(show_app_on_startup: bool) -> Result<auto_launch::AutoLaunch, String> {
+    use std::env;
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        Ok(false)
-    }
+    let exe = env::current_exe().map_err(|e| format!("Failed to get exe path: {e}"))?;
+    let exe = exe
+        .to_str()
+        .ok_or_else(|| "Failed to convert exe path to UTF-8".to_string())?;
+    let args: &[&str] = if show_app_on_startup {
+        &[]
+    } else {
+        &["--start-hidden"]
+    };
+
+    let mut builder = auto_launch::AutoLaunchBuilder::new();
+    builder
+        .set_app_name("ReLightHost")
+        .set_app_path(exe)
+        .set_args(args);
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to create auto-launch config: {e}"))
+}
+
+pub(crate) fn is_startup_enabled_inner(state: &AppState) -> Result<bool, String> {
+    let show_app_on_startup = state.config_manager.read().get_show_app_on_startup();
+    let auto_launch = create_auto_launch(show_app_on_startup)?;
+    auto_launch
+        .is_enabled()
+        .map_err(|e| format!("Failed to read startup state: {e}"))
 }
 
 pub(crate) fn toggle_startup_inner(enable: bool, state: &AppState) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        use std::env;
-        use winreg::{enums::*, RegKey};
+    let show_app_on_startup = state.config_manager.read().get_show_app_on_startup();
+    let auto_launch = create_auto_launch(show_app_on_startup)?;
 
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let run_key = hkcu
-            .open_subkey_with_flags(
-                r"Software\Microsoft\Windows\CurrentVersion\Run",
-                KEY_SET_VALUE | KEY_READ,
-            )
-            .map_err(|e| format!("Failed to open registry key: {e}"))?;
-
-        if enable {
-            let exe = env::current_exe().map_err(|e| format!("Failed to get exe path: {e}"))?;
-            let show = state.config_manager.read().get_show_app_on_startup();
-            let cmd = if show {
-                format!("\"{}\"", exe.display())
-            } else {
-                format!("\"{}\" --start-hidden", exe.display())
-            };
-            run_key
-                .set_value("ReLightHost", &cmd)
-                .map_err(|e| format!("Failed to set registry value: {e}"))
-        } else {
-            let _ = run_key.delete_value("ReLightHost");
-            Ok(())
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (enable, state);
-        Ok(())
+    if enable {
+        auto_launch
+            .enable()
+            .map_err(|e| format!("Failed to enable startup: {e}"))
+            .map(|_| info!("Startup setting updated: enabled=true, show_app_on_startup={show_app_on_startup}"))
+    } else {
+        auto_launch
+            .disable()
+            .map_err(|e| format!("Failed to disable startup: {e}"))
+            .map(|_| info!("Startup setting updated: enabled=false, show_app_on_startup={show_app_on_startup}"))
     }
 }
 
 #[tauri::command]
-pub fn is_startup_enabled() -> Result<bool, String> {
-    is_startup_enabled_inner()
+pub fn is_startup_enabled(state: tauri::State<AppState>) -> Result<bool, String> {
+    is_startup_enabled_inner(&state)
 }
 
 #[tauri::command]

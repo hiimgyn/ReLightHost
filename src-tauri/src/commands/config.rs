@@ -1,4 +1,5 @@
 use crate::AppState;
+use log::info;
 
 #[tauri::command]
 pub fn get_custom_scan_paths(state: tauri::State<AppState>) -> Result<Vec<String>, String> {
@@ -35,6 +36,7 @@ pub fn set_minimize_to_tray(state: tauri::State<AppState>, enabled: bool) -> Res
         .read()
         .set_minimize_to_tray(enabled)
         .map_err(|e| format!("Failed to save minimize_to_tray: {}", e))
+    .map(|_| info!("Setting updated: minimize_to_tray={enabled}"))
 }
 
 #[tauri::command]
@@ -50,9 +52,11 @@ pub fn set_show_app_on_startup(state: tauri::State<AppState>, enabled: bool) -> 
         .set_show_app_on_startup(enabled)
         .map_err(|e| format!("Failed to save show_app_on_startup: {}", e))?;
 
+    info!("Setting updated: show_app_on_startup={enabled}");
+
     // If startup is already enabled, rewrite the Run key immediately so the
     // next OS login uses the new visibility mode.
-    if crate::commands::startup::is_startup_enabled_inner()? {
+    if crate::commands::startup::is_startup_enabled_inner(&state)? {
         crate::commands::startup::toggle_startup_inner(true, &state)?;
     }
 

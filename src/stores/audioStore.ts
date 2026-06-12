@@ -19,6 +19,8 @@ interface AudioStore {
   fetchDevices: () => Promise<void>;
   /** Sync selectedDevice/Input/VirtualOutput/sampleRate/bufferSize from the backend config. */
   syncFromBackend: () => Promise<void>;
+  /** Reapply the currently selected audio device/config without opening the settings modal. */
+  reloadDeviceConfig: () => Promise<void>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
   toggleMonitoring: (enabled: boolean) => Promise<void>;
@@ -92,6 +94,48 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       });
     } catch (error) {
       console.error('Failed to sync audio config from backend:', error);
+    }
+  },
+
+  reloadDeviceConfig: async () => {
+    const {
+      status,
+      selectedDevice,
+      selectedInputDevice,
+      selectedVirtualOutputDevice,
+      sampleRate,
+      bufferSize,
+    } = get();
+
+    const wasMonitoring = status.is_monitoring;
+    const isAsioDevice = (selectedInputDevice ?? selectedDevice)?.startsWith('asio_') ?? false;
+
+    try {
+      if (wasMonitoring) {
+        await tauri.toggleMonitoring(false);
+      }
+
+      if (isAsioDevice) {
+        const deviceId = selectedInputDevice ?? selectedDevice;
+        await tauri.setInputDevice(deviceId);
+        await tauri.setOutputDevice(deviceId);
+      } else {
+        await tauri.setOutputDevice(selectedDevice);
+        await tauri.setInputDevice(selectedInputDevice);
+      }
+
+      await tauri.setVirtualOutputDevice(selectedVirtualOutputDevice);
+      await tauri.setSampleRate(sampleRate);
+      await tauri.setBufferSize(bufferSize);
+
+      if (wasMonitoring) {
+        await tauri.toggleMonitoring(true);
+      }
+
+      await get().fetchStatus();
+    } catch (error) {
+      console.error('Failed to reload audio device configuration:', error);
+      throw error;
     }
   },
 

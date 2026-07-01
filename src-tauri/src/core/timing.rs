@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 /// Debounce rapid plugin-chain UI mutations before writing autosave.
-pub const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(200);
+pub const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// Wait before replaying VST3 binary state so initialization completes.
 pub const VST3_STATE_REPLAY_DELAY: Duration = Duration::from_millis(1_000);

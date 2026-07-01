@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as tauri from '../../lib/tauri';
 import type { VUData } from '../../lib/types';
+import { useAudioStore } from '../../stores/audioStore';
+import { useVisibleInterval } from '../../lib/useVisibleInterval';
 
 const MIN_DB = -72;
 const MAX_DB = 6;
@@ -44,8 +46,8 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
         position: 'absolute', top: 0, left: 0, bottom: 0,
         width: peakPct + '%', borderRadius: 3,
         background: clip ? BAR_GRAD_CLIP : BAR_GRAD,
-        transition: 'width 35ms linear',
-        boxShadow: peakPct > 5 ? (clip ? '0 0 6px rgba(255,77,79,.6)' : '0 0 6px rgba(155,114,207,.6)') : undefined,
+        transition: 'width 80ms linear',
+        boxShadow: 'none',
       }} />
       {/* Peak-hold tick */}
       {peak_hold > 0.001 && holdPct < 99 && (
@@ -54,14 +56,15 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
           left: 'calc(' + holdPct + '% - 1px)',
           width: 2, borderRadius: 1,
           background: isDark ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.95)',
-          boxShadow: isDark ? '0 0 4px rgba(255,255,255,0.4)' : '0 0 4px rgba(255,255,255,0.6)',
+          boxShadow: 'none',
         }} />
       )}
     </div>
   );
 }
 
-export function VUMeter({ updateInterval = 100, isDark = true }: { updateInterval?: number; isDark?: boolean }) {
+export function VUMeter({ updateInterval = 160, isDark = true }: { updateInterval?: number; isDark?: boolean }) {
+  const isMonitoring = useAudioStore((state) => state.status.is_monitoring);
   const [vu, setVu] = useState<VUData>({
     left:  { peak: 0, peak_hold: 0, rms: 0 },
     right: { peak: 0, peak_hold: 0, rms: 0 },
@@ -73,36 +76,43 @@ export function VUMeter({ updateInterval = 100, isDark = true }: { updateInterva
   const inFlight = useRef(false);
 
   useEffect(() => {
-    const poll = async () => {
-      if (document.visibilityState !== 'visible') return;
-      if (inFlight.current) return;
-      inFlight.current = true;
+    if (!isMonitoring) {
+      if (timerL.current) clearTimeout(timerL.current);
+      if (timerR.current) clearTimeout(timerR.current);
+      timerL.current = null;
+      timerR.current = null;
+      inFlight.current = false;
+      setClipL(false);
+      setClipR(false);
+      setVu({
+        left: { peak: 0, peak_hold: 0, rms: 0 },
+        right: { peak: 0, peak_hold: 0, rms: 0 },
+      });
+    }
+  }, [updateInterval, isMonitoring]);
+
+  useVisibleInterval(() => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    void (async () => {
       try {
         const d = await tauri.getVUData();
         setVu(d);
-        if (d.left.peak  > 0.989) { setClipL(true); if (timerL.current) clearTimeout(timerL.current); timerL.current = setTimeout(() => setClipL(false), 1500); }
-        if (d.right.peak > 0.989) { setClipR(true); if (timerR.current) clearTimeout(timerR.current); timerR.current = setTimeout(() => setClipR(false), 1500); }
-      } catch { /* not started */ }
-      finally {
+        if (d.left.peak > 0.989) {
+          setClipL(true);
+          if (timerL.current) clearTimeout(timerL.current);
+          timerL.current = setTimeout(() => setClipL(false), 1500);
+        }
+        if (d.right.peak > 0.989) {
+          setClipR(true);
+          if (timerR.current) clearTimeout(timerR.current);
+          timerR.current = setTimeout(() => setClipR(false), 1500);
+        }
+      } catch { /* not started */ } finally {
         inFlight.current = false;
       }
-    };
-
-    poll();
-    const id = setInterval(poll, updateInterval);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        poll();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisible);
-      if (timerL.current) clearTimeout(timerL.current);
-      if (timerR.current) clearTimeout(timerR.current);
-    };
-  }, [updateInterval]);
+    })();
+  }, updateInterval, isMonitoring, [updateInterval, isMonitoring]);
 
   const labelCss: React.CSSProperties = {
     fontSize: 8, fontWeight: 700, letterSpacing: 0.8, width: 8, flexShrink: 0,

@@ -10,6 +10,7 @@ import { usePluginStore } from '../../stores/pluginStore';
 import { getSystemStats, openExternalUrl } from '../../lib/tauri';
 import { APP_AUTHOR, APP_GITHUB_URL } from '../../lib/appInfo';
 import type { SystemStats } from '../../lib/types';
+import { useVisibleInterval } from '../../lib/useVisibleInterval';
 
 const { Text } = Typography;
 
@@ -24,26 +25,12 @@ function AppShell({ children, isDark }: { children: ReactNode; isDark: boolean }
   const { pluginChain } = usePluginStore();
 
   useEffect(() => {
-    const poll = () => {
-      if (document.visibilityState === 'visible') {
-        fetchStatus();
-      }
-    };
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        fetchStatus();
-      }
-    };
-
-    poll();
-    const id = setInterval(poll, 4000);
-    document.addEventListener('visibilitychange', onVisible);
-
-    return () => {
-      clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
+    fetchStatus();
   }, [fetchStatus]);
+
+  useVisibleInterval(() => {
+    fetchStatus();
+  }, status.is_monitoring ? 4000 : 12000, true, [status.is_monitoring, fetchStatus]);
 
   return (
     <div
@@ -117,7 +104,7 @@ function MiniMeter({ value, color, width = 60 }: { value: number; color: string;
         display: 'inline-block',
         verticalAlign: 'middle',
         border: '1px solid rgba(255,255,255,0.1)',
-        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.15)',
+        boxShadow: 'none',
       }}
     >
       <div
@@ -126,8 +113,8 @@ function MiniMeter({ value, color, width = 60 }: { value: number; color: string;
           height: '100%',
           background: color,
           borderRadius: 3,
-          transition: 'width 0.4s ease',
-          boxShadow: `0 0 8px ${color}60`,
+          transition: 'width 0.55s linear',
+          boxShadow: 'none',
         }}
       />
     </div>
@@ -151,26 +138,19 @@ function Footer({ status, pluginCount, isDark }: {
   };
 
   useEffect(() => {
-    const poll = async () => {
-      if (document.visibilityState !== 'visible') return;
+    void getSystemStats()
+      .then(setSys)
+      .catch(() => { /* backend not ready yet */ });
+  }, []);
+
+  useVisibleInterval(() => {
+    void (async () => {
       try {
         const s = await getSystemStats();
         setSys(s);
       } catch { /* backend not ready yet */ }
-    };
-    poll();
-    const id = setInterval(poll, 4000);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        poll();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, []);
+    })();
+  }, 4000, true);
 
   const cpuColor = sys.cpu_percent > 80 ? 'var(--rh-error)' : sys.cpu_percent > 50 ? 'var(--rh-warning)' : 'var(--rh-success)';
   const ramColor = sys.ram_percent > 85 ? 'var(--rh-error)' : sys.ram_percent > 65 ? 'var(--rh-warning)' : 'var(--rh-info)';
@@ -185,7 +165,7 @@ function Footer({ status, pluginCount, isDark }: {
         borderRadius: 0,
         background: 'var(--rh-surface-soft-gradient)',
         border: 'none',
-        boxShadow: 'var(--rh-footer-shadow)',
+        boxShadow: 'none',
         padding: '0 20px',
         flexShrink: 0,
         display: 'flex',

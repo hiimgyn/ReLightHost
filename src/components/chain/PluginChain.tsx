@@ -2,23 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { lazy, Suspense } from 'react';
 import { Card, Button, Empty, Space, Tooltip, message, theme, Typography } from 'antd';
 import { listen } from '@tauri-apps/api/event';
-
-const { Text } = Typography;
-import { 
-  PlusOutlined, 
-  AudioOutlined,
-  HolderOutlined,
-  SwapOutlined,
-  DeleteOutlined,
-} from '@ant-design/icons';
-import { Popconfirm } from 'antd';
-import CurvedArrow from './CurvedArrow';
+import { PlusOutlined, AudioOutlined, HolderOutlined, SwapOutlined, DeleteOutlined } from '@ant-design/icons';
 import { usePluginStore } from '../../stores/pluginStore';
 import { useAudioStore } from '../../stores/audioStore';
+import CurvedArrow from './CurvedArrow';
 import PluginCard from './PluginCard';
+import { Popconfirm } from 'antd';
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
+const { Text } = Typography;
 const PluginLibrary = lazy(() => import('../plugin/PluginLibrary'));
 import * as tauri from '../../lib/tauri';
 import type { PluginChainChangedEvent } from '../../lib/types';
+import { useVisibleInterval } from '../../lib/useVisibleInterval';
 
 export default function PluginChain() {
   const { token } = theme.useToken();
@@ -74,41 +69,26 @@ export default function PluginChain() {
   }, [insertBefore]);
 
   useEffect(() => {
-    const syncAll = () => {
-      fetchChain();
-      fetchCrashStatuses();
-    };
-
-    syncAll();
-
-    const crashInterval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        fetchCrashStatuses();
-      }
-    }, 10000);
-
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        syncAll();
-      }
-    };
-
     const unlistenPromise = listen<PluginChainChangedEvent>('plugin-chain-changed', (event) => {
       if (draggingRef.current) return;
       if (event.payload?.reason === 'parameter') return;
-      syncAll();
+      fetchChain();
+      fetchCrashStatuses();
     });
 
-    document.addEventListener('visibilitychange', onVisible);
+    fetchChain();
+    fetchCrashStatuses();
 
     return () => {
-      clearInterval(crashInterval);
-      document.removeEventListener('visibilitychange', onVisible);
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, [fetchChain, fetchCrashStatuses]);
 
-  const handleContextMenu = (e: React.MouseEvent) => {
+  useVisibleInterval(() => {
+    fetchCrashStatuses();
+  }, 10000, pluginChain.length > 0, [pluginChain.length, fetchCrashStatuses]);
+
+  const handleContextMenu = (e: ReactMouseEvent) => {
     e.preventDefault();
     if (addLocked) return;
     setShowPluginLibrary(true);
@@ -136,7 +116,7 @@ export default function PluginChain() {
   };
 
   // Pointer-based drag session (more reliable than HTML5 DnD inside Tauri WebView).
-  const startPointerDrag = (e: React.PointerEvent, index: number) => {
+  const startPointerDrag = (e: ReactPointerEvent, index: number) => {
     if (isChainInitializing || isDeleteAllBusy) return;
     if (e.button !== 0) return;
     e.preventDefault();
@@ -150,7 +130,7 @@ export default function PluginChain() {
     setSwapTargetIndex(null);
     swapTargetIndexRef.current = null;
 
-    const onPointerMove = (ev: PointerEvent) => {
+    const onPointerMove = (ev: globalThis.PointerEvent) => {
       if (draggedIndexRef.current === null) return;
       setDragPointer({ x: ev.clientX, y: ev.clientY });
 
@@ -515,10 +495,8 @@ export default function PluginChain() {
                     borderRadius: 999,
                     transform: showInsertAt(index) ? 'translateY(-2px) scale(1.08)' : 'none',
                     background: showInsertAt(index) ? 'var(--rh-chain-insert-bg)' : 'transparent',
-                    boxShadow: showInsertAt(index)
-                      ? `0 0 0 1px ${token.colorPrimaryBorder}, 0 6px 16px ${token.colorPrimaryBg}`
-                      : 'none',
-                    transition: 'transform 120ms ease, box-shadow 120ms ease, background 120ms ease',
+                    boxShadow: 'none',
+                    transition: 'transform 120ms ease, background 120ms ease',
                   }}
                 >
                   <CurvedArrow color={showInsertAt(index) ? token.colorPrimary : token.colorTextQuaternary} />
@@ -540,9 +518,9 @@ export default function PluginChain() {
                       : isSwapTarget
                       ? 'translateY(-8px) scale(1.018)'
                       : 'none',
-                    transition: 'opacity 0.15s ease, transform 0.16s ease, filter 0.16s ease',
+                    transition: 'opacity 0.15s ease, transform 0.16s ease',
                     borderRadius: 8,
-                    filter: isSwapTarget ? 'brightness(1.04) saturate(1.05)' : 'none',
+                    filter: 'none',
                     zIndex: isSwapTarget ? 2 : 1,
                   }}
                 >
@@ -583,10 +561,8 @@ export default function PluginChain() {
                 borderRadius: 999,
                 transform: showInsertAt(pluginChain.length) ? 'translateY(-2px) scale(1.08)' : 'none',
                 background: showInsertAt(pluginChain.length) ? 'var(--rh-chain-insert-bg)' : 'transparent',
-                boxShadow: showInsertAt(pluginChain.length)
-                  ? `0 0 0 1px ${token.colorPrimaryBorder}, 0 6px 16px ${token.colorPrimaryBg}`
-                  : 'none',
-                transition: 'transform 120ms ease, box-shadow 120ms ease, background 120ms ease',
+                boxShadow: 'none',
+                transition: 'transform 120ms ease, background 120ms ease',
               }}
             >
               <CurvedArrow color={showInsertAt(pluginChain.length) ? token.colorPrimary : token.colorTextQuaternary} />
@@ -618,7 +594,7 @@ export default function PluginChain() {
                    
                     background: `linear-gradient(160deg, ${token.colorInfoBg} 0%, ${token.colorBgContainer} 55%, ${token.colorFillQuaternary} 100%)`,
                     border: `1px solid ${token.colorInfoBorder}`,
-                    boxShadow: `0 14px 32px rgba(2,6,23,0.42), inset 0 1px 0 rgba(255,255,255,0.06)`,
+                    boxShadow: 'none',
                   } }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
@@ -629,7 +605,7 @@ export default function PluginChain() {
                           height: 8,
                           borderRadius: 999,
                           background: token.colorInfo,
-                          boxShadow: `0 0 12px ${token.colorInfo}`,
+                          boxShadow: 'none',
                         }}
                       />
                       <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.8, color: token.colorTextSecondary }}>
@@ -662,7 +638,7 @@ export default function PluginChain() {
                         justifyContent: 'center',
                         background: `radial-gradient(circle at 35% 35%, ${token.colorInfoHover} 0%, ${token.colorInfoBgHover} 45%, ${token.colorBgContainer} 100%)`,
                         border: `1px solid ${token.colorInfoBorder}`,
-                        boxShadow: `0 10px 24px ${token.colorInfoBg}`,
+                        boxShadow: 'none',
                       }}
                     >
                       <AudioOutlined style={{ fontSize: 22, color: token.colorInfo }} />

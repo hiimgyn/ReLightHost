@@ -17,7 +17,7 @@
   --rh-glass-bg: rgba(255, 255, 255, 0.16);
   --rh-glass-bg-strong: rgba(255, 255, 255, 0.22);
   --rh-glass-border: rgba(255, 255, 255, 0.34);
-  --rh-glass-shadow: 0 8px 32px rgba(15, 23, 42, 0.12);
+  --rh-glass-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
   --rh-glass-inset:
     inset 0 1px 0 rgba(255, 255, 255, 0.56),
     inset 0 -1px 0 rgba(255, 255, 255, 0.14),
@@ -25,21 +25,21 @@
   --rh-minimal-bg: rgba(255, 255, 255, 0.92);
   --rh-minimal-bg-strong: rgba(250, 251, 255, 0.98);
   --rh-minimal-border: rgba(99, 103, 255, 0.14);
-  --rh-minimal-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  --rh-minimal-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
   --rh-tooltip-bg: rgba(255, 255, 255, 0.96);
   --rh-tooltip-surface: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(247,249,255,0.92) 100%);
   --rh-tooltip-border: rgba(99, 103, 255, 0.18);
-  --rh-tooltip-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+  --rh-tooltip-shadow: 0 6px 16px rgba(15, 23, 42, 0.1);
   --rh-surface-soft-gradient: linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%);
   --rh-surface-soft-border: rgba(255,255,255,0.3);
   --rh-surface-soft-border-strong: rgba(255,255,255,0.34);
   --rh-divider-subtle: rgba(0, 0, 0, 0.14);
   --rh-text-muted: rgba(0, 0, 0, 0.52);
   --rh-inset-soft: inset 0 1px 0 rgba(255,255,255,0.16);
-  --rh-header-shadow: 0 1px 8px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.14);
-  --rh-footer-shadow: 0 -1px 8px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.14);
-  --rh-chain-toolbar-shadow: 0 8px 20px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.16);
-  --rh-chain-panel-shadow: 0 8px 24px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.16);
+  --rh-header-shadow: 0 1px 4px rgba(15,23,42,0.04), inset 0 1px 0 rgba(255,255,255,0.12);
+  --rh-footer-shadow: 0 -1px 4px rgba(15,23,42,0.04), inset 0 1px 0 rgba(255,255,255,0.12);
+  --rh-chain-toolbar-shadow: 0 4px 10px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.12);
+  --rh-chain-panel-shadow: 0 4px 12px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.12);
   --rh-chain-well-bg: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.14) 100%);
   --rh-chain-well-border: rgba(0,0,0,0.15);
   --rh-chain-insert-bg: linear-gradient(135deg, rgba(99,103,255,0.26), rgba(132,148,255,0.22));
@@ -65,7 +65,7 @@
   --rh-glass-bg: rgba(45, 50, 78, 0.18);
   --rh-glass-bg-strong: rgba(58, 64, 96, 0.24);
   --rh-glass-border: rgba(210, 216, 255, 0.26);
-  --rh-glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+  --rh-glass-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   --rh-glass-inset:
     inset 0 1px 0 rgba(255, 255, 255, 0.2),
     inset 0 -1px 0 rgba(255, 255, 255, 0.08),
@@ -73,21 +73,21 @@
   --rh-minimal-bg: rgba(18, 20, 34, 0.92);
   --rh-minimal-bg-strong: rgba(28, 31, 48, 0.96);
   --rh-minimal-border: rgba(132, 148, 255, 0.16);
-  --rh-minimal-shadow: 0 10px 32px rgba(0, 0, 0, 0.34);
+  --rh-minimal-shadow: 0 4px 12px rgba(0, 0, 0, 0.24);
   --rh-tooltip-bg: rgba(18, 20, 34, 0.96);
   --rh-tooltip-surface: linear-gradient(180deg, rgba(28,31,48,0.96) 0%, rgba(18,20,34,0.94) 100%);
   --rh-tooltip-border: rgba(132, 148, 255, 0.22);
-  --rh-tooltip-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
+  --rh-tooltip-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
   --rh-surface-soft-gradient: linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%);
   --rh-surface-soft-border: rgba(210,216,255,0.24);
   --rh-surface-soft-border-strong: rgba(210,216,255,0.28);
   --rh-divider-subtle: rgba(255, 255, 255, 0.16);
   --rh-text-muted: rgba(255, 255, 255, 0.52);
   --rh-inset-soft: inset 0 1px 0 rgba(255,255,255,0.08);
-  --rh-header-shadow: 0 1px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04);
-  --rh-footer-shadow: 0 -1px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04);
-  --rh-chain-toolbar-shadow: 0 8px 24px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.05);
-  --rh-chain-panel-shadow: 0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.05);
+  --rh-header-shadow: 0 1px 4px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.03);
+  --rh-footer-shadow: 0 -1px 4px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.03);
+  --rh-chain-toolbar-shadow: 0 4px 12px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.04);
+  --rh-chain-panel-shadow: 0 4px 16px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04);
   --rh-chain-well-bg: linear-gradient(135deg, rgba(58,64,96,0.22) 0%, rgba(45,50,78,0.16) 100%);
   --rh-chain-well-border: rgba(255,255,255,0.12);
   --rh-chain-insert-bg: linear-gradient(135deg, rgba(99,103,255,0.34), rgba(132,148,255,0.28));
@@ -99,13 +99,9 @@ body {
   place-items: center;
   min-width: 320px;
   min-height: 100vh;
-  /* Fluent Design System backdrop with enhanced depth */
   background:
-    radial-gradient(1000px 640px at 8% 8%, rgba(99, 103, 255, 0.32), transparent 58%),
-    radial-gradient(920px 620px at 95% 10%, rgba(132, 148, 255, 0.34), transparent 56%),
-    radial-gradient(880px 560px at 15% 96%, rgba(201, 190, 255, 0.34), transparent 58%),
-    radial-gradient(760px 520px at 88% 88%, rgba(255, 219, 253, 0.36), transparent 55%),
-    linear-gradient(165deg, #f8f7fb 0%, #f5f2fb 36%, #f7f0f2 68%, #f3edf7 100%);
+    radial-gradient(920px 560px at 12% 8%, rgba(99, 103, 255, 0.14), transparent 60%),
+    linear-gradient(165deg, #f8f7fb 0%, #f4f5fb 100%);
 }
 
 #root {
@@ -115,11 +111,8 @@ body {
 
 :root.dark body {
   background:
-    radial-gradient(1000px 640px at 8% 8%, rgba(99, 103, 255, 0.3), transparent 58%),
-    radial-gradient(920px 620px at 95% 10%, rgba(132, 148, 255, 0.24), transparent 56%),
-    radial-gradient(880px 560px at 15% 96%, rgba(201, 190, 255, 0.2), transparent 58%),
-    radial-gradient(760px 520px at 88% 88%, rgba(255, 219, 253, 0.22), transparent 55%),
-    linear-gradient(165deg, #16172a 0%, #121427 34%, #181324 66%, #111320 100%);
+    radial-gradient(920px 560px at 12% 8%, rgba(99, 103, 255, 0.16), transparent 60%),
+    linear-gradient(165deg, #151729 0%, #0e1020 100%);
 }
 
 * {
@@ -137,7 +130,7 @@ body {
 .glass-panel {
   background: linear-gradient(135deg, var(--rh-glass-bg-strong) 0%, var(--rh-glass-bg) 100%);
   border: 1px solid var(--rh-glass-border);
-  box-shadow: var(--rh-glass-shadow), var(--rh-glass-inset);
+  box-shadow: none;
   position: relative;
   overflow: hidden;
 }
@@ -145,7 +138,7 @@ body {
 .minimal-panel {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%);
   border: 1px solid var(--rh-minimal-border);
-  box-shadow: var(--rh-minimal-shadow);
+  box-shadow: none;
   position: relative;
   overflow: hidden;
 }
@@ -160,7 +153,7 @@ body {
 .minimal-surface.ant-card .ant-card-body {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
   border: 1px solid var(--rh-minimal-border) !important;
-  box-shadow: var(--rh-minimal-shadow) !important;
+  box-shadow: none !important;
 }
 
 .glass-card.ant-card,
@@ -168,7 +161,7 @@ body {
 .glass-card.ant-drawer-content {
   background: linear-gradient(135deg, var(--rh-glass-bg-strong) 0%, var(--rh-glass-bg) 100%) !important;
   border: 1px solid var(--rh-glass-border) !important;
-  box-shadow: var(--rh-glass-shadow), var(--rh-glass-inset) !important;
+  box-shadow: none !important;
 }
 
 .glass-panel::before,
@@ -198,7 +191,7 @@ body {
 .ant-card {
   background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
   border: 1px solid var(--rh-minimal-border) !important;
-  box-shadow: var(--rh-minimal-shadow) !important;
+  box-shadow: none !important;
   position: relative;
   overflow: hidden;
 }
@@ -268,7 +261,7 @@ body {
   padding: 26px 28px 30px;
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.88) 0%, rgba(244, 248, 252, 0.82) 100%);
   border: 1px solid rgba(36, 46, 66, 0.08);
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  box-shadow: none;
   display: grid;
   gap: 18px;
   text-align: center;
@@ -280,7 +273,7 @@ body {
 :root.dark .rh-loading-card {
   background: linear-gradient(135deg, rgba(28, 31, 48, 0.92) 0%, rgba(18, 20, 34, 0.88) 100%);
   border: 1px solid rgba(111, 124, 210, 0.22);
-  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  box-shadow: none;
   color: rgba(255, 255, 255, 0.9);
 }
 
@@ -299,7 +292,7 @@ body {
   object-fit: contain;
   display: block;
   border-radius: 0;
-  filter: drop-shadow(0 10px 18px rgba(46, 126, 140, 0.35));
+  filter: none;
 }
 
 .rh-loading-title {
@@ -320,7 +313,7 @@ body {
   inset: 0;
   border-radius: 999px;
   border: 2px solid rgba(68, 186, 188, 0.55);
-  box-shadow: 0 0 18px rgba(68, 186, 188, 0.26);
+  box-shadow: none;
   animation: rh-ring 2.6s linear infinite;
 }
 

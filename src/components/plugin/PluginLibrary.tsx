@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, memo } from 'react';
 import { Drawer, Input, Button, Tabs, Tag, Space, Typography, Tooltip, Empty, Spin } from 'antd';
 import { 
   SearchOutlined, 
@@ -24,6 +24,84 @@ interface PluginLibraryProps {
   onClose: () => void;
 }
 
+interface PluginListItemProps {
+  plugin: PluginInfo;
+  isMutating: boolean;
+  addLocked: boolean;
+  token: ReturnType<typeof theme.useToken>['token'];
+  getFormatColor: (format: string) => string;
+  onSelect: (plugin: PluginInfo) => void;
+  onAdd: (plugin: PluginInfo) => void;
+}
+
+const PluginListItem = memo(function PluginListItem({
+  plugin,
+  isMutating,
+  addLocked,
+  token,
+  getFormatColor,
+  onSelect,
+  onAdd,
+}: PluginListItemProps) {
+  return (
+    <div
+      className="minimal-surface plugin-list-item"
+      style={{
+        padding: '12px 16px',
+        marginBottom: 8,
+        background: token.colorBgElevated,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        borderRadius: 10,
+        cursor: 'pointer',
+        transition: 'border-color 160ms ease, opacity 160ms ease',
+      }}
+      onClick={() => onSelect(plugin)}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <Text strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin.name}</Text>
+            <Text type="secondary" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin.manufacture}</Text>
+            <div style={{ marginTop: 6 }}>
+              <Space size={4} wrap>
+                <Tag color={getFormatColor(plugin.format)}>{plugin.format.toUpperCase()}</Tag>
+                <Tag>{plugin.category}</Tag>
+                {plugin.version && <Tag color="default">v{plugin.version}</Tag>}
+              </Space>
+            </div>
+          </div>
+        </div>
+        <div style={{ marginLeft: 12, display: 'flex', gap: 8 }}>
+          <Tooltip title="Plugin Info" key="info">
+            <Button
+              type="text"
+              size="small"
+              icon={<InfoCircleOutlined />}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(plugin);
+              }}
+            />
+          </Tooltip>
+          <Tooltip title="Add to Chain" key="add">
+            <Button
+              type="primary"
+              size="small"
+              icon={<PlusCircleOutlined />}
+              loading={isMutating}
+              disabled={addLocked}
+              onClick={(e) => {
+                e.stopPropagation();
+                onAdd(plugin);
+              }}
+            />
+          </Tooltip>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   const { token } = theme.useToken();
   const {
@@ -41,38 +119,48 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   const [selectedPlugin, setSelectedPlugin] = useState<PluginInfo | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
+  const handleSelectPlugin = useCallback((plugin: PluginInfo) => {
+    setSelectedPlugin(plugin);
+  }, []);
+
+  const handleAddPlugin = useCallback(async (plugin: PluginInfo) => {
+    if (addLocked) return;
+    try {
+      await addToChain(plugin);
+    } catch (error) {
+      console.error('Failed to add plugin:', error);
+    }
+  }, [addLocked, addToChain]);
+
   useEffect(() => {
     if (isOpen && availablePlugins.length === 0) {
       scanPlugins();
     }
   }, [isOpen, availablePlugins.length, scanPlugins]);
 
-  const filteredPlugins = availablePlugins.filter(plugin => {
-    const matchesSearch = plugin.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         plugin.manufacture.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesFormat = filterFormat === 'all' || plugin.format === filterFormat;
-    return matchesSearch && matchesFormat;
-  });
+  const filteredPlugins = useMemo(() => {
+    const query = searchQuery.toLowerCase();
+    return availablePlugins.filter(plugin => {
+      const matchesSearch = plugin.name.toLowerCase().includes(query) ||
+                           plugin.manufacture.toLowerCase().includes(query);
+      const matchesFormat = filterFormat === 'all' || plugin.format === filterFormat;
+      return matchesSearch && matchesFormat;
+    });
+  }, [availablePlugins, filterFormat, searchQuery]);
 
   // Group plugins by manufacture/author
-  const groupedByAuthor = filteredPlugins.reduce((acc: Record<string, PluginInfo[]>, plugin) => {
+  const groupedByAuthor = useMemo(() => filteredPlugins.reduce((acc: Record<string, PluginInfo[]>, plugin) => {
     const author = plugin.manufacture?.trim() || 'Unknown';
     if (!acc[author]) acc[author] = [];
     acc[author].push(plugin);
     return acc;
-  }, {} as Record<string, PluginInfo[]>);
-  const authorKeys = Object.keys(groupedByAuthor).sort((a, b) => a.localeCompare(b));
+  }, {} as Record<string, PluginInfo[]>), [filteredPlugins]);
+  const authorKeys = useMemo(() => Object.keys(groupedByAuthor).sort((a, b) => a.localeCompare(b)), [groupedByAuthor]);
 
-  const handleAddPlugin = async (plugin: PluginInfo) => {
-    if (addLocked) return;
-    try {
-      await addToChain(plugin);
-      // Optional: close drawer after adding plugin
-      // onClose();
-    } catch (error) {
-      console.error('Failed to add plugin:', error);
-    }
-  };
+  const builtinCount = useMemo(() => availablePlugins.filter(p => p.format === 'builtin').length, [availablePlugins]);
+  const vst3Count = useMemo(() => availablePlugins.filter(p => p.format === 'vst3').length, [availablePlugins]);
+  const vstCount = useMemo(() => availablePlugins.filter(p => p.format === 'vst').length, [availablePlugins]);
+  const clapCount = useMemo(() => availablePlugins.filter(p => p.format === 'clap').length, [availablePlugins]);
 
   const getFormatColor = (format: string) => {
     switch (format) {
@@ -96,7 +184,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
     return palette[code % palette.length];
   };
 
-  const tabItems = [
+  const tabItems = useMemo(() => [
     {
       key: 'all',
       label: `All (${availablePlugins.length})`,
@@ -104,25 +192,25 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
     },
     {
       key: 'builtin',
-      label: `Built-in (${availablePlugins.filter(p => p.format === 'builtin').length})`,
+      label: `Built-in (${builtinCount})`,
       children: null,
     },
     {
       key: 'vst3',
-      label: `VST3 (${availablePlugins.filter(p => p.format === 'vst3').length})`,
+      label: `VST3 (${vst3Count})`,
       children: null,
     },
     {
       key: 'vst',
-      label: `VST2 (${availablePlugins.filter(p => p.format === 'vst').length})`,
+      label: `VST2 (${vstCount})`,
       children: null,
     },
     {
       key: 'clap',
-      label: `CLAP (${availablePlugins.filter(p => p.format === 'clap').length})`,
+      label: `CLAP (${clapCount})`,
       children: null,
     },
-  ];
+  ], [availablePlugins.length, builtinCount, clapCount, vst3Count, vstCount]);
 
   return (
     <>
@@ -202,11 +290,11 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
                       gap: 12,
                       padding: '10px 12px',
                       borderRadius: 10,
-                      background: `linear-gradient(135deg, ${token.colorBgElevated} 0%, ${token.colorBgContainer} 100%)`,
+                      background: token.colorBgElevated,
                       border: `1px solid ${token.colorBorderSecondary}`,
                       boxShadow: 'none',
                       cursor: 'pointer',
-                      transition: 'transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease',
+                      transition: 'border-color 160ms ease',
                     }}
                     onClick={() => setCollapsedGroups(prev => ({ ...prev, [author]: !prev[author] }))}
                   >
@@ -219,7 +307,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          background: `linear-gradient(135deg, ${authorColor}22 0%, ${authorColor}12 100%)`,
+                          background: `${authorColor}18`,
                           border: `1px solid ${authorColor}33`,
                           flexShrink: 0,
                         }}
@@ -251,62 +339,16 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
                   {!isCollapsed && (
                     <div style={{ marginTop: 8, paddingLeft: 10, borderLeft: `1px solid ${token.colorBorderSecondary}` }}>
                       {group.map((plugin) => (
-                        <div
+                        <PluginListItem
                           key={plugin.id}
-                          className="minimal-surface plugin-list-item"
-                          style={{
-                            padding: '12px 16px',
-                            marginBottom: 8,
-                            background: `linear-gradient(135deg, ${token.colorBgElevated} 0%, ${token.colorBgContainer} 100%)`,
-                            border: `1px solid ${token.colorBorderSecondary}`,
-                            borderRadius: 10,
-                            cursor: 'pointer',
-                            transition: 'transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease',
-                          }}
-                          onClick={() => setSelectedPlugin(plugin)}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <div style={{ minWidth: 0, flex: 1 }}>
-                              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                <Text strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin.name}</Text>
-                                <Text type="secondary" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin.manufacture}</Text>
-                                <div style={{ marginTop: 6 }}>
-                                  <Space size={4} wrap>
-                                    <Tag color={getFormatColor(plugin.format)}>{plugin.format.toUpperCase()}</Tag>
-                                    <Tag>{plugin.category}</Tag>
-                                    {plugin.version && <Tag color="default">v{plugin.version}</Tag>}
-                                  </Space>
-                                </div>
-                              </div>
-                            </div>
-                            <div style={{ marginLeft: 12, display: 'flex', gap: 8 }}>
-                              <Tooltip title="Plugin Info" key="info">
-                                <Button
-                                  type="text"
-                                  size="small"
-                                  icon={<InfoCircleOutlined />}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedPlugin(plugin);
-                                  }}
-                                />
-                              </Tooltip>
-                              <Tooltip title="Add to Chain" key="add">
-                                <Button
-                                  type="primary"
-                                  size="small"
-                                  icon={<PlusCircleOutlined />}
-                                  loading={isMutating}
-                                  disabled={addLocked}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleAddPlugin(plugin);
-                                  }}
-                                />
-                              </Tooltip>
-                            </div>
-                          </div>
-                        </div>
+                          plugin={plugin}
+                          isMutating={isMutating}
+                          addLocked={addLocked}
+                          token={token}
+                          getFormatColor={getFormatColor}
+                          onSelect={handleSelectPlugin}
+                          onAdd={handleAddPlugin}
+                        />
                       ))}
                     </div>
                   )}

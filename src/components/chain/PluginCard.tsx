@@ -18,7 +18,7 @@ import {
   CloseCircleOutlined,
   HolderOutlined,
 } from '@ant-design/icons';
-import { lazy, Suspense, useState, useEffect, useRef } from 'react';
+import { lazy, Suspense, memo, useState, useEffect, useRef } from 'react';
 import type { PluginInstanceInfo, PluginStatus } from '../../lib/types';
 import * as tauri from '../../lib/tauri';
 
@@ -38,7 +38,7 @@ interface PluginCardProps {
   isDragging?: boolean;
 }
 
-export default function PluginCard({
+function PluginCard({
   plugin,
   crashStatus,
   interactionLocked = false,
@@ -188,27 +188,23 @@ export default function PluginCard({
   const statusPalette = {
     crashed: {
       color: token.colorError,
-      bg: 'rgba(255,77,79,0.15)',
+      bg: 'rgba(255,77,79,0.12)',
       border: 'rgba(255,77,79,0.26)',
-      glow: 'rgba(255,77,79,0.18)',
     },
     bypassed: {
       color: token.colorTextTertiary,
       bg: token.colorFillQuaternary,
       border: token.colorBorderSecondary,
-      glow: 'rgba(0,0,0,0.08)',
     },
     live: {
       color: token.colorWarning,
-      bg: 'rgba(250,173,20,0.18)',
+      bg: 'rgba(250,173,20,0.14)',
       border: 'rgba(250,173,20,0.3)',
-      glow: 'rgba(250,173,20,0.18)',
     },
     active: {
       color: token.colorSuccess,
-      bg: 'rgba(110,200,166,0.18)',
+      bg: 'rgba(110,200,166,0.12)',
       border: 'rgba(110,200,166,0.3)',
-      glow: 'rgba(110,200,166,0.18)',
     },
   }[statusKind];
   const statusText = statusKind === 'crashed'
@@ -220,8 +216,8 @@ export default function PluginCard({
     : 'Active';
   const bypassButtonColor = statusPalette.color;
   const bypassButtonBg = statusKind === 'bypassed'
-    ? 'var(--rh-surface-soft-gradient)'
-    : `linear-gradient(135deg, ${statusPalette.bg} 0%, ${statusPalette.bg} 100%)`;
+    ? token.colorBgContainer
+    : statusPalette.bg;
   const bypassButtonBorder = statusPalette.border;
   const statusDotColor = statusPalette.color;
   const statusTextColor = statusPalette.color;
@@ -238,26 +234,26 @@ export default function PluginCard({
       case 'vst3':
         return {
           border: 'rgba(138, 92, 255, 0.42)',
-          background: 'linear-gradient(135deg, rgba(138, 92, 255, 0.18) 0%, rgba(138, 92, 255, 0.08) 100%)',
+          background: 'rgba(138, 92, 255, 0.12)',
           color: '#8a5cff',
         };
       case 'clap':
         return {
           border: 'rgba(34, 197, 94, 0.42)',
-          background: 'linear-gradient(135deg, rgba(34, 197, 94, 0.18) 0%, rgba(34, 197, 94, 0.08) 100%)',
+          background: 'rgba(34, 197, 94, 0.12)',
           color: '#22c55e',
         };
       case 'builtin':
         return {
           border: 'rgba(20, 184, 166, 0.42)',
-          background: 'linear-gradient(135deg, rgba(20, 184, 166, 0.18) 0%, rgba(20, 184, 166, 0.08) 100%)',
+          background: 'rgba(20, 184, 166, 0.12)',
           color: '#14b8a6',
         };
       case 'vst':
       default:
         return {
           border: 'rgba(245, 158, 11, 0.42)',
-          background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.18) 0%, rgba(245, 158, 11, 0.08) 100%)',
+          background: 'rgba(245, 158, 11, 0.12)',
           color: '#f59e0b',
         };
     }
@@ -305,8 +301,8 @@ export default function PluginCard({
       background: isPrimary
         ? formatPalette.background
         : isManufacturer
-        ? `linear-gradient(135deg, ${token.colorBgElevated} 0%, ${token.colorBgContainer} 100%)`
-        : `linear-gradient(135deg, ${token.colorBgContainer} 0%, ${token.colorBgElevated} 100%)`,
+        ? token.colorBgElevated
+        : token.colorBgContainer,
       color: isPrimary ? formatPalette.color : token.colorTextSecondary,
       fontSize: isPrimary ? 8.5 : 7.5,
       fontWeight: isPrimary ? 700 : 600,
@@ -353,14 +349,10 @@ export default function PluginCard({
     {contextHolder}
     <Card
       size="small"
-      className={`glass-card transition-all ${plugin.bypassed ? 'opacity-70' : ''}`}
+      className={`glass-card transition-colors ${plugin.bypassed ? 'opacity-70' : ''}`}
       style={{
         borderRadius: 12,
-        background: isCrashed
-          ? 'linear-gradient(135deg, rgba(255,77,79,0.15) 0%, rgba(255,77,79,0.08) 100%)'
-          : isActive
-          ? `linear-gradient(135deg, rgba(99,103,255,0.24) 0%, rgba(132,148,255,0.2) 50%, rgba(255,255,255,0.14) 100%)`
-          : `var(--rh-surface-soft-gradient)`,
+        background: isCrashed ? statusPalette.bg : token.colorBgElevated,
         display: 'flex',
         flexDirection: 'column',
         height: 174,
@@ -369,11 +361,7 @@ export default function PluginCard({
           : isActive
           ? `1px solid var(--rh-surface-soft-border-strong)`
           : `1px solid var(--rh-surface-soft-border)`,
-        boxShadow: isCrashed
-          ? `0 0 0 1px rgba(255,77,79,0.2), 0 12px 28px rgba(255,77,79,0.15), inset 0 1px 0 rgba(255,255,255,0.1)`
-          : isActive
-          ? `0 0 0 1px rgba(99,103,255,0.3), 0 12px 28px rgba(99,103,255,0.2), var(--rh-inset-soft)`
-          : `0 8px 20px rgba(0,0,0,0.12), var(--rh-inset-soft)`,
+        boxShadow: 'none',
       }}
       styles={{ body: { padding: '16px', display: 'flex', flexDirection: 'column', height: '100%' } }}
     >
@@ -532,7 +520,7 @@ export default function PluginCard({
                 height: 6,
                 borderRadius: '50%',
                 background: statusDotColor,
-                boxShadow: `0 0 10px ${statusPalette.glow}`,
+                boxShadow: 'none',
               }}
             />
             <span style={{ fontWeight: 600, letterSpacing: 0.18, textTransform: 'uppercase' }}>{statusText}</span>
@@ -575,9 +563,7 @@ export default function PluginCard({
                   color: plugin.bypassed ? token.colorTextSecondary : bypassButtonColor,
                   background: bypassButtonBg,
                   borderColor: bypassButtonBorder,
-                  boxShadow: plugin.bypassed
-                    ? '0 1px 2px rgba(0, 0, 0, 0.08)'
-                    : `0 4px 16px ${statusPalette.glow}`,
+                  boxShadow: 'none',
                 }}
               >
               </Button>
@@ -646,3 +632,5 @@ export default function PluginCard({
   </>
   );
 }
+
+export default memo(PluginCard);

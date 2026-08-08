@@ -91,7 +91,7 @@ pub fn set_plugin_parameter(
 ) -> Result<(), String> {
     if let Some(inst) = state.plugin_manager.read().get_instance(&instance_id) {
         inst.set_parameter(param_id, value);
-        crate::app_events::emit_plugin_chain_changed("parameter", Some(&instance_id));
+        crate::app_events::emit_plugin_chain_changed("parameter_update", Some(&instance_id));
         Ok(())
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
@@ -301,11 +301,10 @@ pub fn close_plugins(
 
         if instance.request_close_gui(GUI_CLOSE_TIMEOUT) {
             ok_count += 1;
+            crate::app_events::emit_plugin_chain_changed("gui_open", Some(&id));
         } else {
             errors.push(format!("Failed to close GUI for {}", info.name));
         }
-
-        crate::app_events::emit_plugin_chain_changed("gui_open", Some(&id));
     }
 
     Ok(LaunchPluginsResult {

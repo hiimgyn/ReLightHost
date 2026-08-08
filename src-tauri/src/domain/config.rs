@@ -2,7 +2,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use crate::audio::types::AudioConfig;
 
 fn default_true() -> bool { true }
@@ -67,12 +68,12 @@ impl ConfigManager {
     }
 
     pub fn get_custom_paths(&self) -> Vec<String> {
-        let config = self.config.read().unwrap_or_else(|e| e.into_inner());
+        let config = self.config.read();
         config.custom_scan_paths.clone()
     }
 
     pub fn add_custom_path(&self, path: String) -> Result<()> {
-        let mut config = self.config.write().unwrap_or_else(|e| e.into_inner());
+        let mut config = self.config.write();
         if !config.custom_scan_paths.contains(&path) {
             config.custom_scan_paths.push(path);
             self.save_config(&config)?;
@@ -81,29 +82,29 @@ impl ConfigManager {
     }
 
     pub fn remove_custom_path(&self, path: &str) -> Result<()> {
-        let mut config = self.config.write().unwrap_or_else(|e| e.into_inner());
+        let mut config = self.config.write();
         config.custom_scan_paths.retain(|p| p != path);
         self.save_config(&config)?;
         Ok(())
     }
 
     pub fn get_minimize_to_tray(&self) -> bool {
-        self.config.read().unwrap_or_else(|e| e.into_inner()).minimize_to_tray
+        self.config.read().minimize_to_tray
     }
 
     pub fn set_minimize_to_tray(&self, enabled: bool) -> Result<()> {
-        let mut config = self.config.write().unwrap_or_else(|e| e.into_inner());
+        let mut config = self.config.write();
         config.minimize_to_tray = enabled;
         self.save_config(&config)?;
         Ok(())
     }
 
     pub fn get_show_app_on_startup(&self) -> bool {
-        self.config.read().unwrap_or_else(|e| e.into_inner()).show_app_on_startup
+        self.config.read().show_app_on_startup
     }
 
     pub fn set_show_app_on_startup(&self, enabled: bool) -> Result<()> {
-        let mut config = self.config.write().unwrap_or_else(|e| e.into_inner());
+        let mut config = self.config.write();
         config.show_app_on_startup = enabled;
         self.save_config(&config)?;
         Ok(())

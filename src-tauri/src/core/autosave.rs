@@ -8,6 +8,7 @@ use crate::timing::AUTOSAVE_DEBOUNCE;
 #[derive(Debug, Clone, Copy)]
 enum AutosaveRequest {
     ChainChanged,
+    Shutdown,
 }
 
 static AUTOSAVE_TX: OnceLock<Sender<AutosaveRequest>> = OnceLock::new();
@@ -43,20 +44,32 @@ pub fn request_plugin_chain_autosave() {
     }
 }
 
+pub fn shutdown_autosave_worker() {
+    if let Some(tx) = AUTOSAVE_TX.get() {
+        let _ = tx.send(AutosaveRequest::Shutdown);
+    }
+}
+
 fn run_autosave_worker(
     rx: Receiver<AutosaveRequest>,
     plugin_manager: Arc<parking_lot::RwLock<crate::plugins::PluginInstanceManager>>,
     preset_manager: Arc<parking_lot::RwLock<crate::domain::preset::PresetManager>>,
     autosave_last_hash: Arc<AtomicU64>,
 ) {
-    while let Ok(_event) = rx.recv() {
-        let mut dirty = true;
-        while rx.recv_timeout(AUTOSAVE_DEBOUNCE).is_ok() {
-            dirty = true;
-        }
-
-        if dirty {
-            save_autosave_snapshot(&plugin_manager, &preset_manager, &autosave_last_hash);
+    loop {
+        match rx.recv() {
+            Ok(AutosaveRequest::Shutdown) | Err(_) => break,
+            Ok(AutosaveRequest::ChainChanged) => {
+                // Debounce: drain any additional requests within the window.
+                loop {
+                    match rx.recv_timeout(AUTOSAVE_DEBOUNCE) {
+                        Ok(AutosaveRequest::Shutdown) => return,
+                        Ok(AutosaveRequest::ChainChanged) => continue,
+                        Err(_) => break,
+                    }
+                }
+                save_autosave_snapshot(&plugin_manager, &preset_manager, &autosave_last_hash);
+            }
         }
     }
 }

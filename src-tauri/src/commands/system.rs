@@ -4,6 +4,8 @@ use tauri::Manager;
 pub(crate) fn shutdown_for_exit(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
 
+    crate::core::autosave::shutdown_autosave_worker();
+
     if let Err(e) = state.audio_manager.read().stop() {
         log::warn!("Failed to stop audio during shutdown: {e}");
     }

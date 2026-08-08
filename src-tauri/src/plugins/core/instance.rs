@@ -217,81 +217,42 @@ impl PluginInstance {
             }
         }
         
-        // Try VST3 processor first, then VST2.
-        let processed = if let Some(mut guard) = self.vst3_processor.try_lock() {
-            if let Some(ref mut proc) = *guard {
-                let result = crash_protection::protected_call(AssertUnwindSafe(|| {
-                    proc.process_stereo(left, right);
-                }));
-                if let Err(crash_msg) = result {
-                    log::error!("VST3 plugin crashed during processing: {}", crash_msg);
-                    if let Some(mut protection) = self.crash_protection.try_lock() {
-                        protection.mark_crashed(crash_msg);
-                    }
-                    left.fill(0.0);
-                    right.fill(0.0);
-                }
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if !processed {
-            if let Some(mut guard) = self.vst2_processor.try_lock() {
-                if let Some(ref mut proc) = *guard {
-                    let result = crash_protection::protected_call(AssertUnwindSafe(|| {
-                        proc.process_stereo(left, right);
-                    }));
-                    if let Err(crash_msg) = result {
-                        log::error!("VST2 plugin crashed during processing: {}", crash_msg);
-                        if let Some(mut protection) = self.crash_protection.try_lock() {
-                            protection.mark_crashed(crash_msg);
+        // Dispatch to exactly one processor based on format — no fallthrough.
+        // Lock contended on any path → pass through (real-time safe).
+        macro_rules! run_processor {
+            ($guard:expr, $label:expr) => {
+                if let Some(mut guard) = $guard {
+                    if let Some(ref mut proc) = *guard {
+                        if let Err(crash_msg) = crash_protection::protected_call(AssertUnwindSafe(|| {
+                            proc.process_stereo(left, right);
+                        })) {
+                            log::error!("{} plugin crashed during processing: {}", $label, crash_msg);
+                            if let Some(mut protection) = self.crash_protection.try_lock() {
+                                protection.mark_crashed(crash_msg);
+                                // Notify the frontend exactly once when the crash limit is reached.
+                                if protection.crash_count == 3 {
+                                    let id = self.instance_id.clone();
+                                    std::thread::spawn(move || {
+                                        crate::app_events::emit_plugin_chain_changed(
+                                            "crash_limit_exceeded",
+                                            Some(&id),
+                                        );
+                                    });
+                                }
+                            }
+                            left.fill(0.0);
+                            right.fill(0.0);
                         }
-                        left.fill(0.0);
-                        right.fill(0.0);
                     }
-                    return;
                 }
-                // No VST2 processor → fall through to built-in check
-            }
+            };
+        }
 
-            if let Some(mut guard) = self.builtin_processor.try_lock() {
-                if let Some(ref mut proc) = *guard {
-                    let result = crash_protection::protected_call(AssertUnwindSafe(|| {
-                        proc.process_stereo(left, right);
-                    }));
-                    if let Err(crash_msg) = result {
-                        log::error!("Built-in plugin crashed during processing: {}", crash_msg);
-                        if let Some(mut protection) = self.crash_protection.try_lock() {
-                            protection.mark_crashed(crash_msg);
-                        }
-                        left.fill(0.0);
-                        right.fill(0.0);
-                    }
-                    return;
-                }
-            }
-
-            // CLAP
-            if let Some(mut guard) = self.clap_processor.try_lock() {
-                if let Some(ref mut proc) = *guard {
-                    let result = crash_protection::protected_call(AssertUnwindSafe(|| {
-                        proc.process_stereo(left, right);
-                    }));
-                    if let Err(crash_msg) = result {
-                        log::error!("CLAP plugin crashed during processing: {}", crash_msg);
-                        if let Some(mut protection) = self.crash_protection.try_lock() {
-                            protection.mark_crashed(crash_msg);
-                        }
-                        left.fill(0.0);
-                        right.fill(0.0);
-                    }
-                }
-            }
-            // Lock contended → pass through non-blocking (real-time safe)
+        match self.plugin_info.format {
+            PluginFormat::VST3    => run_processor!(self.vst3_processor.try_lock(),    "VST3"),
+            PluginFormat::VST     => run_processor!(self.vst2_processor.try_lock(),    "VST2"),
+            PluginFormat::Builtin => run_processor!(self.builtin_processor.try_lock(), "Built-in"),
+            PluginFormat::CLAP    => run_processor!(self.clap_processor.try_lock(),    "CLAP"),
         }
     }
 
@@ -465,6 +426,9 @@ impl PluginInstance {
                         if let Some(mut prot) = crash_protection.try_lock() {
                             prot.mark_crashed(crash_msg.clone());
                         }
+                        // Wait for any partially-started GUI thread to exit before
+                        // clearing the flag, so a second open_gui call can't race it.
+                        self.request_close_gui(Duration::from_secs(1));
                         gui_flag.store(false, Ordering::Release);
                         return Err(anyhow::anyhow!("Plugin crashed: {}", crash_msg));
                     }
@@ -474,7 +438,13 @@ impl PluginInstance {
 
         // ── VST2 GUI ─────────────────────────────────────────────────────────
         {
-            let guard = self.vst2_processor.lock();
+            let guard = match self.vst2_processor.try_lock_for(std::time::Duration::from_millis(200)) {
+                Some(g) => g,
+                None => {
+                    gui_flag.store(false, Ordering::Release);
+                    return Err(anyhow::anyhow!("VST2 plugin processor busy — try again"));
+                }
+            };
             if let Some(ref proc) = *guard {
                 let plugin_name = self.plugin_info.name.clone();
                 let gui_hwnd    = self.gui_hwnd.clone();
@@ -513,6 +483,7 @@ impl PluginInstance {
                         if let Some(mut prot) = crash_protection.try_lock() {
                             prot.mark_crashed(crash_msg.clone());
                         }
+                        self.request_close_gui(Duration::from_secs(1));
                         gui_flag.store(false, Ordering::Release);
                         return Err(anyhow::anyhow!("CLAP plugin crashed: {}", crash_msg));
                     }

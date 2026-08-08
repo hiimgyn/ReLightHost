@@ -1,7 +1,11 @@
 use tauri::Manager;
+use std::sync::Mutex;
+use std::process::Child;
 
 use crate::audio::{AudioConfig, AudioDevice, AudioDeviceInfo, AudioStatus, VUData};
 use crate::AppState;
+
+static TEST_SOUND_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 
 #[tauri::command]
 pub fn start_audio(state: tauri::State<AppState>) -> Result<(), String> {
@@ -131,10 +135,17 @@ pub fn get_vu_data(state: tauri::State<AppState>) -> Result<VUData, String> {
 
 #[tauri::command]
 pub fn play_test_sound() -> Result<(), String> {
+    let mut guard = TEST_SOUND_PROCESS.lock().unwrap_or_else(|e| e.into_inner());
+    // Kill any previous test-sound process before spawning a new one.
+    if let Some(ref mut prev) = *guard {
+        let _ = prev.kill();
+    }
+    *guard = None;
+
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
-        Command::new("powershell")
+        let child = Command::new("powershell")
             .args([
                 "-WindowStyle",
                 "Hidden",
@@ -143,16 +154,20 @@ pub fn play_test_sound() -> Result<(), String> {
             ])
             .spawn()
             .map_err(|e| format!("Failed to play test sound: {}", e))?;
+        *guard = Some(child);
     }
     #[cfg(not(target_os = "windows"))]
     {
         use std::process::Command;
-        let _ = Command::new("bash")
+        if let Ok(child) = Command::new("bash")
             .args([
                 "-c",
                 "paplay /usr/share/sounds/freedesktop/stereo/bell.oga 2>/dev/null || afplay /System/Library/Sounds/Ping.aiff 2>/dev/null",
             ])
-            .spawn();
+            .spawn()
+        {
+            *guard = Some(child);
+        }
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 use parking_lot::RwLock;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 use std::sync::Mutex;
 use anyhow::Result;
@@ -41,6 +41,13 @@ pub struct AudioManager {
     muted:       Arc<AtomicBool>,
     /// Loopback — when true, captures system output and mixes into the output.
     loopback_enabled: Arc<AtomicBool>,
+    /// Real DSP load percentage stored as f32 bits (updated each audio block).
+    dsp_load_u32: Arc<AtomicU32>,
+    /// Serializes concurrent config changes (device/sample-rate/buffer-size)
+    /// to prevent interleaved stop/start cycles from leaving monitoring undefined.
+    config_lock: Mutex<()>,
+    /// Cumulative ring-buffer underrun counter (resets on stream restart).
+    underrun_count: Arc<AtomicU64>,
 }
 
 impl AudioManager {
@@ -71,6 +78,9 @@ impl AudioManager {
             vu_meter:         Arc::new(VUMeter::new()),
             muted:            Arc::new(AtomicBool::new(false)),
             loopback_enabled: Arc::new(AtomicBool::new(false)),
+            dsp_load_u32:     Arc::new(AtomicU32::new(0)),
+            config_lock:      Mutex::new(()),
+            underrun_count:   Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -488,6 +498,10 @@ impl AudioManager {
         let vu_meter = Arc::clone(&self.vu_meter);
         let muted = Arc::clone(&self.muted);
         let loopback_flag = Arc::clone(&self.loopback_enabled);
+        let dsp_load_u32 = Arc::clone(&self.dsp_load_u32);
+        let underrun_count = Arc::clone(&self.underrun_count);
+        // Reset underrun counter each time a new stream starts.
+        self.underrun_count.store(0, Ordering::Relaxed);
         // Preallocate bounce buffers to avoid reallocations in the realtime callback.
         // Use buf_capacity (samples) / 2 to get a safe max number of frames (stereo pairs).
         let max_frames = (buf_capacity / 2).max(config.buffer_size as usize);
@@ -497,6 +511,7 @@ impl AudioManager {
         let out_stream_opt = if let (Some(out_dev), Some(out_cfg), Some(output_channels)) =
             (output_device_opt.as_ref(), out_cfg_opt.as_ref(), output_channels_opt)
         {
+            let sample_rate_hz = out_cfg.sample_rate.0 as f64;
             let out_stream = out_dev.build_output_stream(
                 out_cfg,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
@@ -507,22 +522,41 @@ impl AudioManager {
 
                     // Step 1: Drain ring buffer → L/R bounce buffers.
                     // Ring buffer samples are already interleaved as [L, R] pairs.
+                    let mut block_underruns: u64 = 0;
                     for frame in 0..frames_to_process {
-                        left_buf[frame]  = consumer.try_pop().unwrap_or(0.0);
-                        right_buf[frame] = consumer.try_pop().unwrap_or(0.0);
+                        match consumer.try_pop() {
+                            Some(l) => left_buf[frame] = l,
+                            None    => { left_buf[frame] = 0.0; block_underruns += 1; }
+                        }
+                        match consumer.try_pop() {
+                            Some(r) => right_buf[frame] = r,
+                            None    => { right_buf[frame] = 0.0; block_underruns += 1; }
+                        }
+                    }
+                    if block_underruns > 0 {
+                        underrun_count.fetch_add(block_underruns, Ordering::Relaxed);
                     }
 
                     // Step 2: Run plugin chain (non-blocking try_lock).
                     // If the lock is contended (parameter update from UI thread)
                     // audio passes through unchanged — same as LightHost bypass.
+                    // t0 is captured once here and shared with the VU meter update
+                    // so both users pay only one Instant::now() syscall per block.
+                    let t0 = std::time::Instant::now();
                         if let Ok(guard) = process_fn.try_lock() {
                         if let Some(ref f) = *guard {
                             f(&mut left_buf[..frames_to_process], &mut right_buf[..frames_to_process]);
+                            let dsp_ns = t0.elapsed().as_nanos() as f64;
+                            let block_ns = frames_to_process as f64 / sample_rate_hz * 1_000_000_000.0;
+                            let measured = ((dsp_ns / block_ns) * 100.0).clamp(0.0, 100.0) as f32;
+                            let old = f32::from_bits(dsp_load_u32.load(Ordering::Relaxed));
+                            let smoothed = old * 0.9 + measured * 0.1;
+                            dsp_load_u32.store(smoothed.to_bits(), Ordering::Relaxed);
                         }
                     }
 
-                    // Step 2.5: Update VU meter with processed audio
-                    vu_meter.update(&left_buf[..frames_to_process], &right_buf[..frames_to_process]);
+                    // Step 2.5: Update VU meter with processed audio.
+                    vu_meter.update(&left_buf[..frames_to_process], &right_buf[..frames_to_process], t0);
 
                     // Read mute and loopback flags once so both output paths use the same state.
                     let is_muted = muted.load(Ordering::Relaxed);
@@ -733,11 +767,13 @@ impl AudioManager {
 
     /// Get current audio status
     pub fn get_status(&self) -> AudioStatus {
-        let elapsed = self.last_update.read().elapsed().as_secs_f32();
-        self.status.write().cpu_usage = 8.0 + (elapsed.sin() * 4.0);
+        let dsp_load = f32::from_bits(self.dsp_load_u32.load(Ordering::Relaxed));
+        self.status.write().cpu_usage = dsp_load;
         let mut status = self.status.read().clone();
         status.is_muted = self.muted.load(Ordering::Relaxed);
         status.loopback_enabled = self.loopback_enabled.load(Ordering::Relaxed);
+        status.underrun_count = self.underrun_count.load(Ordering::Relaxed);
+        status.vst3_settling = crate::plugins::processor::vst3::is_vst3_settling();
         status
     }
 
@@ -753,8 +789,8 @@ impl AudioManager {
 
     /// Set output device
     pub fn set_output_device(&self, device_id: Option<String>) -> Result<()> {
+        let _guard = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.config.write().output_device_id = device_id;
-        //log::info!("Output device updated");
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;
@@ -764,8 +800,8 @@ impl AudioManager {
 
     /// Set input device
     pub fn set_input_device(&self, device_id: Option<String>) -> Result<()> {
+        let _guard = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.config.write().input_device_id = device_id;
-        //log::info!("Input device updated");
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;
@@ -778,8 +814,8 @@ impl AudioManager {
     /// the primary output — useful for routing to OBS / Discord while still
     /// monitoring through speakers or headphones.
     pub fn set_virtual_output_device(&self, device_id: Option<String>) -> Result<()> {
+        let _guard = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.config.write().virtual_output_device_id = device_id;
-        //log::info!("Virtual output device updated");
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;
@@ -789,13 +825,13 @@ impl AudioManager {
 
     /// Set sample rate
     pub fn set_sample_rate(&self, rate: u32) -> Result<()> {
+        let _guard = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.config.write().sample_rate = rate;
         {
             let mut status = self.status.write();
             status.sample_rate = rate;
             status.latency_ms = (status.buffer_size as f32 / rate as f32) * 1000.0;
         }
-        //log::info!("Sample rate set to {}Hz", rate);
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;
@@ -805,13 +841,13 @@ impl AudioManager {
 
     /// Set buffer size
     pub fn set_buffer_size(&self, size: u32) -> Result<()> {
+        let _guard = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.config.write().buffer_size = size;
         {
             let mut status = self.status.write();
             status.buffer_size = size;
             status.latency_ms = (size as f32 / status.sample_rate as f32) * 1000.0;
         }
-        //log::info!("Buffer size set to {} samples", size);
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;

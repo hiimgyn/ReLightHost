@@ -80,7 +80,9 @@ impl VUMeter {
     }
 
     /// Called from the realtime audio callback — zero locks, zero allocations.
-    pub fn update(&self, left: &[f32], right: &[f32]) {
+    /// `now` should be `Instant::now()` captured once per audio block by the caller
+    /// to avoid a second syscall inside this function.
+    pub fn update(&self, left: &[f32], right: &[f32], now: Instant) {
         // Peak
         let peak_l = left.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         let peak_r = right.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
@@ -102,8 +104,9 @@ impl VUMeter {
         store_f32(&self.left_rms,  load_f32(&self.left_rms)  * RMS_SMOOTH + rms_l * (1.0 - RMS_SMOOTH));
         store_f32(&self.right_rms, load_f32(&self.right_rms) * RMS_SMOOTH + rms_r * (1.0 - RMS_SMOOTH));
 
-        // Peak hold using elapsed nanos since creation (single Instant::now() cost avoided)
-        let now_ns = self.created_at.elapsed().as_nanos() as i64;
+        // Peak hold using elapsed nanos since creation — caller provides `now` so
+        // Instant::now() is called only once per audio block across all users.
+        let now_ns = now.duration_since(self.created_at).as_nanos() as i64;
 
         let update_hold = |peak: f32, hold_val: &AtomicU32, hold_ns: &AtomicI64| {
             let elapsed = now_ns - hold_ns.load(Ordering::Relaxed);

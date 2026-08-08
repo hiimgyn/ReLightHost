@@ -9,6 +9,12 @@ pub struct AudioStatus {
     pub buffer_size: u32,
     pub cpu_usage: f32,
     pub latency_ms: f32,
+    /// Cumulative count of ring-buffer underruns (input starved output).
+    /// Resets to 0 when monitoring restarts.
+    pub underrun_count: u64,
+    /// True while VST3 plugins are in their post-start settling window.
+    /// Parameter changes during this period are ignored by the VST3 processor.
+    pub vst3_settling: bool,
 }
 
 impl Default for AudioStatus {
@@ -23,6 +29,8 @@ impl Default for AudioStatus {
             buffer_size,
             cpu_usage: 0.0,
             latency_ms: (buffer_size as f32 / sample_rate as f32) * 1000.0,
+            underrun_count: 0,
+            vst3_settling: false,
         }
     }
 }

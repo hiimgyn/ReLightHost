@@ -37,7 +37,7 @@ pub trait BuiltinProcessor: Send {
 /// Returns `None` if `id` is not registered.
 pub fn create_builtin(id: &str, sample_rate: f32) -> Option<Box<dyn BuiltinProcessor>> {
     match id {
-        noise_suppressor::ID => Some(Box::new(NoiseSuppressor::new())),
+        noise_suppressor::ID => NoiseSuppressor::new(sample_rate).map(|p| Box::new(p) as Box<dyn BuiltinProcessor>),
         compressor::ID       => Some(Box::new(Compressor::new(sample_rate))),
         voice::ID            => Some(Box::new(Voice::new(sample_rate))),
         _                    => None,

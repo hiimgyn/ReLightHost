@@ -8,7 +8,7 @@ use crate::plugins::types::{PluginInfo, PluginFormat};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 
-const SCAN_CACHE_VERSION: u32 = 2;
+const SCAN_CACHE_VERSION: u32 = 3;
 
 pub struct PluginScanner {
     scan_paths: Vec<PathBuf>,
@@ -166,19 +166,42 @@ impl PluginScanner {
         }
     }
 
-    fn fingerprint_path(path: &Path) -> ScanFingerprint {
-        let meta = fs::metadata(path).ok();
-        let modified_ms = meta
-            .as_ref()
-            .and_then(|m| m.modified().ok())
-            .and_then(system_time_to_ms)
-            .unwrap_or(0);
-        let len_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-        ScanFingerprint {
-            modified_ms,
-            len_bytes,
-            exists: meta.is_some(),
+    fn fingerprint_path(root: &Path) -> ScanFingerprint {
+        // Recursively hash mtime + size of every file inside the directory
+        // (not just the directory entry) so new plugins in subdirectories are detected.
+        let mut modified_acc: u64 = 0;
+        let mut len_acc: u64 = 0;
+        let mut exists = false;
+
+        fn walk(dir: &Path, modified_acc: &mut u64, len_acc: &mut u64, exists: &mut bool) {
+            let Ok(rd) = fs::read_dir(dir) else { return };
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if let Ok(meta) = fs::metadata(&p) {
+                    *exists = true;
+                    let mtime = meta.modified().ok()
+                        .and_then(system_time_to_ms)
+                        .unwrap_or(0);
+                    // FNV-style mix: XOR-rotate to avoid cancellation from equal values.
+                    *modified_acc ^= mtime.wrapping_add(p.as_os_str().len() as u64);
+                    *modified_acc = modified_acc.rotate_left(7);
+                    *len_acc = len_acc.wrapping_add(meta.len());
+                    if meta.is_dir() {
+                        walk(&p, modified_acc, len_acc, exists);
+                    }
+                }
+            }
         }
+
+        if root.is_dir() {
+            walk(root, &mut modified_acc, &mut len_acc, &mut exists);
+        } else if let Ok(meta) = fs::metadata(root) {
+            exists = true;
+            modified_acc = meta.modified().ok().and_then(system_time_to_ms).unwrap_or(0);
+            len_acc = meta.len();
+        }
+
+        ScanFingerprint { modified_ms: modified_acc, len_bytes: len_acc, exists }
     }
 
     /// Scan all configured paths for plugins
@@ -435,8 +458,14 @@ impl PluginScanner {
         // For single-file VST3 (.vst3 files that are PE DLLs), try VERSIONINFO
         // resource first (no code execution), then IPluginFactory2 as fallback.
         let (name, vendor, version, category) = if matches!(format, PluginFormat::VST) {
-            let (n, v, ver) = read_vst2_metadata(path)
-                .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
+            let (n, v, ver) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                read_vst2_metadata(path)
+            }))
+            .unwrap_or_else(|_| {
+                log::error!("VST2 DLL panicked during scan: {}", path.display());
+                None
+            })
+            .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
             (n, v, ver, "Effect".to_string())
         } else if matches!(format, PluginFormat::CLAP) {
             let (n, v, ver) = crate::plugins::processor::clap::read_clap_metadata(path)

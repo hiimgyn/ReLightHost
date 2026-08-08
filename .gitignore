@@ -51,3 +51,6 @@ Desktop.ini
 
 # pnpm
 .pnpm-store/
+
+# AI-generated docs
+ai-docs/

@@ -62,6 +62,11 @@ mod win {
         log::warn!("{} Global VST3 process guard enabled for {} ms", crate::core::threading::thread_prefix("plugin/vst3/guard"), block_ms);
     }
 
+    pub fn is_vst3_settling() -> bool {
+        let until = GLOBAL_PROCESS_BLOCK_UNTIL_MS.load(Ordering::Relaxed);
+        until != 0 && now_epoch_ms() < until
+    }
+
     /// Ensure COM is initialized on the current thread with MULTITHREADED model.
     /// Safe to call multiple times — only initializes once per thread.
     /// Returns true if COM was just initialized, false if already initialized.
@@ -553,6 +558,8 @@ mod win {
 pub use win::Vst3Processor;
 #[cfg(target_os = "windows")]
 pub use win::set_global_process_block_ms;
+#[cfg(target_os = "windows")]
+pub use win::is_vst3_settling;
 
 /// Stub for non-Windows platforms.
 #[cfg(not(target_os = "windows"))]
@@ -570,3 +577,6 @@ impl Vst3Processor {
 
 #[cfg(not(target_os = "windows"))]
 pub fn set_global_process_block_ms(_block_ms: u64) {}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_vst3_settling() -> bool { false }

@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAudioStore } from './stores/audioStore';
 import { usePluginStore } from './stores/pluginStore';
 import LoadingScreen from './components/layout/LoadingScreen';
+import ErrorBoundary from './components/layout/ErrorBoundary';
 import { getMinimizeToTray } from './lib/tauri';
 
 const Layout = lazy(() => import('./components/layout'));
@@ -21,6 +22,7 @@ function App() {
 
   // ── Session restore on mount ──────────────────────────────────────────────
   useEffect(() => {
+    let asioRetryIds: ReturnType<typeof setTimeout>[] = [];
     const restoreSession = async () => {
       try {
         usePluginStore.getState().setRestoreTargetCount(null);
@@ -48,7 +50,6 @@ function App() {
 
         if (result.audio_restored || result.plugins_restored > 0) {
           // Session found — suppress the first-time setup modal.
-          localStorage.setItem('audioConfigured', 'true');
 
           if (result.needs_deferred_start) {
             // Backend orchestrates a safe delayed start window.
@@ -77,17 +78,13 @@ function App() {
           // race with the session restore path.
           try { await toggleMonitoring(true); } catch { /* no device configured */ }
 
-          if (!localStorage.getItem('audioConfigured')) {
-            // Truly first time — show the setup modal.
-            setTimeout(() => setShowFirstTimeAudio(true), 600);
-          }
+          // Truly first time — show the setup modal.
+          setTimeout(() => setShowFirstTimeAudio(true), 600);
         }
       } catch (error) {
         console.error('Failed to restore session:', error);
         usePluginStore.getState().setRestoreTargetCount(null);
-        if (!localStorage.getItem('audioConfigured')) {
-          setTimeout(() => setShowFirstTimeAudio(true), 600);
-        }
+        setTimeout(() => setShowFirstTimeAudio(true), 600);
       } finally {
         if (!asioRetryRef.current) {
           const retryPlan = [
@@ -96,7 +93,7 @@ function App() {
             { delay: 5200, forceRestart: false },
           ];
           asioRetryRef.current = true;
-          retryPlan.forEach(({ delay, forceRestart }) => {
+          asioRetryIds = retryPlan.map(({ delay, forceRestart }) =>
             setTimeout(async () => {
               const state = useAudioStore.getState();
               const isAsio = (state.selectedInputDevice ?? state.selectedDevice)?.startsWith('asio_');
@@ -114,8 +111,8 @@ function App() {
               } catch (e) {
                 console.warn('ASIO auto-start retry failed:', e);
               }
-            }, delay);
-          });
+            }, delay)
+          );
         }
         const elapsed = Date.now() - bootStartRef.current;
         const minBootMs = 700;
@@ -125,6 +122,7 @@ function App() {
     };
 
     restoreSession();
+    return () => { asioRetryIds.forEach(clearTimeout); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -168,6 +166,7 @@ function App() {
   }, []);
 
   return (
+    <ErrorBoundary>
     <Suspense fallback={<LoadingScreen />}>
       {contextHolder}
       <Layout>
@@ -185,6 +184,7 @@ function App() {
       </Layout>
       {isBooting && <LoadingScreen />}
     </Suspense>
+    </ErrorBoundary>
   )
 }
 

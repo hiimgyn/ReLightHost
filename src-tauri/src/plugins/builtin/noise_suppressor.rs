@@ -49,8 +49,17 @@ pub struct NoiseSuppressor {
 }
 
 impl NoiseSuppressor {
-    pub fn new() -> Self {
-        Self {
+    /// Returns `None` if `sample_rate` is not 48000 Hz — RNNoise's FRAME_SIZE
+    /// of 480 samples is only valid at 48 kHz (480 / 48000 = 10 ms frame).
+    pub fn new(sample_rate: f32) -> Option<Self> {
+        if (sample_rate - 48000.0).abs() > 1.0 {
+            log::warn!(
+                "NoiseSuppressor requires 48 kHz; got {sample_rate} Hz — \
+                 plugin will run in pass-through mode to avoid pitch/speed artifacts"
+            );
+            return None;
+        }
+        Some(Self {
             state_l: DenoiseState::new(),
             state_r: DenoiseState::new(),
             in_l:  VecDeque::new(),
@@ -65,7 +74,7 @@ impl NoiseSuppressor {
             output_gain:        1.0,
             last_vad:           0.0,
             gate_gain:          1.0,
-        }
+        })
     }
 }
 
@@ -149,7 +158,7 @@ impl BuiltinProcessor for NoiseSuppressor {
 }
 
 impl Default for NoiseSuppressor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self { Self::new(48000.0).expect("48 kHz is always valid") }
 }
 
 // SAFETY: DenoiseState contains only plain f32 arrays; safe to send across

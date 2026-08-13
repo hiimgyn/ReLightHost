@@ -31,14 +31,9 @@ export default defineConfig({
             return 'tauri';
           }
           if (
-            id.includes('/src/components/PluginLibrary') ||
-            id.includes('/src/components/PluginInfoModal') ||
-            id.includes('/src/components/PluginSettings') ||
-            id.includes('/src/components/PresetManager') ||
-            id.includes('/src/components/NoiseSuppressorGui') ||
-            id.includes('/src/components/CompressorGui') ||
-            id.includes('/src/components/VoiceGui') ||
-            id.includes('/src/components/AudioSettings')
+            id.includes('/src/components/plugin/') ||
+            id.includes('/src/components/plugin-gui/') ||
+            id.includes('/src/components/audio/AudioSettings')
           ) {
             return 'plugin-modals';
           }

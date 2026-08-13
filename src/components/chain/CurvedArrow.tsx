@@ -8,7 +8,7 @@ interface CurvedArrowProps {
 
 export default function CurvedArrow({ width = 28, height = 24, color }: CurvedArrowProps) {
   const { token } = theme.useToken();
-  const stroke = color ?? token.colorTextQuaternary;
+  const stroke = color ?? token.colorTextTertiary;
   return (
     <svg
       width={width}
@@ -24,7 +24,7 @@ export default function CurvedArrow({ width = 28, height = 24, color }: CurvedAr
         strokeWidth={1.4}
         strokeLinecap="round"
         strokeLinejoin="round"
-        strokeOpacity={0.52}
+        strokeOpacity={0.68}
         fill="none"
         strokeDasharray="6 4"
       />
@@ -34,7 +34,7 @@ export default function CurvedArrow({ width = 28, height = 24, color }: CurvedAr
         strokeWidth={1.6}
         strokeLinecap="round"
         strokeLinejoin="round"
-        strokeOpacity={0.7}
+        strokeOpacity={0.85}
         fill="none"
       />
     </svg>

@@ -1,5 +1,6 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { ConfigProvider, theme as antTheme, App as AntApp, Space, Typography, Divider, Tooltip } from 'antd';
+import { useShallow } from 'zustand/react/shallow';
 import { getThemeTokens, applyThemeCssVars } from '../../theme';
 import { HeartFilled } from '@ant-design/icons';
 import Header from './Header';
@@ -21,8 +22,11 @@ interface LayoutProps {
 /** Inner shell — lives inside ConfigProvider so it can read design tokens. */
 function AppShell({ children, isDark }: { children: ReactNode; isDark: boolean }) {
   const { token } = antTheme.useToken();
-  const { status, fetchStatus } = useAudioStore();
-  const { pluginChain } = usePluginStore();
+  const { status, fetchStatus } = useAudioStore(useShallow((s) => ({
+    status: s.status,
+    fetchStatus: s.fetchStatus,
+  })));
+  const pluginChain = usePluginStore((s) => s.pluginChain);
 
   useEffect(() => {
     fetchStatus();

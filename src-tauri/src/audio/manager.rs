@@ -581,23 +581,19 @@ impl AudioManager {
 
                     // Step 3: Re-interleave L/R → CPAL output buffer.
                     // ASIO: main output follows mute state. Non-ASIO: loopback
-                    // gates monitor output.
+                    // gates monitor output. Resolve the gate once per block instead
+                    // of re-testing output_is_asio/is_muted/is_loopback per sample.
+                    let gate_open = if output_is_asio { !is_muted } else { is_loopback };
                     // Write out processed frames; if the host requested more
                     // frames than we processed, zero the remainder to avoid
                     // leaking uninitialized data.
                     for frame in 0..frames {
                         for ch in 0..output_channels {
-                            if frame < frames_to_process {
-                                data[frame * output_channels + ch] = if output_is_asio {
-                                    if !is_muted {
-                                        if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] }
-                                    } else { 0.0 }
-                                } else if is_loopback {
-                                    if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] }
-                                } else { 0.0 };
+                            data[frame * output_channels + ch] = if frame < frames_to_process && gate_open {
+                                if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] }
                             } else {
-                                data[frame * output_channels + ch] = 0.0;
-                            }
+                                0.0
+                            };
                         }
                     }
                 },

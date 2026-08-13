@@ -7,7 +7,6 @@ import {
   Tag,
   Space,
   message,
-  Alert,
   Typography,
   theme,
 } from "antd";
@@ -18,7 +17,10 @@ import {
   SyncOutlined,
 } from "@ant-design/icons";
 import { useAudioStore } from "../../stores/audioStore";
-import type { AudioDeviceInfo } from "../../lib/types";
+import { getHostTypeColor, isAsioHost, isAsioId } from "./audioDeviceDisplay";
+import { useAudioDeviceLists } from "./useAudioDeviceLists";
+import AsioDeviceFields from "./AsioDeviceFields";
+import StandardDeviceFields from "./StandardDeviceFields";
 
 interface AudioSettingsProps {
   isOpen: boolean;
@@ -26,40 +28,6 @@ interface AudioSettingsProps {
 }
 
 const { Text } = Typography;
-
-const isAsioId = (id: string | null | undefined): boolean =>
-  id?.startsWith("asio_") ?? false;
-const isAsioHost = (ht: string): boolean => ht.toLowerCase().includes("asio");
-
-function getHostTypeColor(hostType: string) {
-  if (isAsioHost(hostType)) return "blue";
-  if (hostType.includes("WASAPI")) return "green";
-  if (hostType.includes("DirectSound")) return "orange";
-  if (hostType.includes("CoreAudio")) return "purple";
-  return "default";
-}
-
-function DeviceOption({ device }: { device: AudioDeviceInfo }) {
-  const channelLabel =
-    device.input_channels > 0 && device.output_channels > 0
-      ? `${device.input_channels} in / ${device.output_channels} out`
-      : device.output_channels > 0
-        ? `${device.output_channels} ch out`
-        : `${device.input_channels} ch in`;
-
-  return (
-    <Space orientation="vertical" size={0} style={{ width: "100%" }}>
-      <Space>
-        <span style={{ fontWeight: 600 }}>{device.name}</span>
-        {device.is_default && <Tag color="blue">Default</Tag>}
-      </Space>
-      <Space size={4}>
-        <Tag color={getHostTypeColor(device.host_type)}>{device.host_type}</Tag>
-        <Tag color="cyan">{channelLabel}</Tag>
-      </Space>
-    </Space>
-  );
-}
 
 export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   const { token } = theme.useToken();
@@ -87,35 +55,15 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
     onClose();
   };
 
-  const hostTypes = Array.from(new Set(devices.map((d) => d.host_type))).sort();
-  // If no host type has been selected in the UI yet, infer from the stored
-  // device ID — "asio_*" devices are always ASIO regardless of the dropdown.
-  // This ensures the ASIO section is shown immediately on first render rather
-  // than waiting for the async setSelectedHostType state update.
-  const asioMode =
-    isAsioHost(selectedHostType) ||
-    (!selectedHostType && isAsioId(selectedInputDevice ?? selectedDevice));
-
-  // Partition devices for the current host type
-  const filteredDevices = selectedHostType
-    ? devices.filter((d) => d.host_type === selectedHostType)
-    : devices;
-
-  // Full-duplex ASIO devices (both channels populated)
-  const asioDevices = filteredDevices.filter(
-    (d) => d.input_channels > 0 && d.output_channels > 0,
-  );
-  // Separate output / input lists for non-ASIO
-  const outputDevices = filteredDevices.filter(
-    (d) => d.output_channels > 0 && d.input_channels === 0,
-  );
-  const inputDevices = filteredDevices.filter(
-    (d) => d.input_channels > 0 && d.output_channels === 0,
-  );
-  const monitorOutputDevices = devices.filter(
-    (d) => d.output_channels > 0 && d.input_channels === 0 && !isAsioHost(d.host_type),
-  );
-  const defaultMonitorOutputId = monitorOutputDevices.find((d) => d.is_default)?.id;
+  const {
+    hostTypes,
+    asioMode,
+    asioDevices,
+    outputDevices,
+    inputDevices,
+    monitorOutputDevices,
+    defaultMonitorOutputId,
+  } = useAudioDeviceLists({ devices, selectedHostType, selectedDevice, selectedInputDevice });
 
   useEffect(() => {
     if (!isOpen) {
@@ -272,7 +220,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
         </Button>,
       ]}
     >
-   
+
       <Form
         form={form}
         layout="vertical"
@@ -302,148 +250,10 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
           </Select>
         </Form.Item>
 
-        {/* ── ASIO MODE: single full-duplex device ── */}
         {asioMode ? (
-          <>
-            <Alert
-              type="info"
-              showIcon
-              icon={<ThunderboltOutlined />}
-              style={{ marginBottom: 16 }}
-              title="ASIO — Full-Duplex"
-              description={
-                <>
-                  ASIO drivers manage input and output through a single device.
-                  Select one device below; it will be used for both input and
-                  output. The buffer size must match your ASIO driver's current
-                  setting (configured in the driver's own control panel).
-                </>
-              }
-            />
-
-            <Form.Item
-              label="ASIO Device"
-              name="asioDevice"
-              rules={[
-                { required: true, message: "Please select an ASIO device" },
-              ]}
-            >
-              <Select
-                size="large"
-                placeholder="Select ASIO device"
-                optionLabelProp="label"
-              >
-                {asioDevices.map((device) => (
-                  <Select.Option
-                    key={device.id}
-                    value={device.id}
-                    label={device.name}
-                  >
-                    <DeviceOption device={device} />
-                  </Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-
-            <Form.Item
-              label="Monitor Output"
-              name="virtualOutputDevice"
-              extra="WASAPI monitor output used with the Monitor Output toggle to check audio."
-            >
-              <Select
-                size="large"
-                placeholder="None (disabled)"
-                allowClear
-                optionLabelProp="label"
-              >
-                <Select.Option value="" label="None (disabled)">
-                  <span>None (disabled)</span>
-                </Select.Option>
-                {monitorOutputDevices.map((device) => (
-                  <Select.Option
-                    key={device.id}
-                    value={device.id}
-                    label={device.name}
-                  >
-                    <DeviceOption device={device} />
-                  </Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-          </>
+          <AsioDeviceFields asioDevices={asioDevices} monitorOutputDevices={monitorOutputDevices} />
         ) : (
-          /* ── NON-ASIO MODE: separate output / input ── */
-          <>
-            <Form.Item label="Input Device" name="inputDevice">
-              <Select
-                size="large"
-                placeholder="None (No Input)"
-                allowClear
-                optionLabelProp="label"
-              >
-                <Select.Option value="" label="None (No Input)">
-                  <span>None (No Input)</span>
-                </Select.Option>
-                {inputDevices.map((device) => (
-                  <Select.Option
-                    key={device.id}
-                    value={device.id}
-                    label={device.name}
-                  >
-                    <DeviceOption device={device} />
-                  </Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-            
-            <Form.Item label="Virtual Output" name="virtualOutputDevice">
-              <Select
-                size="large"
-                placeholder="None (disabled)"
-                allowClear
-                optionLabelProp="label"
-              >
-                <Select.Option value="" label="None (disabled)">
-                  <span>None (disabled)</span>
-                </Select.Option>
-                {outputDevices.map((device) => (
-                  <Select.Option
-                    key={device.id}
-                    value={device.id}
-                    label={device.name}
-                  >
-                    <DeviceOption device={device} />
-                  </Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-
-            <Form.Item
-              label="Monitor Output"
-              name="outputDevice"
-              extra="Hardware monitoring device (speakers/headphones). Enabled when Monitor Output is ON."
-            >
-              <Select
-                size="large"
-                placeholder="None (disabled)"
-                allowClear
-                optionLabelProp="label"
-              >
-                <Select.Option value="" label="None (disabled)">
-                  <span>None (disabled)</span>
-                </Select.Option>
-                {outputDevices.map((device) => (
-                  <Select.Option
-                    key={device.id}
-                    value={device.id}
-                    label={device.name}
-                  >
-                    <DeviceOption device={device} />
-                  </Select.Option>
-                ))}
-              </Select>
-            </Form.Item>
-          </>
+          <StandardDeviceFields inputDevices={inputDevices} outputDevices={outputDevices} />
         )}
 
         {/* Sample Rate */}

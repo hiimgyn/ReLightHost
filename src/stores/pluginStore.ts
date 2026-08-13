@@ -4,6 +4,20 @@ import * as tauri from '../lib/tauri';
 
 let scanPluginsInFlight: Promise<void> | null = null;
 
+function crashStatusMapsEqual(
+  a: Record<string, PluginStatus>,
+  b: Record<string, PluginStatus>,
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!(key in b)) return false;
+    if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) return false;
+  }
+  return true;
+}
+
 interface PluginStore {
   // State
   availablePlugins: PluginInfo[];
@@ -216,7 +230,12 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       for (const item of statuses) {
         next[item.instance_id] = item.status;
       }
-      set({ crashStatusByInstanceId: next });
+      // Avoid triggering a re-render across every subscriber when nothing changed
+      // (this runs on a 10s poll regardless of whether any status actually differs).
+      const prev = get().crashStatusByInstanceId;
+      if (!crashStatusMapsEqual(prev, next)) {
+        set({ crashStatusByInstanceId: next });
+      }
     } catch (error) {
       console.error('Failed to fetch plugin crash statuses:', error);
     }

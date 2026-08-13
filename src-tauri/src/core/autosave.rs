@@ -80,8 +80,9 @@ fn save_autosave_snapshot(
     autosave_last_hash: &Arc<AtomicU64>,
 ) {
     let preset = build_chain_preset_from_manager(plugin_manager, "autosave");
+    let hash = preset_hash_bytes(&preset);
 
-    let skip_write = preset_hash_bytes(&preset)
+    let skip_write = hash
         .map(|h| h == autosave_last_hash.load(Ordering::Acquire))
         .unwrap_or(false);
 
@@ -91,7 +92,7 @@ fn save_autosave_snapshot(
 
     match preset_manager.read().save_preset(&preset) {
         Ok(_) => {
-            if let Some(h) = preset_hash_bytes(&preset) {
+            if let Some(h) = hash {
                 autosave_last_hash.store(h, Ordering::Release);
             }
         }

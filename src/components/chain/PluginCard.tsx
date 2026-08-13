@@ -1,15 +1,10 @@
-import { Card, Button, Space, Tag, Tooltip, theme, message, Input } from 'antd';
-import type { InputRef } from 'antd';
-import { 
-  AppstoreOutlined,
-  ApartmentOutlined,
-  CloseOutlined, 
-  PoweroffOutlined, 
+import { Card, Button, Space, Tooltip, theme, message, Input } from 'antd';
+import {
+  CloseOutlined,
+  PoweroffOutlined,
   PlayCircleOutlined,
   LoadingOutlined,
   CheckCircleOutlined,
-  FieldNumberOutlined,
-  TagOutlined,
   WarningOutlined,
   ReloadOutlined,
   SettingOutlined,
@@ -18,22 +13,23 @@ import {
   CloseCircleOutlined,
   HolderOutlined,
 } from '@ant-design/icons';
-import { lazy, Suspense, memo, useState, useEffect, useRef } from 'react';
+import { memo, useState } from 'react';
 import type { PluginInstanceInfo, PluginStatus } from '../../lib/types';
 import * as tauri from '../../lib/tauri';
-
-const NoiseSuppressorGui = lazy(() => import('../plugin-gui/NoiseSuppressorGui'));
-const CompressorGui = lazy(() => import('../plugin-gui/CompressorGui'));
-const VoiceGui = lazy(() => import('../plugin-gui/VoiceGui'));
+import PluginMetaChips from './PluginMetaChips';
+import BuiltinPluginGuiSwitch from './BuiltinPluginGuiSwitch';
+import { usePluginRename } from './usePluginRename';
+import { usePluginLaunch } from './usePluginLaunch';
+import { getPluginStatusPalette } from './pluginStatusPalette';
 
 interface PluginCardProps {
   plugin: PluginInstanceInfo;
   crashStatus?: PluginStatus;
   interactionLocked?: boolean;
-  onRemove: () => Promise<void> | void;
-  onToggleBypass: () => Promise<void> | void;
+  onRemove: (instanceId: string) => Promise<void> | void;
+  onToggleBypass: (instanceId: string) => Promise<void> | void;
   onCrashStatusChanged?: () => Promise<void> | void;
-  onLaunch?: () => Promise<void> | void;
+  onLaunch?: (instanceId: string) => Promise<void> | void;
   onDragHandlePointerDown?: (e: React.PointerEvent) => void;
   isDragging?: boolean;
 }
@@ -53,41 +49,32 @@ function PluginCard({
   const [messageApi, contextHolder] = message.useMessage();
   const [checkingStatus, setCheckingStatus] = useState(false);
   const [showBuiltinGui, setShowBuiltinGui] = useState(false);
-
-  // GUI launching state — reset once plugin.gui_open becomes true or after timeout
-  const [isLaunching, setIsLaunching] = useState(false);
-  const launchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isBypassBusy, setIsBypassBusy] = useState(false);
   const [isRemovingBusy, setIsRemovingBusy] = useState(false);
 
-  // Inline rename state
-  const [isRenaming, setIsRenaming] = useState(false);
-  const [isRenamingBusy, setIsRenamingBusy] = useState(false);
-  const [editName, setEditName] = useState(plugin.name);
-  const renameInputRef = useRef<InputRef | null>(null);
+  const { isLaunching, handleLaunch } = usePluginLaunch({
+    instanceId: plugin.instance_id,
+    pluginName: plugin.name,
+    guiOpen: plugin.gui_open,
+    interactionLocked,
+    onLaunch,
+  });
 
-  // Sync edit name when plugin name changes externally
-  useEffect(() => {
-    if (!isRenaming) setEditName(plugin.name);
-  }, [plugin.name, isRenaming]);
-
-  // When gui_open becomes true, clear the launching spinner
-  useEffect(() => {
-    if (plugin.gui_open && isLaunching) {
-      setIsLaunching(false);
-      if (launchTimerRef.current) clearTimeout(launchTimerRef.current);
-    }
-  }, [plugin.gui_open, isLaunching]);
-
-  useEffect(() => () => {
-    if (launchTimerRef.current) clearTimeout(launchTimerRef.current);
-  }, []);
-
-  useEffect(() => {
-    if (isRenaming) {
-      setTimeout(() => renameInputRef.current?.focus(), 0);
-    }
-  }, [isRenaming]);
+  const {
+    isRenaming,
+    isRenamingBusy,
+    editName,
+    setEditName,
+    renameInputRef,
+    startRenaming,
+    confirmRename,
+    cancelRename,
+  } = usePluginRename({
+    instanceId: plugin.instance_id,
+    pluginName: plugin.name,
+    interactionLocked,
+    messageApi,
+  });
 
   const handleResetCrash = async () => {
     if (interactionLocked) return;
@@ -105,55 +92,12 @@ function PluginCard({
     }
   };
 
-  const handleLaunch = async () => {
-    if (interactionLocked) return;
-    if (isLaunching) return;
-    if (plugin.gui_open) return; // already open — do nothing
-    setIsLaunching(true);
-    // Safety fallback: clear spinner after 8 s if gui_open never becomes true
-    launchTimerRef.current = setTimeout(() => setIsLaunching(false), 8000);
-    try {
-      console.debug('PluginCard: launch clicked', { instanceId: plugin.instance_id, name: plugin.name });
-      await onLaunch?.();
-    } catch {
-      setIsLaunching(false);
-      if (launchTimerRef.current) clearTimeout(launchTimerRef.current);
-    }
-  };
-
-  const handleRenameConfirm = async () => {
-    if (interactionLocked || isRenamingBusy) return;
-    const trimmed = editName.trim();
-    if (trimmed && trimmed !== plugin.name) {
-      try {
-        setIsRenamingBusy(true);
-        console.debug('PluginCard: rename confirm', { instanceId: plugin.instance_id, from: plugin.name, to: trimmed });
-        await tauri.renamePlugin(plugin.instance_id, trimmed);
-        } catch (err) {
-        messageApi.error(`Rename failed: ${err}`);
-        setEditName(plugin.name);
-      } finally {
-        setIsRenamingBusy(false);
-      }
-    } else if (!trimmed) {
-      setEditName(plugin.name);
-    }
-    setIsRenaming(false);
-  };
-
-  const handleRenameCancel = () => {
-    if (isRenamingBusy) return;
-    console.debug('PluginCard: rename cancelled', { instanceId: plugin.instance_id, name: plugin.name });
-    setEditName(plugin.name);
-    setIsRenaming(false);
-  };
-
   const handleToggleBypassClick = async () => {
     if (isControlLocked) return;
     console.debug('PluginCard: toggle bypass clicked', { instanceId: plugin.instance_id, name: plugin.name, currentlyBypassed: plugin.bypassed });
     try {
       setIsBypassBusy(true);
-      await onToggleBypass();
+      await onToggleBypass(plugin.instance_id);
     } catch (err) {
       messageApi.error(`Bypass failed: ${err}`);
     } finally {
@@ -166,7 +110,7 @@ function PluginCard({
     console.debug('PluginCard: remove clicked', { instanceId: plugin.instance_id, name: plugin.name });
     try {
       setIsRemovingBusy(true);
-      await onRemove();
+      await onRemove(plugin.instance_id);
     } catch (err) {
       messageApi.error(`Remove failed: ${err}`);
     } finally {
@@ -174,161 +118,17 @@ function PluginCard({
     }
   };
 
-  const effectiveCrashStatus = crashStatus ?? { type: 'Ok' };
-  const isCrashed = effectiveCrashStatus.type !== 'Ok';
   const isControlLocked = interactionLocked || isLaunching || checkingStatus || isRenamingBusy || isBypassBusy || isRemovingBusy;
-  const isActive = !isCrashed && !plugin.bypassed;
-  const statusKind: 'crashed' | 'bypassed' | 'live' | 'active' = isCrashed
-    ? 'crashed'
-    : plugin.bypassed
-    ? 'bypassed'
-    : plugin.gui_open
-    ? 'live'
-    : 'active';
-  const statusPalette = {
-    crashed: {
-      color: token.colorError,
-      bg: 'rgba(255,77,79,0.12)',
-      border: 'rgba(255,77,79,0.26)',
-    },
-    bypassed: {
-      color: token.colorTextTertiary,
-      bg: token.colorFillQuaternary,
-      border: token.colorBorderSecondary,
-    },
-    live: {
-      color: token.colorWarning,
-      bg: 'rgba(250,173,20,0.14)',
-      border: 'rgba(250,173,20,0.3)',
-    },
-    active: {
-      color: token.colorSuccess,
-      bg: 'rgba(110,200,166,0.12)',
-      border: 'rgba(110,200,166,0.3)',
-    },
-  }[statusKind];
-  const statusText = statusKind === 'crashed'
-    ? 'Crashed'
-    : statusKind === 'bypassed'
-    ? 'Bypassed'
-    : statusKind === 'live'
-    ? 'Live'
-    : 'Active';
-  const bypassButtonColor = statusPalette.color;
-  const bypassButtonBg = statusKind === 'bypassed'
-    ? token.colorBgContainer
-    : statusPalette.bg;
-  const bypassButtonBorder = statusPalette.border;
-  const statusDotColor = statusPalette.color;
-  const statusTextColor = statusPalette.color;
-
-  type MetaChip = {
-    key: string;
-    label: string;
-    tooltip?: string;
-    icon: React.ReactNode;
-  };
-
-  const getFormatPalette = (format: PluginInstanceInfo['format']) => {
-    switch (format) {
-      case 'vst3':
-        return {
-          border: 'rgba(138, 92, 255, 0.42)',
-          background: 'rgba(138, 92, 255, 0.12)',
-          color: '#8a5cff',
-        };
-      case 'clap':
-        return {
-          border: 'rgba(34, 197, 94, 0.42)',
-          background: 'rgba(34, 197, 94, 0.12)',
-          color: '#22c55e',
-        };
-      case 'builtin':
-        return {
-          border: 'rgba(20, 184, 166, 0.42)',
-          background: 'rgba(20, 184, 166, 0.12)',
-          color: '#14b8a6',
-        };
-      case 'vst':
-      default:
-        return {
-          border: 'rgba(245, 158, 11, 0.42)',
-          background: 'rgba(245, 158, 11, 0.12)',
-          color: '#f59e0b',
-        };
-    }
-  };
-
-  const normalizeManufacturerLabel = (value?: string) => {
-    if (!value) return null;
-    const normalized = value.trim();
-    if (!normalized) return null;
-    if (plugin.format === 'builtin' && normalized.toLowerCase().includes('built')) {
-      return 'System';
-    }
-    return normalized;
-  };
-
-  const metaChipIconFor = (key: string): React.ReactNode => {
-    switch (key) {
-      case 'format':
-        return <AppstoreOutlined />;
-      case 'manufacture':
-        return <ApartmentOutlined />;
-      case 'version':
-        return <FieldNumberOutlined />;
-      case 'category':
-        return <TagOutlined />;
-      default:
-        return <TagOutlined />;
-    }
-  };
-
-  const metaChipStyleFor = (chip: MetaChip): React.CSSProperties => {
-    const isPrimary = chip.key === 'format';
-    const isManufacturer = chip.key === 'manufacture';
-    const formatPalette = getFormatPalette(plugin.format);
-
-    return {
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 3,
-      minWidth: 0,
-      padding: isPrimary ? '2px 6px' : '1px 5px',
-      margin: 0,
-      borderRadius: 999,
-      border: `1px solid ${isPrimary ? formatPalette.border : token.colorBorderSecondary}`,
-      background: isPrimary
-        ? formatPalette.background
-        : isManufacturer
-        ? token.colorBgElevated
-        : token.colorBgContainer,
-      color: isPrimary ? formatPalette.color : token.colorTextSecondary,
-      fontSize: isPrimary ? 8.5 : 7.5,
-      fontWeight: isPrimary ? 700 : 600,
-      letterSpacing: isPrimary ? 0.3 : 0.08,
-      textTransform: isPrimary ? 'uppercase' : 'none',
-      boxShadow: 'none',
-      overflow: 'visible',
-      whiteSpace: 'nowrap',
-      flexShrink: 0,
-      lineHeight: 1,
-      minHeight: 18,
-    };
-  };
-
-  const metaChips: MetaChip[] = [
-    { key: 'format', label: plugin.format === 'builtin' ? 'SYSTEM' : plugin.format.toUpperCase(), icon: metaChipIconFor('format') },
-    normalizeManufacturerLabel(plugin.manufacture)
-      ? { key: 'manufacture', label: normalizeManufacturerLabel(plugin.manufacture) as string, tooltip: plugin.manufacture, icon: metaChipIconFor('manufacture') }
-      : null,
-    plugin.version
-      ? { key: 'version', label: `v${plugin.version}`, tooltip: `v${plugin.version}`, icon: metaChipIconFor('version') }
-      : null,
-    plugin.category && plugin.category !== 'Unknown'
-      ? { key: 'category', label: plugin.category, tooltip: plugin.category, icon: metaChipIconFor('category') }
-      : null,
-  ].filter((chip): chip is MetaChip => chip !== null);
+  const {
+    isCrashed,
+    isActive,
+    statusText,
+    bypassButtonColor,
+    bypassButtonBg,
+    bypassButtonBorder,
+    color: statusDotColor,
+  } = getPluginStatusPalette(plugin, crashStatus, token);
+  const effectiveCrashStatus = crashStatus ?? { type: 'Ok' as const };
 
   // Determine launch button appearance
   const launchButtonProps = (() => {
@@ -352,7 +152,7 @@ function PluginCard({
       className={`glass-card transition-colors ${plugin.bypassed ? 'opacity-70' : ''}`}
       style={{
         borderRadius: 12,
-        background: isCrashed ? statusPalette.bg : token.colorBgElevated,
+        background: isCrashed ? 'rgba(255,77,79,0.12)' : token.colorBgElevated,
         display: 'flex',
         flexDirection: 'column',
         height: 174,
@@ -376,18 +176,18 @@ function PluginCard({
               disabled={isControlLocked}
               value={editName}
               onChange={e => setEditName(e.target.value)}
-              onPressEnter={handleRenameConfirm}
-              onKeyDown={e => e.key === 'Escape' && handleRenameCancel()}
+              onPressEnter={confirmRename}
+              onKeyDown={e => e.key === 'Escape' && cancelRename()}
               style={{ flex: 1, fontWeight: 600, fontSize: 14 }}
               suffix={
                 <Space size={2}>
                   <CheckOutlined
                     style={{ color: token.colorSuccess, cursor: 'pointer' }}
-                    onClick={handleRenameConfirm}
+                    onClick={confirmRename}
                   />
                   <CloseCircleOutlined
                     style={{ color: token.colorTextSecondary, cursor: 'pointer' }}
-                    onClick={handleRenameCancel}
+                    onClick={cancelRename}
                   />
                 </Space>
               }
@@ -417,11 +217,7 @@ function PluginCard({
                 <Tooltip title="Rename">
                   <EditOutlined
                     style={{ fontSize: 12, color: token.colorTextQuaternary, cursor: 'pointer', flexShrink: 0, marginTop: 1 }}
-                    onClick={() => {
-                      if (isControlLocked) return;
-                      setEditName(plugin.name);
-                      setIsRenaming(true);
-                    }}
+                    onClick={startRenaming}
                   />
                 </Tooltip>
                 {onDragHandlePointerDown && (
@@ -452,31 +248,7 @@ function PluginCard({
         </div>
 
         {/* ── Meta tags ───────────────────────────────────────────── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', overflow: 'visible', maxHeight: 30, width: '100%', paddingTop: 1 }}>
-          {metaChips.map((chip) => (
-            <Tooltip title={chip.tooltip ?? chip.label} key={chip.key}>
-              <Tag
-                color="default"
-                style={metaChipStyleFor(chip)}
-              >
-                <span
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 3,
-                    minWidth: 0,
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 8, opacity: 0.88 }}>
-                    {chip.icon}
-                  </span>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chip.label}</span>
-                </span>
-              </Tag>
-            </Tooltip>
-          ))}
-        </div>
+        <PluginMetaChips plugin={plugin} />
 
         {/* ── Crash status ────────────────────────────────────────── */}
         {isCrashed ? (
@@ -497,7 +269,7 @@ function PluginCard({
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {effectiveCrashStatus.type === 'Timeout'
                 ? 'TIMEOUT'
-                : `${effectiveCrashStatus.type}: ${effectiveCrashStatus.data ?? ''}`}
+                : `${effectiveCrashStatus.type}: ${'data' in effectiveCrashStatus ? effectiveCrashStatus.data : ''}`}
             </span>
           </div>
         ) : null}
@@ -511,7 +283,7 @@ function PluginCard({
               alignItems: 'center',
               gap: 5,
               fontSize: 8.5,
-              color: statusTextColor,
+              color: statusDotColor,
             }}
           >
             <span
@@ -602,33 +374,11 @@ function PluginCard({
       </div>
     </Card>
 
-    {showBuiltinGui && plugin.format === 'builtin' && plugin.plugin_id === 'builtin::noise_suppressor' && (
-      <Suspense fallback={null}>
-        <NoiseSuppressorGui
-          plugin={plugin}
-          isOpen={showBuiltinGui}
-          onClose={() => setShowBuiltinGui(false)}
-        />
-      </Suspense>
-    )}
-    {showBuiltinGui && plugin.format === 'builtin' && plugin.plugin_id === 'builtin::compressor' && (
-      <Suspense fallback={null}>
-        <CompressorGui
-          plugin={plugin}
-          isOpen={showBuiltinGui}
-          onClose={() => setShowBuiltinGui(false)}
-        />
-      </Suspense>
-    )}
-    {showBuiltinGui && plugin.format === 'builtin' && plugin.plugin_id === 'builtin::voice' && (
-      <Suspense fallback={null}>
-        <VoiceGui
-          plugin={plugin}
-          isOpen={showBuiltinGui}
-          onClose={() => setShowBuiltinGui(false)}
-        />
-      </Suspense>
-    )}
+    <BuiltinPluginGuiSwitch
+      plugin={plugin}
+      open={showBuiltinGui}
+      onClose={() => setShowBuiltinGui(false)}
+    />
   </>
   );
 }

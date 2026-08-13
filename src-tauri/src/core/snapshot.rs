@@ -12,16 +12,16 @@ pub fn build_chain_preset_from_manager(
     plugin_manager: &Arc<RwLock<PluginInstanceManager>>,
     name: impl Into<String>,
 ) -> Preset {
-    let chain = plugin_manager.read().get_instances();
-    let mut preset = Preset::new(name.into(), chain.clone());
+    // Single lock acquisition; instances and their info stay in chain order,
+    // so we can zip by position instead of re-searching by instance_id per item.
+    let instances = plugin_manager.read().get_instances_arc();
+    let chain: Vec<_> = instances.iter().map(|i| i.get_info()).collect();
+    let mut preset = Preset::new(name.into(), chain);
 
-    let manager = plugin_manager.read();
-    for (preset_plugin, info) in preset.plugin_chain.iter_mut().zip(chain.iter()) {
-        if let Some(instance) = manager.get_instance(&info.instance_id) {
-            let blob = instance.get_state_binary();
-            if !blob.is_empty() {
-                preset_plugin.vst3_state = Some(blob);
-            }
+    for (preset_plugin, instance) in preset.plugin_chain.iter_mut().zip(instances.iter()) {
+        let blob = instance.get_state_binary();
+        if !blob.is_empty() {
+            preset_plugin.vst3_state = Some(blob);
         }
     }
 

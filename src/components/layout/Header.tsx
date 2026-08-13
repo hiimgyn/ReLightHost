@@ -15,6 +15,7 @@ import {
   MutedOutlined,
   RetweetOutlined,
 } from "@ant-design/icons";
+import { useShallow } from "zustand/react/shallow";
 import { useThemeStore } from "../../stores/themeStore";
 import { useAudioStore } from "../../stores/audioStore";
 import { usePluginStore } from "../../stores/pluginStore";
@@ -99,8 +100,21 @@ export default function Header() {
     applyExternalMuteState,
     applyExternalLoopbackState,
     reloadDeviceConfig,
-  } = useAudioStore();
-  const { isChainInitializing, pluginChain, restoreTargetCount } = usePluginStore();
+  } = useAudioStore(useShallow((s) => ({
+    status: s.status,
+    isMuted: s.isMuted,
+    setMuted: s.setMuted,
+    isLoopbackEnabled: s.isLoopbackEnabled,
+    setLoopback: s.setLoopback,
+    applyExternalMuteState: s.applyExternalMuteState,
+    applyExternalLoopbackState: s.applyExternalLoopbackState,
+    reloadDeviceConfig: s.reloadDeviceConfig,
+  })));
+  const { isChainInitializing, pluginChain, restoreTargetCount } = usePluginStore(useShallow((s) => ({
+    isChainInitializing: s.isChainInitializing,
+    pluginChain: s.pluginChain,
+    restoreTargetCount: s.restoreTargetCount,
+  })));
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
   const [appVersion, setAppVersion] = useState("");

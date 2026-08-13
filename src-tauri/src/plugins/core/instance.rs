@@ -23,7 +23,7 @@ pub struct PluginInstance {
     plugin_info:    PluginInfo,
     /// User-set display name; None means use plugin_info.name.
     display_name:   RwLock<Option<String>>,
-    bypassed:       Arc<RwLock<bool>>,
+    bypassed:       Arc<AtomicBool>,
     parameters:     Arc<RwLock<Vec<PluginParameter>>>,
     /// VST3 audio processor (vst3-rs) — present when format == VST3.
     vst3_processor: Mutex<Option<Vst3Processor>>,
@@ -142,7 +142,7 @@ impl PluginInstance {
             instance_id,
             plugin_info,
             display_name:      RwLock::new(None),
-            bypassed:          Arc::new(RwLock::new(false)),
+            bypassed:          Arc::new(AtomicBool::new(false)),
             parameters:        Arc::new(RwLock::new(initial_params)),
             vst3_processor:    Mutex::new(vst3_processor),
             vst2_processor:    Mutex::new(vst2_processor),
@@ -163,12 +163,12 @@ impl PluginInstance {
 
     /// Set bypass state
     pub fn set_bypassed(&self, bypassed: bool) {
-        *self.bypassed.write() = bypassed;
+        self.bypassed.store(bypassed, Ordering::Release);
     }
 
-    /// Check if bypassed
+    /// Check if bypassed — lock-free, cheap enough to call every audio block.
     pub fn is_bypassed(&self) -> bool {
-        *self.bypassed.read()
+        self.bypassed.load(Ordering::Acquire)
     }
 
     pub fn request_close_gui(&self, timeout: Duration) -> bool {
@@ -690,6 +690,13 @@ impl PluginInstanceManager {
             .collect()
     }
 
+    /// Get all instances as their `Arc` handles, preserving chain order.
+    /// Lets callers pair each instance with its `PluginInstanceInfo` by index
+    /// (single pass) instead of looking each one up again by id.
+    pub fn get_instances_arc(&self) -> Vec<Arc<PluginInstance>> {
+        self.instances.read().clone()
+    }
+
     pub fn get_crash_statuses(&self) -> Vec<(String, crash_protection::PluginStatus)> {
         self.instances
             .read()
@@ -713,8 +720,11 @@ impl PluginInstanceManager {
     ///   INPUT → (non-bypassed) plugin 1 → plugin 2 → … → OUTPUT
     /// Called from the CPAL audio output callback via the process callback.
     pub fn process_chain_stereo(&self, left: &mut [f32], right: &mut [f32]) {
-        // Real-time safety: never block audio callback on a contended chain lock.
-        if let Some(instances) = self.instances.try_read() {
+        // Real-time safety: never block the audio callback for long. A tiny
+        // bounded wait (microseconds, vs. a ~10ms block) meaningfully cuts how
+        // often a reorder/swap in flight causes the whole block to pass
+        // through unprocessed, without risking an unbounded stall.
+        if let Some(instances) = self.instances.try_read_for(Duration::from_micros(80)) {
             for instance in instances.iter() {
                 instance.process_stereo(left, right);
             }

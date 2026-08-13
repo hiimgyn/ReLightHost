@@ -1,14 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { lazy, Suspense } from 'react';
-import { Card, Button, Empty, Space, Tooltip, message, theme, Typography } from 'antd';
+import { Card, Empty, Space, message, theme, Typography } from 'antd';
 import { listen } from '@tauri-apps/api/event';
-import { PlusOutlined, AudioOutlined, HolderOutlined, SwapOutlined, DeleteOutlined } from '@ant-design/icons';
+import { AudioOutlined, HolderOutlined, SwapOutlined } from '@ant-design/icons';
+import { useShallow } from 'zustand/react/shallow';
 import { usePluginStore } from '../../stores/pluginStore';
 import { useAudioStore } from '../../stores/audioStore';
 import CurvedArrow from './CurvedArrow';
 import PluginCard from './PluginCard';
-import { Popconfirm } from 'antd';
-import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
+import ChainEndpointCard from './ChainEndpointCard';
+import ChainToolbar from './ChainToolbar';
+import { usePluginDragDrop } from './usePluginDragDrop';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 const { Text } = Typography;
 const PluginLibrary = lazy(() => import('../plugin/PluginLibrary'));
 import * as tauri from '../../lib/tauri';
@@ -18,6 +21,8 @@ import { useVisibleInterval } from '../../lib/useVisibleInterval';
 export default function PluginChain() {
   const { token } = theme.useToken();
   const [messageApi, contextHolder] = message.useMessage();
+  // Selector-scoped subscriptions — only re-render when these specific fields
+  // change, instead of on every store update (e.g. mutationCount/isScanning).
   const {
     pluginChain,
     crashStatusByInstanceId,
@@ -28,32 +33,48 @@ export default function PluginChain() {
     fetchChain,
     fetchCrashStatuses,
     isChainInitializing,
-  } = usePluginStore();
+  } = usePluginStore(useShallow((s) => ({
+    pluginChain: s.pluginChain,
+    crashStatusByInstanceId: s.crashStatusByInstanceId,
+    removeFromChain: s.removeFromChain,
+    toggleBypass: s.toggleBypass,
+    reorderChain: s.reorderChain,
+    swapChain: s.swapChain,
+    fetchChain: s.fetchChain,
+    fetchCrashStatuses: s.fetchCrashStatuses,
+    isChainInitializing: s.isChainInitializing,
+  })));
   const {
     devices,
     selectedInputDevice,
     selectedDevice,
     selectedVirtualOutputDevice,
-  } = useAudioStore();
+  } = useAudioStore(useShallow((s) => ({
+    devices: s.devices,
+    selectedInputDevice: s.selectedInputDevice,
+    selectedDevice: s.selectedDevice,
+    selectedVirtualOutputDevice: s.selectedVirtualOutputDevice,
+  })));
   const [showPluginLibrary, setShowPluginLibrary] = useState(false);
   const [isDeleteAllBusy, setIsDeleteAllBusy] = useState(false);
   const addLocked = isChainInitializing || isDeleteAllBusy;
 
-  // draggedIndex: which card is being dragged
-  // insertBefore: the index BEFORE which the dragged card will be inserted
-  //               (0 = before first, pluginChain.length = after last)
-  // draggedIndex: which card is being dragged
-  // insertBefore: index BEFORE which the dragged card will be inserted
-  //               (0 = before first,  pluginChain.length = after last)
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-  const [insertBefore, setInsertBefore] = useState<number | null>(null);
-  const [swapTargetIndex, setSwapTargetIndex] = useState<number | null>(null);
-  const [dragPointer, setDragPointer] = useState<{ x: number; y: number } | null>(null);
-  const [dragLabel, setDragLabel] = useState('');
-  const draggingRef = useRef(false);
-  const draggedIndexRef = useRef<number | null>(null);
-  const insertBeforeRef = useRef<number | null>(null);
-  const swapTargetIndexRef = useRef<number | null>(null);
+  const {
+    draggedIndex,
+    swapTargetIndex,
+    dragPointer,
+    dragLabel,
+    draggingRef,
+    startPointerDrag,
+    showInsertAt,
+  } = usePluginDragDrop({
+    pluginChain,
+    isChainInitializing,
+    isDeleteAllBusy,
+    reorderChain,
+    swapChain,
+    messageApi,
+  });
 
   const getDeviceName = (deviceId: string | null) => {
     if (!deviceId) return 'None';
@@ -63,10 +84,6 @@ export default function PluginChain() {
   const inputDeviceName = getDeviceName(selectedInputDevice);
   const outputDeviceName = getDeviceName(selectedDevice);
   const virtualOutputDeviceName = getDeviceName(selectedVirtualOutputDevice);
-
-  useEffect(() => {
-    insertBeforeRef.current = insertBefore;
-  }, [insertBefore]);
 
   useEffect(() => {
     const unlistenPromise = listen<PluginChainChangedEvent>('plugin-chain-changed', (event) => {
@@ -82,11 +99,29 @@ export default function PluginChain() {
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [fetchChain, fetchCrashStatuses]);
+  }, [fetchChain, fetchCrashStatuses, draggingRef]);
 
   useVisibleInterval(() => {
     fetchCrashStatuses();
   }, 10000, pluginChain.length > 0, [pluginChain.length, fetchCrashStatuses]);
+
+  // Stable callback identities (keyed by instanceId passed at call time) so
+  // PluginCard's memo() isn't defeated by a fresh closure every render.
+  const handleRemovePlugin = useCallback(async (instanceId: string) => {
+    await removeFromChain(instanceId);
+  }, [removeFromChain]);
+
+  const handleToggleBypassPlugin = useCallback(async (instanceId: string) => {
+    await toggleBypass(instanceId);
+  }, [toggleBypass]);
+
+  const handleLaunchPlugin = useCallback(async (instanceId: string) => {
+    try {
+      await tauri.launchPlugin(instanceId);
+    } catch {
+      messageApi.error('Failed to launch plugin');
+    }
+  }, [messageApi]);
 
   const handleContextMenu = (e: ReactMouseEvent) => {
     e.preventDefault();
@@ -115,231 +150,17 @@ export default function PluginChain() {
     }
   };
 
-  // Pointer-based drag session (more reliable than HTML5 DnD inside Tauri WebView).
-  const startPointerDrag = (e: ReactPointerEvent, index: number) => {
-    if (isChainInitializing || isDeleteAllBusy) return;
-    if (e.button !== 0) return;
-    e.preventDefault();
-
-    draggingRef.current = true;
-    draggedIndexRef.current = index;
-    setDragLabel(pluginChain[index]?.name ?? 'Plugin');
-    setDragPointer({ x: e.clientX, y: e.clientY });
-    setDraggedIndex(index);
-    setInsertBefore(null);
-    setSwapTargetIndex(null);
-    swapTargetIndexRef.current = null;
-
-    const onPointerMove = (ev: globalThis.PointerEvent) => {
-      if (draggedIndexRef.current === null) return;
-      setDragPointer({ x: ev.clientX, y: ev.clientY });
-
-      const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
-      
-      // Check if hovering over arrow element
-      const arrowEl = el?.closest('[data-plugin-arrow]') as HTMLElement | null;
-      if (arrowEl) {
-        const arrowPosRaw = arrowEl.dataset.pluginArrowPos;
-        if (arrowPosRaw != null) {
-          const pos = Number(arrowPosRaw);
-          if (Number.isFinite(pos) && insertBeforeRef.current !== pos) {
-            insertBeforeRef.current = pos;
-            setInsertBefore(pos);
-          }
-        }
-        if (swapTargetIndexRef.current !== null) {
-          swapTargetIndexRef.current = null;
-          setSwapTargetIndex(null);
-        }
-        return;
-      }
-
-      const cardEl = el?.closest('[data-plugin-card-index]') as HTMLElement | null;
-      if (!cardEl) {
-        if (insertBeforeRef.current !== null) {
-          insertBeforeRef.current = null;
-          setInsertBefore(null);
-        }
-        if (swapTargetIndexRef.current !== null) {
-          swapTargetIndexRef.current = null;
-          setSwapTargetIndex(null);
-        }
-        return;
-      }
-
-      const indexRaw = cardEl.dataset.pluginCardIndex;
-      if (indexRaw == null) return;
-      const cardIndex = Number(indexRaw);
-      if (!Number.isFinite(cardIndex)) return;
-
-      const rect = cardEl.getBoundingClientRect();
-      
-      // Check if pointer is within reasonable Y range of the card (with tolerance for multi-row layouts)
-      const tolerance = 60;
-      const isWithinVerticalBounds = 
-        ev.clientY >= rect.top - tolerance && 
-        ev.clientY <= rect.bottom + tolerance;
-      
-      if (!isWithinVerticalBounds) {
-        if (insertBeforeRef.current !== null) {
-          insertBeforeRef.current = null;
-          setInsertBefore(null);
-        }
-        if (swapTargetIndexRef.current !== null) {
-          swapTargetIndexRef.current = null;
-          setSwapTargetIndex(null);
-        }
-        return;
-      }
-
-      const from = draggedIndexRef.current;
-      if (from === null) return;
-
-      // Hovering a card means swap target. Hovering an arrow means insert target.
-      if (insertBeforeRef.current !== null) {
-        insertBeforeRef.current = null;
-        setInsertBefore(null);
-      }
-      const nextSwapTarget = cardIndex === from ? null : cardIndex;
-      if (swapTargetIndexRef.current !== nextSwapTarget) {
-        swapTargetIndexRef.current = nextSwapTarget;
-        setSwapTargetIndex(nextSwapTarget);
-      }
-    };
-
-    const stopPointerDrag = async () => {
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', onPointerUp);
-      window.removeEventListener('pointercancel', onPointerCancel);
-
-      const from = draggedIndexRef.current;
-      const pos = insertBeforeRef.current;
-      const swapTo = swapTargetIndexRef.current;
-
-      draggingRef.current = false;
-      draggedIndexRef.current = null;
-      insertBeforeRef.current = null;
-      swapTargetIndexRef.current = null;
-      setDragPointer(null);
-      setDragLabel('');
-      setDraggedIndex(null);
-      setInsertBefore(null);
-      setSwapTargetIndex(null);
-
-      if (from === null) return;
-
-      try {
-        if (swapTo !== null && swapTo !== from) {
-          await swapChain(from, swapTo);
-          messageApi.success('Plugins swapped');
-          return;
-        }
-
-        if (pos === null) return;
-        const to = pos > from ? pos - 1 : pos;
-        if (from === to) return;
-
-        await reorderChain(from, to);
-        messageApi.success('Plugin order updated');
-      } catch (error) {
-        messageApi.error('Failed to reorder plugins');
-        console.error(error);
-      }
-    };
-
-    const onPointerUp = () => { void stopPointerDrag(); };
-    const onPointerCancel = () => { void stopPointerDrag(); };
-
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
-    window.addEventListener('pointercancel', onPointerCancel);
-  };
-
-  //  Visual indicator helpers 
-  const showInsertAt = (pos: number) =>
-    draggedIndex !== null &&
-    insertBefore === pos &&
-    insertBefore !== draggedIndex &&
-    insertBefore !== draggedIndex + 1;
-
   return (
     <div className="h-full flex flex-col min-h-0 signal-chain-container">
       {contextHolder}
-      {/* Toolbar */}
-      <div
-        className="glass-panel"
-        style={{
-          marginBottom: 0,
-          padding: '14px 18px',
-          borderRadius: `${token.borderRadiusLG * 1.25}px ${token.borderRadiusLG * 1.25}px 0 0`,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 16,
-          flexWrap: 'wrap',
-          background: 'var(--rh-surface-soft-gradient)',
-          border: '1px solid var(--rh-surface-soft-border-strong)',
-          borderBottom: 'none',
-          boxShadow: 'var(--rh-chain-toolbar-shadow)',
-        }}
-      >
-        <Space orientation="vertical" size={2}>
-          <Text
-            strong
-            style={{
-              fontSize: 20,
-              fontWeight: 700,
-              letterSpacing: '-0.02em',
-              color: token.colorText,
-              margin: 0,
-              display: 'block',
-            }}
-          >
-            Signal chain
-          </Text>
-          <Text style={{ fontSize: 12, color: token.colorTextTertiary, margin: 0 }}>
-            Drag cards to reorder · right-click empty area to add
-          </Text>
-        </Space>
-
-        <Space size="middle" wrap>
-          <Tooltip title={isChainInitializing ? 'Preparing…' : 'Add plugin'}>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              size="middle"
-              className="btn-pill"
-              loading={addLocked}
-              disabled={addLocked}
-              onClick={() => setShowPluginLibrary(true)}
-              aria-label={isChainInitializing ? 'Preparing plugin library' : 'Add plugin'}
-            >
-              Add Plugin
-            </Button>
-          </Tooltip>
-
-          <Popconfirm
-            title="Remove all plugins from the chain?"
-            onConfirm={handleDeleteAll}
-            okText="Remove"
-            cancelText="Cancel"
-          >
-            <Button
-              size="middle"
-              type="default"
-              icon={<DeleteOutlined />}
-              loading={isDeleteAllBusy}
-              disabled={pluginChain.length === 0 || isDeleteAllBusy || isChainInitializing}
-              className="btn-pill btn-tonal"
-              style={{
-                borderColor: 'rgba(99,103,255,0.2)',
-                color: token.colorTextSecondary,
-              }}
-            >
-            </Button>
-          </Popconfirm>
-        </Space>
-      </div>
+      <ChainToolbar
+        isChainInitializing={isChainInitializing}
+        addLocked={addLocked}
+        isDeleteAllBusy={isDeleteAllBusy}
+        pluginChainLength={pluginChain.length}
+        onAddPlugin={() => setShowPluginLibrary(true)}
+        onDeleteAll={handleDeleteAll}
+      />
 
       {/* Plugin Chain Area */}
       <Card
@@ -397,84 +218,7 @@ export default function PluginChain() {
                 }}
               >
 
-            {/* IN node */}
-            <Tooltip title={inputDeviceName}>
-              <div
-                style={{
-                  position: 'relative',
-                  width: 148,
-                  flexShrink: 0,
-                  borderRadius: 18,
-                }}
-              >
-                <Card
-                  className="glass-card"
-                  style={{ width: '100%', height: 145, flexShrink: 0, overflow: 'hidden' }}
-                  styles={{ body: {
-                    position: 'relative',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'stretch',
-                    justifyContent: 'space-between',
-                    padding: 12,
-                    height: '100%',
-                  
-                    background: `linear-gradient(160deg, ${token.colorSuccessBg} 0%, ${token.colorBgContainer} 55%, ${token.colorFillQuaternary} 100%)`,
-                    border: `1px solid ${token.colorSuccessBorder}`,
-                    boxShadow: `0 14px 32px rgba(2,6,23,0.42), inset 0 1px 0 rgba(255,255,255,0.06)`,
-                  } }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: 999,
-                          background: token.colorSuccess,
-                          boxShadow: `0 0 12px ${token.colorSuccess}`,
-                        }}
-                      />
-                      <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.8, color: token.colorTextSecondary }}>
-                        INPUT
-                      </span>
-                    </div>
-                    <span
-                      style={{
-                        padding: '3px 8px',
-                        borderRadius: 999,
-                        background: token.colorSuccessBgHover,
-                        color: token.colorSuccess,
-                        fontSize: 10,
-                        fontWeight: 700,
-                        letterSpacing: 0.4,
-                      }}
-                    >
-                      IN
-                    </span>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
-                    <div
-                      style={{
-                        width: 64,
-                        height: 64,
-                        borderRadius: '50%',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        background: `radial-gradient(circle at 35% 35%, ${token.colorSuccessHover} 0%, ${token.colorSuccessBgHover} 45%, ${token.colorBgContainer} 100%)`,
-                        border: `1px solid ${token.colorSuccessBorder}`,
-                        boxShadow: `0 10px 24px ${token.colorSuccessBg}`,
-                      }}
-                    >
-                      <AudioOutlined style={{ fontSize: 22, color: token.colorSuccess }} />
-                    </div>
-                  </div>
-
-                </Card>
-              </div>
-            </Tooltip>
+            <ChainEndpointCard variant="in" tooltipTitle={inputDeviceName} />
 
             {/* Plugin cards with drop zones between theme*/}
             {pluginChain.map((plugin, index) => {
@@ -499,7 +243,7 @@ export default function PluginChain() {
                     transition: 'transform 120ms ease, background 120ms ease',
                   }}
                 >
-                  <CurvedArrow color={showInsertAt(index) ? token.colorPrimary : token.colorTextQuaternary} />
+                  <CurvedArrow color={showInsertAt(index) ? token.colorPrimary : undefined} />
                 </div>
 
                 {/* Card wrapper — full drop target */}
@@ -529,18 +273,12 @@ export default function PluginChain() {
                       plugin={plugin}
                       crashStatus={crashStatusByInstanceId[plugin.instance_id]}
                       interactionLocked={isChainInitializing || isDeleteAllBusy || draggedIndex !== null}
-                      onRemove={async () => { await removeFromChain(plugin.instance_id); }}
-                      onToggleBypass={async () => { await toggleBypass(plugin.instance_id); }}
+                      onRemove={handleRemovePlugin}
+                      onToggleBypass={handleToggleBypassPlugin}
                       onCrashStatusChanged={fetchCrashStatuses}
                       onDragHandlePointerDown={(e) => startPointerDrag(e, index)}
                       isDragging={draggedIndex === index}
-                      onLaunch={async () => {
-                        try {
-                          await tauri.launchPlugin(plugin.instance_id);
-                        } catch {
-                          messageApi.error('Failed to launch plugin');
-                        }
-                      }}
+                      onLaunch={handleLaunchPlugin}
                     />
                   </div>
                 </div>
@@ -565,88 +303,13 @@ export default function PluginChain() {
                 transition: 'transform 120ms ease, background 120ms ease',
               }}
             >
-              <CurvedArrow color={showInsertAt(pluginChain.length) ? token.colorPrimary : token.colorTextQuaternary} />
+              <CurvedArrow color={showInsertAt(pluginChain.length) ? token.colorPrimary : undefined} />
             </div>
 
-            {/* OUT node */}
-            <Tooltip
-          
-              title={<span>Output: {outputDeviceName} <br />Virtual Output: {virtualOutputDeviceName}</span>}>
-              <div
-                style={{
-                  position: 'relative',
-                  width: 148,
-                  flexShrink: 0,
-                  borderRadius: 18,
-                }}
-              >
-                <Card
-                  className="glass-card"
-                  style={{ width: '100%', height: 145, flexShrink: 0, overflow: 'hidden' }}
-                  styles={{ body: {
-                    position: 'relative',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'stretch',
-                    justifyContent: 'space-between',
-                    padding: 12,
-                    height: '100%',
-                   
-                    background: `linear-gradient(160deg, ${token.colorInfoBg} 0%, ${token.colorBgContainer} 55%, ${token.colorFillQuaternary} 100%)`,
-                    border: `1px solid ${token.colorInfoBorder}`,
-                    boxShadow: 'none',
-                  } }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: 999,
-                          background: token.colorInfo,
-                          boxShadow: 'none',
-                        }}
-                      />
-                      <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.8, color: token.colorTextSecondary }}>
-                        OUTPUT
-                      </span>
-                    </div>
-                    <span
-                      style={{
-                        padding: '3px 8px',
-                        borderRadius: 999,
-                        background: token.colorInfoBgHover,
-                        color: token.colorInfo,
-                        fontSize: 10,
-                        fontWeight: 700,
-                        letterSpacing: 0.4,
-                      }}
-                    >
-                      OUT
-                    </span>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
-                    <div
-                      style={{
-                        width: 64,
-                        height: 64,
-                        borderRadius: '50%',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        background: `radial-gradient(circle at 35% 35%, ${token.colorInfoHover} 0%, ${token.colorInfoBgHover} 45%, ${token.colorBgContainer} 100%)`,
-                        border: `1px solid ${token.colorInfoBorder}`,
-                        boxShadow: 'none',
-                      }}
-                    >
-                      <AudioOutlined style={{ fontSize: 22, color: token.colorInfo }} />
-                    </div>
-                  </div>
-                </Card>
-              </div>
-            </Tooltip>
+            <ChainEndpointCard
+              variant="out"
+              tooltipTitle={<span>Output: {outputDeviceName} <br />Virtual Output: {virtualOutputDeviceName}</span>}
+            />
 
               </div>
             </div>

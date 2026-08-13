@@ -14,10 +14,10 @@
   --rh-minimal-ink: #1F2333;
   --rh-minimal-slate: #8B92A8;
   --rh-minimal-mist: #EEF1FA;
-  --rh-glass-bg: rgba(255, 255, 255, 0.16);
-  --rh-glass-bg-strong: rgba(255, 255, 255, 0.22);
-  --rh-glass-border: rgba(255, 255, 255, 0.34);
-  --rh-glass-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --rh-glass-bg: rgba(255, 255, 255, 0.7);
+  --rh-glass-bg-strong: rgba(255, 255, 255, 0.92);
+  --rh-glass-border: rgba(72, 78, 200, 0.5);
+  --rh-glass-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
   --rh-glass-inset:
     inset 0 1px 0 rgba(255, 255, 255, 0.56),
     inset 0 -1px 0 rgba(255, 255, 255, 0.14),
@@ -36,12 +36,12 @@
   --rh-divider-subtle: rgba(0, 0, 0, 0.14);
   --rh-text-muted: rgba(0, 0, 0, 0.52);
   --rh-inset-soft: inset 0 1px 0 rgba(255,255,255,0.16);
-  --rh-header-shadow: 0 1px 4px rgba(15,23,42,0.04), inset 0 1px 0 rgba(255,255,255,0.12);
-  --rh-footer-shadow: 0 -1px 4px rgba(15,23,42,0.04), inset 0 1px 0 rgba(255,255,255,0.12);
-  --rh-chain-toolbar-shadow: 0 4px 10px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.12);
-  --rh-chain-panel-shadow: 0 4px 12px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.12);
-  --rh-chain-well-bg: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.14) 100%);
-  --rh-chain-well-border: rgba(0,0,0,0.15);
+  --rh-header-shadow: 0 1px 4px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.12);
+  --rh-footer-shadow: 0 -1px 4px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.12);
+  --rh-chain-toolbar-shadow: 0 4px 12px rgba(15,23,42,0.09), inset 0 1px 0 rgba(255,255,255,0.12);
+  --rh-chain-panel-shadow: 0 4px 14px rgba(15,23,42,0.1), inset 0 1px 0 rgba(255,255,255,0.12);
+  --rh-chain-well-bg: linear-gradient(135deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0.38) 100%);
+  --rh-chain-well-border: rgba(31,35,51,0.2);
   --rh-chain-insert-bg: linear-gradient(135deg, rgba(99,103,255,0.26), rgba(132,148,255,0.22));
 
   font-family: 'Inter', 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
@@ -161,7 +161,9 @@ body {
 .glass-card.ant-drawer-content {
   background: linear-gradient(135deg, var(--rh-glass-bg-strong) 0%, var(--rh-glass-bg) 100%) !important;
   border: 1px solid var(--rh-glass-border) !important;
-  box-shadow: none !important;
+  /* Border alone reads too faint on pale backgrounds (esp. light theme) —
+     a real shadow gives cards elevation-based separation too. */
+  box-shadow: var(--rh-glass-shadow) !important;
 }
 
 .glass-panel::before,

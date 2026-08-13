@@ -83,9 +83,13 @@ impl VUMeter {
     /// `now` should be `Instant::now()` captured once per audio block by the caller
     /// to avoid a second syscall inside this function.
     pub fn update(&self, left: &[f32], right: &[f32], now: Instant) {
-        // Peak
-        let peak_l = left.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        let peak_r = right.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        // Single pass per channel: accumulate peak (max abs) and sum-of-squares (for RMS) together.
+        let (peak_l, sq_sum_l) = left.iter().fold((0.0f32, 0.0f32), |(peak, sq), s| {
+            (peak.max(s.abs()), sq + s * s)
+        });
+        let (peak_r, sq_sum_r) = right.iter().fold((0.0f32, 0.0f32), |(peak, sq), s| {
+            (peak.max(s.abs()), sq + s * s)
+        });
 
         // Decay then clamp new peak up
         let decayed_l = (load_f32(&self.left_peak) * self.decay_rate).max(peak_l);
@@ -95,12 +99,8 @@ impl VUMeter {
 
         // RMS smoothing
         const RMS_SMOOTH: f32 = 0.8;
-        let rms_l = if !left.is_empty() {
-            (left.iter().map(|s| s * s).sum::<f32>() / left.len() as f32).sqrt()
-        } else { 0.0 };
-        let rms_r = if !right.is_empty() {
-            (right.iter().map(|s| s * s).sum::<f32>() / right.len() as f32).sqrt()
-        } else { 0.0 };
+        let rms_l = if !left.is_empty() { (sq_sum_l / left.len() as f32).sqrt() } else { 0.0 };
+        let rms_r = if !right.is_empty() { (sq_sum_r / right.len() as f32).sqrt() } else { 0.0 };
         store_f32(&self.left_rms,  load_f32(&self.left_rms)  * RMS_SMOOTH + rms_l * (1.0 - RMS_SMOOTH));
         store_f32(&self.right_rms, load_f32(&self.right_rms) * RMS_SMOOTH + rms_r * (1.0 - RMS_SMOOTH));
 
@@ -177,14 +177,14 @@ mod tests {
         
         // Silence
         let silence = vec![0.0; 512];
-        vu.update(&silence, &silence);
+        vu.update(&silence, &silence, Instant::now());
         let data = vu.get_data();
         assert!(data.left.peak < 0.001);
         assert!(data.right.peak < 0.001);
-        
+
         // Full scale
         let full = vec![1.0; 512];
-        vu.update(&full, &full);
+        vu.update(&full, &full, Instant::now());
         let data = vu.get_data();
         assert!(data.left.peak > 0.99);
         assert!(data.right.peak > 0.99);
@@ -206,13 +206,13 @@ mod tests {
         
         // Send peak
         let peak = vec![0.8; 256];
-        vu.update(&peak, &peak);
+        vu.update(&peak, &peak, Instant::now());
         let data = vu.get_data();
         assert!(data.left.peak_hold > 0.75);
-        
+
         // Send silence - peak hold should remain
         let silence = vec![0.0; 256];
-        vu.update(&silence, &silence);
+        vu.update(&silence, &silence, Instant::now());
         let data = vu.get_data();
         assert!(data.left.peak_hold > 0.75, "Peak hold should persist");
     }

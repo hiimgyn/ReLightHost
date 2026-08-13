@@ -1,18 +1,16 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, memo } from 'react';
-import { Drawer, Input, Button, Tabs, Tag, Space, Typography, Tooltip, Empty, Spin } from 'antd';
-import { 
-  SearchOutlined, 
-  ReloadOutlined, 
-  SettingOutlined, 
-  InfoCircleOutlined,
-  PlusCircleOutlined,
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { Drawer, Input, Button, Tabs, Space, Typography, Tooltip, Empty, Spin } from 'antd';
+import {
+  SearchOutlined,
+  ReloadOutlined,
+  SettingOutlined,
   AppstoreOutlined,
-  DownOutlined,
-  RightOutlined,
 } from '@ant-design/icons';
 import { usePluginStore } from '../../stores/pluginStore';
 import type { PluginInfo } from '../../lib/types';
 import { theme } from 'antd';
+import PluginAuthorGroup from './PluginAuthorGroup';
+import { usePluginLibraryFilters } from './usePluginLibraryFilters';
 
 const PluginSettings = lazy(() => import('./PluginSettings'));
 const PluginInfoModal = lazy(() => import('./PluginInfoModal'));
@@ -23,84 +21,6 @@ interface PluginLibraryProps {
   isOpen: boolean;
   onClose: () => void;
 }
-
-interface PluginListItemProps {
-  plugin: PluginInfo;
-  isMutating: boolean;
-  addLocked: boolean;
-  token: ReturnType<typeof theme.useToken>['token'];
-  getFormatColor: (format: string) => string;
-  onSelect: (plugin: PluginInfo) => void;
-  onAdd: (plugin: PluginInfo) => void;
-}
-
-const PluginListItem = memo(function PluginListItem({
-  plugin,
-  isMutating,
-  addLocked,
-  token,
-  getFormatColor,
-  onSelect,
-  onAdd,
-}: PluginListItemProps) {
-  return (
-    <div
-      className="minimal-surface plugin-list-item"
-      style={{
-        padding: '12px 16px',
-        marginBottom: 8,
-        background: token.colorBgElevated,
-        border: `1px solid ${token.colorBorderSecondary}`,
-        borderRadius: 10,
-        cursor: 'pointer',
-        transition: 'border-color 160ms ease, opacity 160ms ease',
-      }}
-      onClick={() => onSelect(plugin)}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <Text strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin.name}</Text>
-            <Text type="secondary" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin.manufacture}</Text>
-            <div style={{ marginTop: 6 }}>
-              <Space size={4} wrap>
-                <Tag color={getFormatColor(plugin.format)}>{plugin.format.toUpperCase()}</Tag>
-                <Tag>{plugin.category}</Tag>
-                {plugin.version && <Tag color="default">v{plugin.version}</Tag>}
-              </Space>
-            </div>
-          </div>
-        </div>
-        <div style={{ marginLeft: 12, display: 'flex', gap: 8 }}>
-          <Tooltip title="Plugin Info" key="info">
-            <Button
-              type="text"
-              size="small"
-              icon={<InfoCircleOutlined />}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect(plugin);
-              }}
-            />
-          </Tooltip>
-          <Tooltip title="Add to Chain" key="add">
-            <Button
-              type="primary"
-              size="small"
-              icon={<PlusCircleOutlined />}
-              loading={isMutating}
-              disabled={addLocked}
-              onClick={(e) => {
-                e.stopPropagation();
-                onAdd(plugin);
-              }}
-            />
-          </Tooltip>
-        </div>
-      </div>
-    </div>
-  );
-});
 
 export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   const { token } = theme.useToken();
@@ -118,6 +38,12 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [selectedPlugin, setSelectedPlugin] = useState<PluginInfo | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  const { filteredPlugins, groupedByAuthor, authorKeys, tabItems } = usePluginLibraryFilters({
+    availablePlugins,
+    searchQuery,
+    filterFormat,
+  });
 
   const handleSelectPlugin = useCallback((plugin: PluginInfo) => {
     setSelectedPlugin(plugin);
@@ -138,80 +64,6 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
     }
   }, [isOpen, availablePlugins.length, scanPlugins]);
 
-  const filteredPlugins = useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    return availablePlugins.filter(plugin => {
-      const matchesSearch = plugin.name.toLowerCase().includes(query) ||
-                           plugin.manufacture.toLowerCase().includes(query);
-      const matchesFormat = filterFormat === 'all' || plugin.format === filterFormat;
-      return matchesSearch && matchesFormat;
-    });
-  }, [availablePlugins, filterFormat, searchQuery]);
-
-  // Group plugins by manufacture/author
-  const groupedByAuthor = useMemo(() => filteredPlugins.reduce((acc: Record<string, PluginInfo[]>, plugin) => {
-    const author = plugin.manufacture?.trim() || 'Unknown';
-    if (!acc[author]) acc[author] = [];
-    acc[author].push(plugin);
-    return acc;
-  }, {} as Record<string, PluginInfo[]>), [filteredPlugins]);
-  const authorKeys = useMemo(() => Object.keys(groupedByAuthor).sort((a, b) => a.localeCompare(b)), [groupedByAuthor]);
-
-  const builtinCount = useMemo(() => availablePlugins.filter(p => p.format === 'builtin').length, [availablePlugins]);
-  const vst3Count = useMemo(() => availablePlugins.filter(p => p.format === 'vst3').length, [availablePlugins]);
-  const vstCount = useMemo(() => availablePlugins.filter(p => p.format === 'vst').length, [availablePlugins]);
-  const clapCount = useMemo(() => availablePlugins.filter(p => p.format === 'clap').length, [availablePlugins]);
-
-  const getFormatColor = (format: string) => {
-    switch (format) {
-      case 'vst3': return 'purple';
-      case 'vst': return 'blue';
-      case 'clap': return 'green';
-      case 'builtin': return 'cyan';
-      default: return 'default';
-    }
-  };
-
-  const getAuthorLabel = (author: string) => {
-    return author === 'Unknown' ? 'Unknown folder' : author;
-  };
-
-  const getAuthorAccent = (author: string) => {
-    if (author === 'Unknown') return token.colorTextQuaternary;
-    const first = author.trim().charAt(0).toUpperCase();
-    const code = first ? first.charCodeAt(0) : 0;
-    const palette = [token.colorPrimary, token.colorInfo, token.colorSuccess, token.colorWarning];
-    return palette[code % palette.length];
-  };
-
-  const tabItems = useMemo(() => [
-    {
-      key: 'all',
-      label: `All (${availablePlugins.length})`,
-      children: null,
-    },
-    {
-      key: 'builtin',
-      label: `Built-in (${builtinCount})`,
-      children: null,
-    },
-    {
-      key: 'vst3',
-      label: `VST3 (${vst3Count})`,
-      children: null,
-    },
-    {
-      key: 'vst',
-      label: `VST2 (${vstCount})`,
-      children: null,
-    },
-    {
-      key: 'clap',
-      label: `CLAP (${clapCount})`,
-      children: null,
-    },
-  ], [availablePlugins.length, builtinCount, clapCount, vst3Count, vstCount]);
-
   return (
     <>
       <Drawer
@@ -229,9 +81,9 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
         extra={
           <Space>
             <Tooltip title="Plugin Scan Settings">
-              <Button 
-                type="text" 
-                icon={<SettingOutlined />} 
+              <Button
+                type="text"
+                icon={<SettingOutlined />}
                 onClick={() => setShowSettings(true)}
               />
             </Tooltip>
@@ -275,86 +127,19 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           </div>
         ) : filteredPlugins.length > 0 ? (
           <div style={{ marginTop: 16 }}>
-            {authorKeys.map((author) => {
-              const group = groupedByAuthor[author];
-              const isCollapsed = !!collapsedGroups[author];
-              const authorColor = getAuthorAccent(author);
-              return (
-                <div key={author} style={{ marginBottom: 12 }}>
-                  <div
-                    className="minimal-surface"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 12,
-                      padding: '10px 12px',
-                      borderRadius: 10,
-                      background: token.colorBgElevated,
-                      border: `1px solid ${token.colorBorderSecondary}`,
-                      boxShadow: 'none',
-                      cursor: 'pointer',
-                      transition: 'border-color 160ms ease',
-                    }}
-                    onClick={() => setCollapsedGroups(prev => ({ ...prev, [author]: !prev[author] }))}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
-                      <div
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: 8,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          background: `${authorColor}18`,
-                          border: `1px solid ${authorColor}33`,
-                          flexShrink: 0,
-                        }}
-                      >
-                        <AppstoreOutlined style={{ color: authorColor, fontSize: 14 }} />
-                      </div>
-                      <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <Space size={6} align="center" style={{ minWidth: 0 }}>
-                          <Text strong style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getAuthorLabel(author)}</Text>
-                          <Tag style={{ margin: 0 }}>{group.length}</Tag>
-                        </Space>
-                        <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.2 }}>
-                          {author === 'Unknown' ? 'Plugins without manufacturer metadata' : 'Grouped by manufacturer'}
-                        </Text>
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-                      <Text style={{ color: token.colorTextTertiary, fontSize: 12 }}>
-                        {isCollapsed ? 'Collapsed' : 'Expanded'}
-                      </Text>
-                      {isCollapsed ? (
-                        <RightOutlined style={{ color: token.colorTextQuaternary, fontSize: 11 }} />
-                      ) : (
-                        <DownOutlined style={{ color: token.colorTextQuaternary, fontSize: 11 }} />
-                      )}
-                    </div>
-                  </div>
-
-                  {!isCollapsed && (
-                    <div style={{ marginTop: 8, paddingLeft: 10, borderLeft: `1px solid ${token.colorBorderSecondary}` }}>
-                      {group.map((plugin) => (
-                        <PluginListItem
-                          key={plugin.id}
-                          plugin={plugin}
-                          isMutating={isMutating}
-                          addLocked={addLocked}
-                          token={token}
-                          getFormatColor={getFormatColor}
-                          onSelect={handleSelectPlugin}
-                          onAdd={handleAddPlugin}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {authorKeys.map((author) => (
+              <PluginAuthorGroup
+                key={author}
+                author={author}
+                group={groupedByAuthor[author]}
+                isCollapsed={!!collapsedGroups[author]}
+                onToggleCollapse={() => setCollapsedGroups(prev => ({ ...prev, [author]: !prev[author] }))}
+                isMutating={isMutating}
+                addLocked={addLocked}
+                onSelect={handleSelectPlugin}
+                onAdd={handleAddPlugin}
+              />
+            ))}
           </div>
         ) : (
           <Empty
@@ -372,12 +157,12 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
         </div>
 
         {/* Footer Actions */}
-        <div style={{ 
-          position: 'absolute', 
-          bottom: 0, 
-          left: 0, 
-          right: 0, 
-          padding: '16px 24px', 
+        <div style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          padding: '16px 24px',
           background: 'linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%)',
           borderTop: '1px solid var(--rh-minimal-border)'
         }}>

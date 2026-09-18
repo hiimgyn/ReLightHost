@@ -1,7 +1,9 @@
 mod audio;
-mod plugins;
+// `pub`: the vst3_sandbox_host bin target (src/bin/) reuses the VST3
+// processor/GUI code in here via `app_lib::plugins::...`.
+pub mod plugins;
 mod domain;
-mod core;
+pub mod core;
 mod commands;
 mod bootstrap;
 
@@ -48,8 +50,8 @@ struct StartupState {
 
 /// Holds dynamic tray state so commands and tray events stay in sync.
 pub(crate) struct TrayState {
-    mute_item:             tauri::menu::MenuItem<tauri::Wry>,
-    loopback_item:         tauri::menu::MenuItem<tauri::Wry>,
+    mute_item:             tauri::menu::IconMenuItem<tauri::Wry>,
+    loopback_item:         tauri::menu::IconMenuItem<tauri::Wry>,
     audio_tray_icon:       tauri::image::Image<'static>,
     audio_tray_icon_muted: tauri::image::Image<'static>,
 }
@@ -86,6 +88,13 @@ pub struct SessionRestoreResult {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before loading anything: attribute any unclean exit from the previous
+    // run to whichever VST3 plugin(s) were active when it happened (a
+    // native crash never runs code to record itself — see
+    // vst3_sandbox::registry for why this has to happen from the outside,
+    // on the next startup).
+    crate::plugins::processor::vst3_sandbox::registry::attribute_crashes_from_unclean_exit();
+
     let audio_manager  = Arc::new(RwLock::new(AudioManager::new()));
     let plugin_scanner = Arc::new(RwLock::new(PluginScanner::new()));
     let plugin_manager = Arc::new(RwLock::new(PluginInstanceManager::new()));
@@ -102,7 +111,7 @@ pub fn run() {
     let sys_info = Arc::new(RwLock::new({
         use sysinfo::{System, RefreshKind, CpuRefreshKind, MemoryRefreshKind};
         let mut s = System::new_with_specifics(
-            RefreshKind::new()
+            RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
         );

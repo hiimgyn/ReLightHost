@@ -81,7 +81,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
 
     // Auto-detect host type from the currently stored device (runs immediately if
     // the devices list is already populated; otherwise the effect below will catch it).
-    const hostDeviceId = isAsioId(selectedInputDevice) ? selectedInputDevice : selectedDevice;
+    const hostDeviceId = isAsioId(selectedInputDevice) ? selectedInputDevice : (selectedDevice ?? selectedInputDevice);
     if (hostDeviceId && devices.length > 0) {
       const found = devices.find((d) => d.id === hostDeviceId);
       if (found) {
@@ -110,7 +110,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   // When devices finish loading (async) while the modal is already open,
   // re-detect the host type so the Audio API dropdown shows the correct entry.
   useEffect(() => {
-    const hostDeviceId = isAsioId(selectedInputDevice) ? selectedInputDevice : selectedDevice;
+    const hostDeviceId = isAsioId(selectedInputDevice) ? selectedInputDevice : (selectedDevice ?? selectedInputDevice);
     if (!isOpen || !devices.length) return;
     if (hostDeviceId && !selectedHostType) {
       const found = devices.find((d) => d.id === hostDeviceId);
@@ -145,31 +145,27 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       // Stop the always-running stream before changing config, then restart it.
       await toggleMonitoring(false);
 
-      const tasks: Promise<void>[] = [];
-
       if (asioMode) {
         // ASIO is full-duplex: one device ID handles both I/O
         if (values.asioDevice) {
           const monitorOutputId =
             values.virtualOutputDevice || defaultMonitorOutputId || null;
-          tasks.push(setInputDevice(values.asioDevice));
-          tasks.push(setOutputDevice(values.asioDevice));
-          tasks.push(setVirtualOutputDevice(monitorOutputId));
+          await setInputDevice(values.asioDevice);
+          await setOutputDevice(values.asioDevice);
+          await setVirtualOutputDevice(monitorOutputId);
         }
       } else {
         const outputToSet = values.outputDevice || null;
         const virtualToSet = values.virtualOutputDevice || null;
 
         // Always call setOutputDevice so clearing the field sets a null output.
-        tasks.push(setOutputDevice(outputToSet));
-        tasks.push(setInputDevice(values.inputDevice || null));
-        tasks.push(setVirtualOutputDevice(virtualToSet || null));
+        await setOutputDevice(outputToSet);
+        await setInputDevice(values.inputDevice || null);
+        await setVirtualOutputDevice(virtualToSet || null);
       }
 
-      tasks.push(setSampleRate(parseInt(values.sampleRate)));
-      tasks.push(setBufferSize(parseInt(values.bufferSize)));
-
-      await Promise.all(tasks);
+      await setSampleRate(parseInt(values.sampleRate));
+      await setBufferSize(parseInt(values.bufferSize));
 
       // Always restart the stream after config change.
       await toggleMonitoring(true);
@@ -186,28 +182,48 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   return (
     <Modal
       title={
-        <Space>
-          <AudioOutlined style={{ color: token.colorPrimary }} />
-          <Text strong style={{ fontSize: 15, letterSpacing: '-0.01em' }}>Audio Settings</Text>
+        <Space size={10} align="center">
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: `${token.colorPrimary}1c`,
+              border: `1px solid ${token.colorPrimary}38`,
+            }}
+          >
+            <AudioOutlined style={{ color: token.colorPrimary, fontSize: 16 }} />
+          </div>
+          <div>
+            <Text strong style={{ fontSize: 15, display: 'block', lineHeight: 1.2 }}>
+              Audio Settings
+            </Text>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              Configure soundcard, drivers, and buffer size
+            </Text>
+          </div>
         </Space>
       }
       open={isOpen}
       onCancel={handleClose}
       width={modalWidth}
-      style={{ top: 12, maxWidth: 544 }}
+      style={{ top: 20, maxWidth: 544 }}
       styles={{
         body: {
-          maxHeight: 'calc(100vh - 220px)',
+          maxHeight: 'calc(100vh - 200px)',
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '12px 16px 16px',
+          padding: '14px 18px 18px',
         },
       }}
       footer={[
-        <Button key="cancel" onClick={handleClose}>
+        <Button key="cancel" onClick={handleClose} style={{ minWidth: 70, borderRadius: 8 }}>
           Cancel
         </Button>,
-        <Button key="refresh" icon={<SyncOutlined />} onClick={fetchDevices}>
+        <Button key="refresh" icon={<SyncOutlined />} onClick={fetchDevices} style={{ borderRadius: 8 }}>
           Refresh Devices
         </Button>,
         <Button
@@ -215,6 +231,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
           type="primary"
           icon={<CheckOutlined />}
           onClick={handleApply}
+          style={{ borderRadius: 8 }}
         >
           Apply
         </Button>,

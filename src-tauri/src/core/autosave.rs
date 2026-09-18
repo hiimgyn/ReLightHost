@@ -13,7 +13,7 @@ enum AutosaveRequest {
 
 static AUTOSAVE_TX: OnceLock<Sender<AutosaveRequest>> = OnceLock::new();
 
-pub fn init_autosave_worker(state: &crate::AppState) {
+pub(crate) fn init_autosave_worker(state: &crate::AppState) {
     if AUTOSAVE_TX.get().is_some() {
         return;
     }

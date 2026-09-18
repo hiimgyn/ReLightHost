@@ -36,7 +36,7 @@ pub fn get_system_stats(state: tauri::State<AppState>) -> Result<SystemStats, St
     sys.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::Some(&[pid]),
         true,
-        ProcessRefreshKind::new().with_cpu().with_memory(),
+        ProcessRefreshKind::nothing().with_cpu().with_memory(),
     );
     let num_cpus = sys.cpus().len().max(1) as f32;
     if let Some(proc) = sys.process(pid) {

@@ -5,6 +5,8 @@ const TRAY_TOOLTIP_ACTIVE: &str = "ReLightHost";
 const TRAY_TOOLTIP_MUTED: &str = "ReLightHost (Muted)";
 const TRAY_MENU_MUTE: &str = "Mute Audio";
 const TRAY_MENU_UNMUTE: &str = "Unmute Audio";
+const TRAY_MENU_LOOPBACK_ENABLE: &str = "Enable Monitor Output";
+const TRAY_MENU_LOOPBACK_DISABLE: &str = "Disable Monitor Output";
 
 pub(crate) fn sync_audio_tray_state(
     app: &tauri::AppHandle<tauri::Wry>,
@@ -14,6 +16,14 @@ pub(crate) fn sync_audio_tray_state(
     let menu_text = if muted { TRAY_MENU_UNMUTE } else { TRAY_MENU_MUTE };
     if let Err(error) = tray_state.mute_item.set_text(menu_text) {
         log::warn!("Failed to update tray mute label: {error}");
+    }
+    let mute_icon = if muted {
+        include_image!("icons/tray/menu-mute-off.png")
+    } else {
+        include_image!("icons/tray/menu-mute-on.png")
+    };
+    if let Err(error) = tray_state.mute_item.set_icon(Some(mute_icon)) {
+        log::warn!("Failed to update tray mute icon: {error}");
     }
 
     let tooltip = if muted {
@@ -45,19 +55,68 @@ pub(crate) fn sync_audio_tray_state(
     }
 }
 
+/// Sync the "Monitor Output" menu item's label and icon to the actual
+/// loopback state. Must be called both after every toggle AND once at
+/// startup — the item is otherwise left at its built time default
+/// ("Enable...") even when a restored session already has loopback on.
+pub(crate) fn sync_loopback_tray_state(tray_state: &crate::TrayState, enabled: bool) {
+    let text = if enabled { TRAY_MENU_LOOPBACK_DISABLE } else { TRAY_MENU_LOOPBACK_ENABLE };
+    if let Err(error) = tray_state.loopback_item.set_text(text) {
+        log::warn!("Failed to update tray loopback label: {error}");
+    }
+    let icon = if enabled {
+        include_image!("icons/tray/menu-loopback-on.png")
+    } else {
+        include_image!("icons/tray/menu-loopback-off.png")
+    };
+    if let Err(error) = tray_state.loopback_item.set_icon(Some(icon)) {
+        log::warn!("Failed to update tray loopback icon: {error}");
+    }
+}
+
 pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::menu::{IconMenuItem, Menu, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let show_item = MenuItem::with_id(app, "show", "Show ReLightHost", true, None::<&str>)?;
-    let mute_item = MenuItem::with_id(app, "toggle_mute", "Mute Audio", true, None::<&str>)?;
-    let loopback_item =
-        MenuItem::with_id(app, "toggle_loopback", "Enable Monitor Output", true, None::<&str>)?;
-    let audio_item =
-        MenuItem::with_id(app, "audio_settings", "Audio Settings…", true, None::<&str>)?;
-    let app_item =
-        MenuItem::with_id(app, "app_settings", "Application Settings…", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Exit", true, None::<&str>)?;
+    let initial_muted = app.state::<crate::AppState>().audio_manager.read().is_muted();
+    let initial_loopback = app.state::<crate::AppState>().audio_manager.read().is_loopback_enabled();
+
+    let show_item = IconMenuItem::with_id(
+        app, "show", "Show ReLightHost", true,
+        Some(include_image!("icons/tray/menu-show.png")), None::<&str>,
+    )?;
+    let mute_item = IconMenuItem::with_id(
+        app, "toggle_mute",
+        if initial_muted { TRAY_MENU_UNMUTE } else { TRAY_MENU_MUTE }, true,
+        Some(if initial_muted {
+            include_image!("icons/tray/menu-mute-off.png")
+        } else {
+            include_image!("icons/tray/menu-mute-on.png")
+        }),
+        None::<&str>,
+    )?;
+    let loopback_item = IconMenuItem::with_id(
+        app, "toggle_loopback",
+        if initial_loopback { TRAY_MENU_LOOPBACK_DISABLE } else { TRAY_MENU_LOOPBACK_ENABLE }, true,
+        Some(if initial_loopback {
+            include_image!("icons/tray/menu-loopback-on.png")
+        } else {
+            include_image!("icons/tray/menu-loopback-off.png")
+        }),
+        None::<&str>,
+    )?;
+    let audio_item = IconMenuItem::with_id(
+        app, "audio_settings", "Audio Settings…", true,
+        Some(include_image!("icons/tray/menu-audio-settings.png")), None::<&str>,
+    )?;
+    let app_item = IconMenuItem::with_id(
+        app, "app_settings", "Application Settings…", true,
+        Some(include_image!("icons/tray/menu-app-settings.png")), None::<&str>,
+    )?;
+    let quit_item = IconMenuItem::with_id(
+        app, "quit", "Exit", true,
+        Some(include_image!("icons/tray/menu-exit.png")), None::<&str>,
+    )?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
@@ -115,12 +174,7 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                             let _ = win.emit("tray-loopback-changed", new_enabled);
                         }
                         let tray_state = app.state::<crate::TrayState>();
-                        let new_text = if new_enabled {
-                            "Disable Monitor Output"
-                        } else {
-                            "Enable Monitor Output"
-                        };
-                        let _ = tray_state.loopback_item.set_text(new_text);
+                        sync_loopback_tray_state(&tray_state, new_enabled);
                     }
                     "audio_settings" => {
                         if let Some(win) = app.get_webview_window("main") {
@@ -170,9 +224,11 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
         audio_tray_icon_muted,
     });
 
-    let muted = app.state::<crate::AppState>().audio_manager.read().is_muted();
+    // Sync both toggle items to their actual current state — matters when a
+    // restored session already has mute/loopback on, not just on manual toggle.
     let tray_state = app.state::<crate::TrayState>();
-    sync_audio_tray_state(app.handle(), &tray_state, muted);
+    sync_audio_tray_state(app.handle(), &tray_state, initial_muted);
+    sync_loopback_tray_state(&tray_state, initial_loopback);
 
     Ok(())
 }

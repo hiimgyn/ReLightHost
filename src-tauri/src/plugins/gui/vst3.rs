@@ -40,6 +40,23 @@ pub mod win {
 
     type OnSizeCallback = Box<dyn Fn(i32, i32)>;
 
+    /// RAII CoInitializeEx/CoUninitialize pairing for any thread that touches
+    /// plugin GUI internals — many VST3 editors (e.g. Supertone Clear) use
+    /// DirectWrite/Direct2D, which need COM initialised on the calling thread.
+    /// COINIT_APARTMENTTHREADED matches JUCE's ScopedCoInitialiser convention.
+    struct ComScope(bool);
+    impl ComScope {
+        fn new() -> Self {
+            let hr = unsafe { CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+            Self(hr == 0_i32 || hr == 1_i32)
+        }
+    }
+    impl Drop for ComScope {
+        fn drop(&mut self) {
+            if self.0 { unsafe { CoUninitialize(); } }
+        }
+    }
+
     // Thread-local state shared between GUI setup, WndProc, and IPlugFrame.
     // Safe because the GUI runs on a single dedicated thread.
     thread_local! {
@@ -243,16 +260,7 @@ pub mod win {
 
         // COM must be initialised on the same thread as the GUI (same as JUCE
         // ScopedCoInitialiser with COINIT_APARTMENTTHREADED).
-        struct ComScope(bool);
-        impl Drop for ComScope {
-            fn drop(&mut self) {
-                if self.0 { unsafe { CoUninitialize(); } }
-            }
-        }
-        let _com = ComScope({
-            let hr = unsafe { CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32) };
-            hr == 0_i32 || hr == 1_i32
-        });
+        let _com = ComScope::new();
 
         // Store attachment_ready in thread-local so the attach thread can access it
         TL_ATTACHMENT_READY.with(|c| {
@@ -555,6 +563,14 @@ pub mod win {
                         let spawn_res = std::thread::Builder::new()
                             .name("vst3-attach".into())
                             .spawn(move || {
+                                // COM must be initialised here too: attached() is where
+                                // DirectWrite/Direct2D-based editors (e.g. Supertone
+                                // Clear) actually stand up their renderer, and this
+                                // thread — unlike the GUI message-loop thread — had no
+                                // COM apartment at all, which crashed those plugins
+                                // with STATUS_ACCESS_VIOLATION inside attached().
+                                let _com = ComScope::new();
+
                                 // Publish Win32 TID before doing any work so WM_CLOSE
                                 // can find us even if the user closes very quickly.
                                 tid_clone.store(

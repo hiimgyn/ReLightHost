@@ -187,6 +187,12 @@ mod win {
         /// Audio processing checks this before calling process() to ensure plugin
         /// initialization is fully complete.
         attachment_ready: Arc<AtomicBool>,
+        /// maxSamplesPerBlock negotiated with the plugin via setupProcessing.
+        /// The VST3 spec forbids calling process() with more samples than this;
+        /// fragile plugins (e.g. Supertone Clear, which uses fixed-size internal
+        /// buffers for its ML inference) corrupt their own heap if that contract
+        /// is violated, so callers must chunk to this size (see process_stereo).
+        max_block:  usize,
         /// MUST be last: DLL must outlive all COM interface pointers above so that
         /// ComPtr::drop() (which calls Release() through the vtable) never fires
         /// after the DLL is unloaded.
@@ -379,6 +385,7 @@ mod win {
                 // Processing is safe immediately after load(); this flag is only
                 // toggled during GUI attach to avoid init-time races.
                 attachment_ready: Arc::new(AtomicBool::new(true)),
+                max_block: block_size.max(1),
             })
         }
 
@@ -408,6 +415,19 @@ mod win {
                 return;
             }
 
+            let total = left.len().min(right.len());
+            if total == 0 { return; }
+
+            // The host's ASIO/WASAPI callback size can vary at runtime (see
+            // audio::manager's BufferSize::Default) and may exceed the
+            // maxSamplesPerBlock negotiated at load(). Never hand the plugin
+            // more samples per call than it was configured for.
+            for (start, end) in chunk_bounds(total, self.max_block) {
+                self.process_chunk(&mut left[start..end], &mut right[start..end]);
+            }
+        }
+
+        fn process_chunk(&mut self, left: &mut [f32], right: &mut [f32]) {
             let n = left.len().min(right.len());
             if n == 0 { return; }
             if self.in_l.len() < n { self.in_l.resize(n, 0.0); }
@@ -466,6 +486,13 @@ mod win {
         /// Snapshot the plugin state as raw bytes (serialised via IComponent::getState).
         pub fn get_state(&self) -> Vec<u8> {
             ensure_com_initialized();
+            // While the editor is attaching, the GUI thread calls into this same
+            // component/controller with no lock (see open_gui). Autosave or a
+            // manual save can land on this thread concurrently — skip rather
+            // than race, matching the guard process_stereo() already uses.
+            if !self.attachment_ready.load(std::sync::atomic::Ordering::Acquire) {
+                return Vec::new();
+            }
             let stream = ComWrapper::new(RustIBStream::write_stream());
             if let Some(ptr) = stream.to_com_ptr::<IBStream>() {
                 unsafe { self.component.getState(ptr.as_ptr()); }
@@ -479,6 +506,9 @@ mod win {
         /// Restore plugin state from raw bytes.
         pub fn set_state(&self, data: &[u8]) {
             ensure_com_initialized();
+            if !self.attachment_ready.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
             let stream = ComWrapper::new(RustIBStream::read_stream(data.to_vec()));
             if let Some(ptr) = stream.to_com_ptr::<IBStream>() {
                 unsafe { self.component.setState(ptr.as_ptr()); }
@@ -549,6 +579,32 @@ mod win {
             // background threads alive briefly after host teardown.
             if let Some(lib) = self._lib.take() {
                 std::mem::forget(lib);
+            }
+        }
+    }
+
+    /// Split `[0, total)` into contiguous `(start, end)` ranges no larger than
+    /// `max_block`, so process_stereo never violates a plugin's maxSamplesPerBlock.
+    fn chunk_bounds(total: usize, max_block: usize) -> impl Iterator<Item = (usize, usize)> {
+        let max_block = max_block.max(1);
+        (0..total).step_by(max_block).map(move |start| (start, (start + max_block).min(total)))
+    }
+
+    #[cfg(test)]
+    mod chunk_tests {
+        use super::chunk_bounds;
+
+        #[test]
+        fn covers_whole_range_without_gaps_or_overlaps() {
+            for (total, max_block) in [(0, 512), (100, 512), (512, 512), (1000, 512), (2049, 1024)] {
+                let bounds: Vec<_> = chunk_bounds(total, max_block).collect();
+                let mut expected_start = 0;
+                for (start, end) in &bounds {
+                    assert_eq!(*start, expected_start);
+                    assert!(end - start <= max_block);
+                    expected_start = *end;
+                }
+                assert_eq!(expected_start, total);
             }
         }
     }

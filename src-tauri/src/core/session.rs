@@ -6,7 +6,7 @@ use tauri::Manager;
 
 use crate::timing::{VST3_STATE_REPLAY_DELAY, VST3_STARTUP_DELAY_MS, VOICEMEETER_STARTUP_DELAY_MS, VST3_POST_START_SETTLE_MS};
 
-pub fn restore_session_impl(
+pub(crate) fn restore_session_impl(
     state: &crate::AppState,
     app: &tauri::AppHandle<tauri::Wry>,
 ) -> Result<crate::SessionRestoreResult, String> {

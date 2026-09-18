@@ -1,3 +1,11 @@
 allowBuilds:
   esbuild: true
   sharp: true
+
+# antd 6.6.4 pulls in @rc-component/dialog, which imports useLockFocus /
+# pickAttrs / contains / useId from @rc-component/util — APIs only present
+# from 1.13.0, even though dialog's own declared range ("^1.9.0") is loose
+# enough to let pnpm also resolve a stale 1.10.1 elsewhere in the graph.
+# Force a single, current version so both copies can't coexist.
+overrides:
+  "@rc-component/util": "^1.13.0"

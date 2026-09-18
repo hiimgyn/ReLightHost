@@ -11,21 +11,22 @@ export function getThemeTokens(isDark: boolean): ThemeTokens {
     borderRadius: 10,
     fontFamily:
       '"Inter", "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-    colorBgLayout: 'transparent',
-    // Glassmorphism surfaces: low alpha with blur from CSS layer.
-    colorBgContainer: semantic.surface.minimalBgStrong,
-    colorBgElevated: isDark ? semantic.surface.minimalBgStrong : 'rgba(255, 255, 255, 1)',
-    // Border — Fluent enhanced opacity
-    colorBorder: isDark ? 'rgba(209, 212, 255, 0.22)' : 'rgba(99, 103, 255, 0.2)',
-    colorBorderSecondary: isDark ? 'rgba(209, 212, 255, 0.14)' : 'rgba(99, 103, 255, 0.14)',
-    // Text hierarchy — Fluent refined for better contrast with higher opacity backgrounds
-    colorText: isDark ? 'rgba(255, 255, 255, 0.92)' : 'rgba(0, 0, 0, 0.92)',
-    colorTextSecondary: isDark ? 'rgba(255, 255, 255, 0.72)' : 'rgba(0, 0, 0, 0.72)',
+    colorBgLayout: isDark ? '#0c0d14' : 'transparent',
+    colorBgContainer: isDark ? '#141724' : semantic.surface.minimalBgStrong,
+    colorBgElevated: isDark ? '#1b1f32' : 'rgba(255, 255, 255, 1)',
+    colorBgSpotlight: isDark ? '#232840' : '#1F2333',
+    // Border — crisp and clean with high contrast
+    colorBorder: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(99, 103, 255, 0.2)',
+    colorBorderSecondary: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(99, 103, 255, 0.14)',
+    // Text hierarchy — clear distinction between primary, secondary, and tertiary
+    colorText: isDark ? 'rgba(255, 255, 255, 0.96)' : 'rgba(0, 0, 0, 0.92)',
+    colorTextSecondary: isDark ? 'rgba(255, 255, 255, 0.75)' : 'rgba(0, 0, 0, 0.72)',
     colorTextTertiary: isDark ? 'rgba(255, 255, 255, 0.52)' : 'rgba(0, 0, 0, 0.52)',
-    colorTextQuaternary: isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(0, 0, 0, 0.35)',
-    // Fluent Design accent colors
+    colorTextQuaternary: isDark ? 'rgba(255, 255, 255, 0.32)' : 'rgba(0, 0, 0, 0.35)',
+    // Design accent colors
     colorSuccess: semantic.status.success,
     colorError: semantic.status.error,
+    colorWarning: semantic.status.warning,
     // Rhythm unit for consistent spacing
     rhythm: 8,
   };

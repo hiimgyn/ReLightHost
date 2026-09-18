@@ -74,14 +74,38 @@ export default function Layout({ children }: LayoutProps) {
     algorithm: isDark ? antTheme.darkAlgorithm : antTheme.defaultAlgorithm,
     token: themeTokens,
     components: {
-      Card: { headerBg: 'transparent' },
-      Button: { primaryShadow: '0 4px 14px -2px rgba(99, 103, 255, 0.45)' },
-      Modal: { contentBg: themeTokens.colorBgElevated, headerBg: themeTokens.colorBgElevated },
-      Select: { optionSelectedBg: isDark ? themeTokens.colorBgElevated : themeTokens.colorBgContainer },
+      Card: {
+        headerBg: 'transparent',
+      },
+      Button: {
+        primaryShadow: isDark ? '0 4px 18px -2px rgba(107, 112, 255, 0.55)' : '0 4px 14px -2px rgba(99, 103, 255, 0.45)',
+      },
+      Modal: {
+        contentBg: isDark ? '#181b2c' : themeTokens.colorBgElevated,
+        headerBg: 'transparent',
+      },
+      Drawer: {
+        colorBgElevated: isDark ? '#141624' : themeTokens.colorBgElevated,
+      },
+      Input: {
+        colorBgContainer: isDark ? '#10121d' : '#ffffff',
+        colorBorder: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(99, 103, 255, 0.2)',
+        activeBorderColor: themeTokens.colorPrimary,
+        hoverBorderColor: isDark ? 'rgba(140, 145, 255, 0.45)' : 'rgba(99, 103, 255, 0.4)',
+      },
+      Select: {
+        colorBgContainer: isDark ? '#10121d' : '#ffffff',
+        colorBorder: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(99, 103, 255, 0.2)',
+        optionSelectedBg: isDark ? '#22273e' : '#eef0ff',
+      },
       Slider: {
         trackBg: themeTokens.colorPrimary,
         trackHoverBg: themeTokens.colorPrimarySoft,
         handleColor: themeTokens.colorPrimary,
+      },
+      Tooltip: {
+        colorBgSpotlight: isDark ? '#1e2136' : 'rgba(255, 255, 255, 0.96)',
+        colorTextLightSolid: isDark ? '#ffffff' : '#1F2333',
       },
     },
   };

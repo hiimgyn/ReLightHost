@@ -49,11 +49,13 @@ export default function PluginChain() {
     selectedInputDevice,
     selectedDevice,
     selectedVirtualOutputDevice,
+    isMonitoring,
   } = useAudioStore(useShallow((s) => ({
     devices: s.devices,
     selectedInputDevice: s.selectedInputDevice,
     selectedDevice: s.selectedDevice,
     selectedVirtualOutputDevice: s.selectedVirtualOutputDevice,
+    isMonitoring: s.status.is_monitoring,
   })));
   const [showPluginLibrary, setShowPluginLibrary] = useState(false);
   const [isDeleteAllBusy, setIsDeleteAllBusy] = useState(false);
@@ -88,7 +90,10 @@ export default function PluginChain() {
   useEffect(() => {
     const unlistenPromise = listen<PluginChainChangedEvent>('plugin-chain-changed', (event) => {
       if (draggingRef.current) return;
-      if (event.payload?.reason === 'parameter') return;
+      const reason = event.payload?.reason;
+      if (reason === 'parameter' || reason === 'parameter_update' || reason?.startsWith('parameter')) {
+        return;
+      }
       fetchChain();
       fetchCrashStatuses();
     });
@@ -218,7 +223,7 @@ export default function PluginChain() {
                 }}
               >
 
-            <ChainEndpointCard variant="in" tooltipTitle={inputDeviceName} />
+            <ChainEndpointCard variant="in" tooltipTitle={inputDeviceName} active={isMonitoring} />
 
             {/* Plugin cards with drop zones between theme*/}
             {pluginChain.map((plugin, index) => {
@@ -243,7 +248,10 @@ export default function PluginChain() {
                     transition: 'transform 120ms ease, background 120ms ease',
                   }}
                 >
-                  <CurvedArrow color={showInsertAt(index) ? token.colorPrimary : undefined} />
+                  <CurvedArrow
+                    color={showInsertAt(index) ? token.colorPrimary : undefined}
+                    active={isMonitoring && !plugin.bypassed}
+                  />
                 </div>
 
                 {/* Card wrapper — full drop target */}
@@ -303,12 +311,16 @@ export default function PluginChain() {
                 transition: 'transform 120ms ease, background 120ms ease',
               }}
             >
-              <CurvedArrow color={showInsertAt(pluginChain.length) ? token.colorPrimary : undefined} />
+              <CurvedArrow
+                color={showInsertAt(pluginChain.length) ? token.colorPrimary : undefined}
+                active={isMonitoring}
+              />
             </div>
 
             <ChainEndpointCard
               variant="out"
               tooltipTitle={<span>Output: {outputDeviceName} <br />Virtual Output: {virtualOutputDeviceName}</span>}
+              active={isMonitoring}
             />
 
               </div>

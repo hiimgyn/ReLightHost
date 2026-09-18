@@ -10,6 +10,11 @@ fn is_asio_host(host_id: cpal::HostId) -> bool {
     format!("{host_id:?}").contains("Asio")
 }
 
+/// cpal 0.18 dropped `Device::name()` in favor of structured `description()`.
+pub(crate) fn cpal_device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_string())
+}
+
 impl AudioDevice {
     /// List all available audio devices from ALL available hosts (WASAPI, ASIO, DirectSound, etc.)
     ///
@@ -30,10 +35,10 @@ impl AudioDevice {
 
             let default_output_name = host
                 .default_output_device()
-                .and_then(|d| d.name().ok());
+                .and_then(|d| cpal_device_name(&d));
             let default_input_name = host
                 .default_input_device()
-                .and_then(|d| d.name().ok());
+                .and_then(|d| cpal_device_name(&d));
 
             if asio {
                 // For ASIO, merge input + output sides by device name.
@@ -45,7 +50,7 @@ impl AudioDevice {
 
                 if let Ok(outputs) = host.output_devices() {
                     for device in outputs {
-                        let Ok(name) = device.name() else { continue };
+                        let Some(name) = cpal_device_name(&device) else { continue };
                         let out_ch = device
                             .supported_output_configs().ok()
                             .and_then(|mut it| it.next())
@@ -57,7 +62,7 @@ impl AudioDevice {
 
                 if let Ok(inputs) = host.input_devices() {
                     for device in inputs {
-                        let Ok(name) = device.name() else { continue };
+                        let Some(name) = cpal_device_name(&device) else { continue };
                         let in_ch = device
                             .supported_input_configs().ok()
                             .and_then(|mut it| it.next())
@@ -88,7 +93,7 @@ impl AudioDevice {
                 // Output devices
                 if let Ok(outputs) = host.output_devices() {
                     for device in outputs {
-                        let Ok(name) = device.name() else { continue };
+                        let Some(name) = cpal_device_name(&device) else { continue };
                         let is_default = Some(&name) == default_output_name.as_ref();
                         let channels = device
                             .supported_output_configs()
@@ -110,7 +115,7 @@ impl AudioDevice {
                 // Input devices
                 if let Ok(inputs) = host.input_devices() {
                     for device in inputs {
-                        let Ok(name) = device.name() else { continue };
+                        let Some(name) = cpal_device_name(&device) else { continue };
                         let is_default = Some(&name) == default_input_name.as_ref();
                         let channels = device
                             .supported_input_configs()
@@ -135,7 +140,7 @@ impl AudioDevice {
         if devices.is_empty() {
             let host = cpal::default_host();
             let host_type = format!("{:?}", host.id());
-            if let Some(Ok(name)) = host.default_output_device().map(|d| d.name()) {
+            if let Some(name) = host.default_output_device().and_then(|d| cpal_device_name(&d)) {
                 devices.push(AudioDeviceInfo {
                     id: format!("out_{name}"),
                     name: format!("{name} (Output)"),
@@ -173,7 +178,7 @@ impl AudioDevice {
             let Ok(host) = cpal::host_from_id(host_id) else { continue };
             if let Ok(inputs) = host.input_devices() {
                 for dev in inputs {
-                    if dev.name().ok().as_deref() == Some(device_name) {
+                    if cpal_device_name(&dev).as_deref() == Some(device_name) {
                         return Some(dev);
                     }
                 }
@@ -203,7 +208,7 @@ impl AudioDevice {
             let Ok(host) = cpal::host_from_id(host_id) else { continue };
             if let Ok(outputs) = host.output_devices() {
                 for dev in outputs {
-                    if dev.name().ok().as_deref() == Some(device_name) {
+                    if cpal_device_name(&dev).as_deref() == Some(device_name) {
                         return Some(dev);
                     }
                 }
@@ -225,9 +230,9 @@ impl AudioDevice {
             let Ok(host) = cpal::host_from_id(host_id) else { continue };
 
             let input = host.input_devices().ok()
-                .and_then(|mut it| it.find(|d| d.name().ok().as_deref() == Some(device_name)));
+                .and_then(|mut it| it.find(|d| cpal_device_name(d).as_deref() == Some(device_name)));
             let output = host.output_devices().ok()
-                .and_then(|mut it| it.find(|d| d.name().ok().as_deref() == Some(device_name)));
+                .and_then(|mut it| it.find(|d| cpal_device_name(d).as_deref() == Some(device_name)));
 
             if let (Some(inp), Some(out)) = (input, output) {
                 return Some((inp, out));

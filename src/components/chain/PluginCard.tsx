@@ -118,7 +118,23 @@ function PluginCard({
     }
   };
 
-  const isControlLocked = interactionLocked || isLaunching || checkingStatus || isRenamingBusy || isBypassBusy || isRemovingBusy;
+  const [isClosingGui, setIsClosingGui] = useState(false);
+
+  const handleCloseNativeGui = async () => {
+    if (isControlLocked || isClosingGui) return;
+    try {
+      setIsClosingGui(true);
+      await tauri.closePlugins([plugin.instance_id]);
+      messageApi.info('Plugin GUI closed');
+    } catch (err) {
+      messageApi.error(`Failed to close GUI: ${err}`);
+    } finally {
+      setIsClosingGui(false);
+    }
+  };
+
+  const isControlLocked = interactionLocked || isLaunching || checkingStatus || isRenamingBusy || isBypassBusy || isRemovingBusy || isClosingGui;
+  const effectivePlugin = { ...plugin, gui_open: plugin.gui_open || showBuiltinGui };
   const {
     isCrashed,
     isActive,
@@ -127,21 +143,41 @@ function PluginCard({
     bypassButtonBg,
     bypassButtonBorder,
     color: statusDotColor,
-  } = getPluginStatusPalette(plugin, crashStatus, token);
+  } = getPluginStatusPalette(effectivePlugin, crashStatus, token);
   const effectiveCrashStatus = crashStatus ?? { type: 'Ok' as const };
 
   // Determine launch button appearance
   const launchButtonProps = (() => {
     if (plugin.format === 'builtin') {
-      return { icon: <SettingOutlined />, label: 'Settings', onClick: () => setShowBuiltinGui(true) };
+      return {
+        icon: <SettingOutlined />,
+        label: 'Settings',
+        tooltip: showBuiltinGui ? 'Close settings' : 'Open settings',
+        onClick: () => setShowBuiltinGui((prev) => !prev),
+      };
     }
     if (plugin.gui_open) {
-      return { icon: <CheckCircleOutlined />, label: 'Open', onClick: () => {} };
+      return {
+        icon: <CheckCircleOutlined />,
+        label: 'Open',
+        tooltip: 'Click to close GUI window',
+        onClick: handleCloseNativeGui,
+      };
     }
     if (isLaunching) {
-      return { icon: <LoadingOutlined />, label: 'Launching', onClick: () => {} };
+      return {
+        icon: <LoadingOutlined />,
+        label: 'Launching',
+        tooltip: 'Opening GUI window…',
+        onClick: () => {},
+      };
     }
-    return { icon: <PlayCircleOutlined />, label: 'Launch', onClick: handleLaunch };
+    return {
+      icon: <PlayCircleOutlined />,
+      label: 'Launch',
+      tooltip: 'Launch plugin GUI window',
+      onClick: handleLaunch,
+    };
   })();
 
   return (
@@ -149,7 +185,7 @@ function PluginCard({
     {contextHolder}
     <Card
       size="small"
-      className={`glass-card transition-colors ${plugin.bypassed ? 'opacity-70' : ''}`}
+      className={`glass-card rh-plugin-card transition-all ${plugin.bypassed ? 'opacity-70' : ''}`}
       style={{
         borderRadius: 12,
         background: isCrashed ? 'rgba(255,77,79,0.12)' : token.colorBgElevated,
@@ -157,11 +193,12 @@ function PluginCard({
         flexDirection: 'column',
         height: 174,
         border: isCrashed
-          ? `1px solid rgba(255,77,79,0.2)`
+          ? `1px solid rgba(255,77,79,0.3)`
           : isActive
           ? `1px solid var(--rh-surface-soft-border-strong)`
           : `1px solid var(--rh-surface-soft-border)`,
-        boxShadow: 'none',
+        boxShadow: isActive ? '0 4px 16px rgba(0,0,0,0.06)' : 'none',
+        transition: 'transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease',
       }}
       styles={{ body: { padding: '16px', display: 'flex', flexDirection: 'column', height: '100%' } }}
     >
@@ -343,14 +380,15 @@ function PluginCard({
           )}
 
           {!isCrashed && (
-            <Tooltip title={plugin.gui_open ? 'GUI already open' : launchButtonProps.label}>
+            <Tooltip title={launchButtonProps.tooltip}>
               <Button
                 size="small"
                 icon={launchButtonProps.icon}
                 onClick={launchButtonProps.onClick}
+                loading={isLaunching || isClosingGui}
                 disabled={isControlLocked}
                 className="btn-pill btn-tonal"
-                style={{ flex: 1, height: 32, color: plugin.gui_open ? token.colorSuccess : undefined }}
+                style={{ flex: 1, height: 32, color: (plugin.gui_open || showBuiltinGui) ? token.colorSuccess : undefined }}
               >
                 {launchButtonProps.label}
               </Button>

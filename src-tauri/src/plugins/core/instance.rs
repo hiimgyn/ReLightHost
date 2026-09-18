@@ -7,6 +7,7 @@ use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, Plu
 use crate::plugins::processor::clap::ClapProcessor;
 use crate::plugins::processor::vst2::Vst2Processor;
 use crate::plugins::processor::vst3::Vst3Processor;
+use crate::plugins::processor::vst3_sandbox::{registry as vst3_sandbox_registry, SandboxedVst3Processor, Vst3ProcessorKind};
 use crate::plugins::builtin::BuiltinProcessor;
 use crate::plugins::crash_protection::{self, SharedCrashProtection};
 use anyhow::{Error, Result};
@@ -25,8 +26,10 @@ pub struct PluginInstance {
     display_name:   RwLock<Option<String>>,
     bypassed:       Arc<AtomicBool>,
     parameters:     Arc<RwLock<Vec<PluginParameter>>>,
-    /// VST3 audio processor (vst3-rs) — present when format == VST3.
-    vst3_processor: Mutex<Option<Vst3Processor>>,
+    /// VST3 audio processor — in-process (vst3-rs) or sandboxed in a child
+    /// process, depending on that plugin's crash history. Present when
+    /// format == VST3.
+    vst3_processor: Mutex<Option<Vst3ProcessorKind>>,
     /// VST2 audio processor (vst-rs) — present when format == VST.
     vst2_processor: Mutex<Option<Vst2Processor>>,
     /// CLAP audio processor — present when format == CLAP.
@@ -65,14 +68,32 @@ impl PluginInstance {
         // Load the appropriate audio processor for the plugin format.
         // Failure is non-fatal; the instance still works in pass-through mode.
         let vst3_processor = if plugin_info.format == PluginFormat::VST3 {
-            match Vst3Processor::load(&plugin_info.path, sample_rate, block_size) {
-                Ok(proc) => {
-                    log::info!("{} VST3 processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
-                    Some(proc)
+            if vst3_sandbox_registry::should_sandbox(&plugin_info.path) {
+                match SandboxedVst3Processor::load(&plugin_info.path, sample_rate, block_size) {
+                    Ok(proc) => {
+                        log::warn!("{} VST3 processor for '{}' is SANDBOXED (crashed too many times in-process)", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
+                        Some(Vst3ProcessorKind::Sandboxed(Arc::new(proc)))
+                    }
+                    Err(e) => {
+                        log::warn!("{} Sandboxed VST3 processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
+                        None
+                    }
                 }
-                Err(e) => {
-                    log::warn!("{} VST3 audio processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
-                    None
+            } else {
+                match Vst3Processor::load(&plugin_info.path, sample_rate, block_size) {
+                    Ok(proc) => {
+                        log::info!("{} VST3 processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
+                        // Only the in-process path needs attribution: a
+                        // sandboxed child dying is already directly
+                        // observable (see process_stereo's child_died
+                        // check) and can never take this process down.
+                        vst3_sandbox_registry::mark_active_in_process(&plugin_info.path);
+                        Some(Vst3ProcessorKind::InProcess(proc))
+                    }
+                    Err(e) => {
+                        log::warn!("{} VST3 audio processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
+                        None
+                    }
                 }
             }
         } else {
@@ -249,10 +270,51 @@ impl PluginInstance {
         }
 
         match self.plugin_info.format {
-            PluginFormat::VST3    => run_processor!(self.vst3_processor.try_lock(),    "VST3"),
+            PluginFormat::VST3    => {
+                run_processor!(self.vst3_processor.try_lock(), "VST3");
+                self.check_sandboxed_vst3_health();
+            }
             PluginFormat::VST     => run_processor!(self.vst2_processor.try_lock(),    "VST2"),
             PluginFormat::Builtin => run_processor!(self.builtin_processor.try_lock(), "Built-in"),
             PluginFormat::CLAP    => run_processor!(self.clap_processor.try_lock(),    "CLAP"),
+        }
+    }
+
+    /// A sandboxed child dying is a plain Rust-level observation (the pipe
+    /// closed), not a panic — `crash_protection::protected_call`'s
+    /// `catch_unwind` above never sees it. Feed the same
+    /// `CrashProtection`/threshold machinery used for in-process crashes so
+    /// the UI and restart policy behave identically either way, then kick
+    /// off a restart off the audio thread (never block the realtime path
+    /// waiting for a fresh child to load).
+    fn check_sandboxed_vst3_health(&self) {
+        let Some(guard) = self.vst3_processor.try_lock() else { return };
+        let Some(Vst3ProcessorKind::Sandboxed(sandboxed)) = guard.as_ref() else { return };
+        if !sandboxed.take_child_died() { return; }
+        let sandboxed = Arc::clone(sandboxed);
+        drop(guard);
+
+        vst3_sandbox_registry::record_crash(&self.plugin_info.path);
+        log::error!("{} sandboxed VST3 child process exited unexpectedly", self.plugin_info.name);
+
+        let should_restart = {
+            let mut protection = self.crash_protection.lock();
+            protection.mark_crashed("sandboxed VST3 child process exited".to_string());
+            if protection.crash_count == 3 {
+                let id = self.instance_id.clone();
+                std::thread::spawn(move || {
+                    crate::app_events::emit_plugin_chain_changed("crash_limit_exceeded", Some(&id));
+                });
+            }
+            protection.should_auto_restart()
+        };
+
+        if should_restart {
+            std::thread::spawn(move || {
+                if let Err(e) = sandboxed.restart() {
+                    log::error!("Failed to restart sandboxed VST3 child: {e}");
+                }
+            });
         }
     }
 
@@ -412,9 +474,9 @@ impl PluginInstance {
                 // This isolates whether the blank editor comes from controller/state sync.
                 let sync_component_state = false;
                 let restored_state_blob = None;
-                let result = crash_protection::protected_call(|| {
+                let result = crash_protection::protected_call(AssertUnwindSafe(|| {
                     proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd, sync_component_state, restored_state_blob)
-                });
+                }));
                 match result {
                     Ok(Ok(())) => return Ok(()),
                     Ok(Err(e)) => {
@@ -509,6 +571,14 @@ impl PluginInstance {
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
+        // Clean drop = clean shutdown for this plugin's crash-attribution
+        // marker (see vst3_sandbox::registry docs). Unconditional: if the
+        // plugin was sandboxed instead, this path is a no-op (the marker is
+        // only ever set for the in-process load).
+        if self.plugin_info.format == PluginFormat::VST3 {
+            vst3_sandbox_registry::mark_inactive(&self.plugin_info.path);
+        }
+
         // If GUI teardown gets stuck, leaking processors is safer than dropping
         // while plugin UI threads may still execute through freed code/vtables.
         if !self.request_close_gui(Duration::from_secs(3)) {

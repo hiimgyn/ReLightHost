@@ -64,17 +64,6 @@ const Logo = ({ src, size = 52 }: { src: string; size?: number }) => {
         </filter>
       </defs>
 
-      <mask id={`mask-${id}`}>
-        <image
-          href={src}
-          x={padding}
-          y={padding}
-          width={size - padding * 2}
-          height={size - padding * 2}
-          preserveAspectRatio="xMidYMid meet"
-        />
-      </mask>
-
       <image
         href={src}
         x={padding}
@@ -100,6 +89,7 @@ export default function Header() {
     applyExternalMuteState,
     applyExternalLoopbackState,
     reloadDeviceConfig,
+    toggleMonitoring,
   } = useAudioStore(useShallow((s) => ({
     status: s.status,
     isMuted: s.isMuted,
@@ -109,6 +99,7 @@ export default function Header() {
     applyExternalMuteState: s.applyExternalMuteState,
     applyExternalLoopbackState: s.applyExternalLoopbackState,
     reloadDeviceConfig: s.reloadDeviceConfig,
+    toggleMonitoring: s.toggleMonitoring,
   })));
   const { isChainInitializing, pluginChain, restoreTargetCount } = usePluginStore(useShallow((s) => ({
     isChainInitializing: s.isChainInitializing,
@@ -119,6 +110,7 @@ export default function Header() {
   const [showAppSettings, setShowAppSettings] = useState(false);
   const [appVersion, setAppVersion] = useState("");
   const [isReloadingDevice, setIsReloadingDevice] = useState(false);
+  const [isTogglingEngine, setIsTogglingEngine] = useState(false);
 
   const isEngineReady = status.is_monitoring && !isChainInitializing;
   const restoredCount = restoreTargetCount == null
@@ -154,6 +146,21 @@ export default function Header() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleToggleEngine = async () => {
+    if (isChainInitializing || isTogglingEngine) return;
+    setIsTogglingEngine(true);
+    try {
+      const nextState = !status.is_monitoring;
+      await toggleMonitoring(nextState);
+      message.info(nextState ? "Audio engine started" : "Audio engine stopped");
+    } catch (error) {
+      console.error("Failed to toggle engine:", error);
+      message.error("Failed to toggle engine");
+    } finally {
+      setIsTogglingEngine(false);
+    }
+  };
 
   const handleReloadDevice = async () => {
     setIsReloadingDevice(true);
@@ -238,30 +245,54 @@ export default function Header() {
 
         {/* Controls */}
         <Space size={10} wrap style={{ justifyContent: "flex-end" }}>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderRadius: 999, background: token.colorBgContainer, border: `1px solid ${token.colorBorderSecondary}` }}>
-            {isEngineReady ? (
-              <Badge status="processing" color={token.colorSuccess} />
-            ) : status.is_monitoring ? (
-              <LoadingOutlined
-                style={{ fontSize: 12, color: token.colorWarning }}
-              />
-            ) : (
-              <Badge status="default" color={token.colorTextQuaternary} />
-            )}
-            <Text
+          <Tooltip title={status.is_monitoring ? "Click to stop audio engine" : "Click to start audio engine"}>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={handleToggleEngine}
+              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && handleToggleEngine()}
               style={{
-                fontSize: 12,
-                fontWeight: 600,
-                color: isEngineReady
-                  ? token.colorSuccess
-                  : status.is_monitoring
-                  ? token.colorWarning
-                  : token.colorTextSecondary,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 12px",
+                borderRadius: 999,
+                background: token.colorBgContainer,
+                border: `1px solid ${status.is_monitoring ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
+                cursor: isChainInitializing || isTogglingEngine ? "not-allowed" : "pointer",
+                transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+                userSelect: "none",
+                boxShadow: status.is_monitoring ? `0 0 10px ${token.colorPrimary}22` : "none",
               }}
+              className="rh-engine-badge"
             >
-              {engineLabel}
-            </Text>
-          </div>
+              {isTogglingEngine ? (
+                <LoadingOutlined style={{ fontSize: 12, color: token.colorPrimary }} />
+              ) : isEngineReady ? (
+                <Badge status="processing" color={token.colorSuccess} />
+              ) : status.is_monitoring ? (
+                <LoadingOutlined
+                  style={{ fontSize: 12, color: token.colorWarning }}
+                />
+              ) : (
+                <Badge status="default" color={token.colorTextQuaternary} />
+              )}
+              <Text
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "inherit",
+                  color: isEngineReady
+                    ? token.colorSuccess
+                    : status.is_monitoring
+                    ? token.colorWarning
+                    : token.colorTextSecondary,
+                }}
+              >
+                {engineLabel}
+              </Text>
+            </div>
+          </Tooltip>
 
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2, padding: 4, borderRadius: 12, background: token.colorBgContainer, border: `1px solid ${token.colorBorderSecondary}` }}>
             <Tooltip title={isMuted ? "Unmute output" : "Mute output"}>

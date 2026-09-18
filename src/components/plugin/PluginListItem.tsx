@@ -7,7 +7,7 @@ const { Text } = Typography;
 
 interface PluginListItemProps {
   plugin: PluginInfo;
-  isMutating: boolean;
+  isAdding?: boolean;
   addLocked: boolean;
   token: ReturnType<typeof theme.useToken>['token'];
   getFormatColor: (format: string) => string;
@@ -17,7 +17,7 @@ interface PluginListItemProps {
 
 const PluginListItem = memo(function PluginListItem({
   plugin,
-  isMutating,
+  isAdding = false,
   addLocked,
   token,
   getFormatColor,
@@ -26,55 +26,67 @@ const PluginListItem = memo(function PluginListItem({
 }: PluginListItemProps) {
   return (
     <div
-      className="minimal-surface plugin-list-item"
+      className="plugin-list-item"
       style={{
-        padding: '12px 16px',
+        padding: '12px 14px',
         marginBottom: 8,
         background: token.colorBgElevated,
         border: `1px solid ${token.colorBorderSecondary}`,
         borderRadius: 10,
         cursor: 'pointer',
-        transition: 'border-color 160ms ease, opacity 160ms ease',
+        transition: 'all 160ms cubic-bezier(0.4, 0, 0.2, 1)',
       }}
       onClick={() => onSelect(plugin)}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <Text strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin.name}</Text>
-            <Text type="secondary" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin.manufacture}</Text>
+            <Text strong style={{ fontSize: 13.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {plugin.name}
+            </Text>
+            <Text type="secondary" style={{ fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {plugin.manufacture || 'Unknown'}
+            </Text>
             <div style={{ marginTop: 6 }}>
               <Space size={4} wrap>
-                <Tag color={getFormatColor(plugin.format)}>{plugin.format.toUpperCase()}</Tag>
-                <Tag>{plugin.category}</Tag>
-                {plugin.version && <Tag color="default">v{plugin.version}</Tag>}
+                <Tag color={getFormatColor(plugin.format)} style={{ margin: 0 }}>
+                  {plugin.format.toUpperCase()}
+                </Tag>
+                {plugin.category && (
+                  <Tag style={{ margin: 0 }}>{plugin.category}</Tag>
+                )}
+                {plugin.version && (
+                  <Tag color="default" style={{ margin: 0 }}>v{plugin.version}</Tag>
+                )}
               </Space>
             </div>
           </div>
         </div>
-        <div style={{ marginLeft: 12, display: 'flex', gap: 8 }}>
+        <div style={{ marginLeft: 8, display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
           <Tooltip title="Plugin Info" key="info">
             <Button
               type="text"
               size="small"
-              icon={<InfoCircleOutlined />}
+              icon={<InfoCircleOutlined style={{ color: token.colorTextSecondary, fontSize: 14 }} />}
               onClick={(e) => {
                 e.stopPropagation();
                 onSelect(plugin);
               }}
+              style={{ borderRadius: 8, width: 28, height: 28 }}
             />
           </Tooltip>
           <Tooltip title="Add to Chain" key="add">
             <Button
               type="primary"
               size="small"
-              icon={<PlusCircleOutlined />}
-              loading={isMutating}
+              icon={<PlusCircleOutlined style={{ fontSize: 13 }} />}
+              loading={isAdding}
               disabled={addLocked}
               onClick={(e) => {
                 e.stopPropagation();
                 onAdd(plugin);
               }}
+              style={{ borderRadius: 8, height: 28, paddingInline: 10 }}
             />
           </Tooltip>
         </div>

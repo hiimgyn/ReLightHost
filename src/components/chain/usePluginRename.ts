@@ -37,19 +37,20 @@ export function usePluginRename({ instanceId, pluginName, interactionLocked, mes
   const confirmRename = async () => {
     if (interactionLocked || isRenamingBusy) return;
     const trimmed = editName.trim();
-    if (trimmed && trimmed !== pluginName) {
+    if (trimmed !== pluginName) {
       try {
         setIsRenamingBusy(true);
         console.debug('PluginCard: rename confirm', { instanceId, from: pluginName, to: trimmed });
         await tauri.renamePlugin(instanceId, trimmed);
+        if (!trimmed) {
+          messageApi.success('Plugin name reset to default');
+        }
       } catch (err) {
         messageApi.error(`Rename failed: ${err}`);
         setEditName(pluginName);
       } finally {
         setIsRenamingBusy(false);
       }
-    } else if (!trimmed) {
-      setEditName(pluginName);
     }
     setIsRenaming(false);
   };

@@ -128,9 +128,8 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       await tauri.setSampleRate(sampleRate);
       await tauri.setBufferSize(bufferSize);
 
-      if (wasMonitoring) {
-        await tauri.toggleMonitoring(true);
-      }
+      // Always start monitoring after reloading device configuration to restore audio stream
+      await tauri.toggleMonitoring(true);
 
       await get().fetchStatus();
     } catch (error) {

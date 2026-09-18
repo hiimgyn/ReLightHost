@@ -1,7 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 /* Brand — keep in sync with Layout ConfigProvider colorPrimary / colorInfo */
 :root {
@@ -60,37 +58,37 @@
 
 :root.dark {
   color-scheme: dark;
-  color: rgba(255, 255, 255, 0.88);
-  background-color: #08080c;
-  --rh-glass-bg: rgba(45, 50, 78, 0.18);
-  --rh-glass-bg-strong: rgba(58, 64, 96, 0.24);
-  --rh-glass-border: rgba(210, 216, 255, 0.26);
-  --rh-glass-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  color: rgba(255, 255, 255, 0.96);
+  background-color: #0c0d14;
+  --rh-glass-bg: rgba(20, 23, 38, 0.75);
+  --rh-glass-bg-strong: rgba(26, 30, 48, 0.90);
+  --rh-glass-border: rgba(255, 255, 255, 0.11);
+  --rh-glass-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
   --rh-glass-inset:
-    inset 0 1px 0 rgba(255, 255, 255, 0.2),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 0 12px 6px rgba(167, 180, 255, 0.12);
-  --rh-minimal-bg: rgba(18, 20, 34, 0.92);
-  --rh-minimal-bg-strong: rgba(28, 31, 48, 0.96);
-  --rh-minimal-border: rgba(132, 148, 255, 0.16);
-  --rh-minimal-shadow: 0 4px 12px rgba(0, 0, 0, 0.24);
-  --rh-tooltip-bg: rgba(18, 20, 34, 0.96);
-  --rh-tooltip-surface: linear-gradient(180deg, rgba(28,31,48,0.96) 0%, rgba(18,20,34,0.94) 100%);
-  --rh-tooltip-border: rgba(132, 148, 255, 0.22);
-  --rh-tooltip-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
-  --rh-surface-soft-gradient: linear-gradient(135deg, rgba(58,64,96,0.24) 0%, rgba(45,50,78,0.18) 100%);
-  --rh-surface-soft-border: rgba(210,216,255,0.24);
-  --rh-surface-soft-border-strong: rgba(210,216,255,0.28);
-  --rh-divider-subtle: rgba(255, 255, 255, 0.16);
-  --rh-text-muted: rgba(255, 255, 255, 0.52);
-  --rh-inset-soft: inset 0 1px 0 rgba(255,255,255,0.08);
-  --rh-header-shadow: 0 1px 4px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.03);
-  --rh-footer-shadow: 0 -1px 4px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.03);
-  --rh-chain-toolbar-shadow: 0 4px 12px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.04);
-  --rh-chain-panel-shadow: 0 4px 16px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04);
-  --rh-chain-well-bg: linear-gradient(135deg, rgba(58,64,96,0.22) 0%, rgba(45,50,78,0.16) 100%);
-  --rh-chain-well-border: rgba(255,255,255,0.12);
-  --rh-chain-insert-bg: linear-gradient(135deg, rgba(99,103,255,0.34), rgba(132,148,255,0.28));
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    inset 0 0 16px 2px rgba(107, 112, 255, 0.08);
+  --rh-minimal-bg: rgba(16, 18, 28, 0.94);
+  --rh-minimal-bg-strong: rgba(24, 27, 44, 0.98);
+  --rh-minimal-border: rgba(255, 255, 255, 0.10);
+  --rh-minimal-shadow: 0 16px 48px rgba(0, 0, 0, 0.70), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --rh-tooltip-bg: rgba(18, 21, 34, 0.98);
+  --rh-tooltip-surface: linear-gradient(180deg, rgba(28, 32, 52, 0.98) 0%, rgba(18, 21, 34, 0.96) 100%);
+  --rh-tooltip-border: rgba(107, 112, 255, 0.35);
+  --rh-tooltip-shadow: 0 12px 32px rgba(0, 0, 0, 0.75);
+  --rh-surface-soft-gradient: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%);
+  --rh-surface-soft-border: rgba(255, 255, 255, 0.08);
+  --rh-surface-soft-border-strong: rgba(107, 112, 255, 0.28);
+  --rh-divider-subtle: rgba(255, 255, 255, 0.10);
+  --rh-text-muted: rgba(255, 255, 255, 0.60);
+  --rh-inset-soft: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --rh-header-shadow: 0 1px 12px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --rh-footer-shadow: 0 -1px 12px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --rh-chain-toolbar-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --rh-chain-panel-shadow: 0 12px 36px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --rh-chain-well-bg: linear-gradient(180deg, rgba(14, 16, 26, 0.95) 0%, rgba(10, 11, 18, 0.98) 100%);
+  --rh-chain-well-border: rgba(255, 255, 255, 0.08);
+  --rh-chain-insert-bg: linear-gradient(135deg, rgba(107, 112, 255, 0.28), rgba(140, 145, 255, 0.20));
 }
 
 body {
@@ -111,8 +109,9 @@ body {
 
 :root.dark body {
   background:
-    radial-gradient(920px 560px at 12% 8%, rgba(99, 103, 255, 0.16), transparent 60%),
-    linear-gradient(165deg, #151729 0%, #0e1020 100%);
+    radial-gradient(1000px 600px at 15% 10%, rgba(107, 112, 255, 0.12), transparent 65%),
+    radial-gradient(800px 500px at 85% 85%, rgba(56, 189, 248, 0.05), transparent 60%),
+    linear-gradient(180deg, #0e1018 0%, #08090d 100%);
 }
 
 * {
@@ -143,17 +142,9 @@ body {
   overflow: hidden;
 }
 
-.minimal-surface,
-.minimal-surface.ant-card,
-.minimal-surface.ant-modal-content,
-.minimal-surface.ant-drawer-content,
-.minimal-surface.ant-input,
-.minimal-surface.ant-input-affix-wrapper,
-.minimal-surface.ant-select-selector,
-.minimal-surface.ant-card .ant-card-body {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  border: 1px solid var(--rh-minimal-border) !important;
-  box-shadow: none !important;
+.minimal-surface {
+  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%);
+  border: 1px solid var(--rh-minimal-border);
 }
 
 .glass-card.ant-card,
@@ -539,36 +530,78 @@ body {
 
 /* Fluent Design System component enhancements */
 
-/* Input fields with minimalism */
-.ant-input,
+/* Input fields with crisp modern surfaces */
+.ant-input-affix-wrapper {
+  background: rgba(16, 18, 29, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 8px 12px;
+  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+:root:not(.dark) .ant-input-affix-wrapper {
+  background: #ffffff;
+  border: 1px solid rgba(99, 103, 255, 0.22);
+}
+
+.ant-input-affix-wrapper:hover {
+  border-color: var(--rh-primary-soft);
+}
+
+.ant-input-affix-wrapper-focused,
+.ant-input-affix-wrapper:focus-within {
+  border-color: var(--rh-primary) !important;
+  box-shadow: 0 0 0 3px rgba(107, 112, 255, 0.25) !important;
+}
+
+.ant-input-affix-wrapper > input.ant-input {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: inherit !important;
+}
+
+.ant-input-affix-wrapper .ant-input-prefix {
+  margin-right: 8px;
+}
+
+.ant-input:not(.ant-input-affix-wrapper > input),
 .ant-input-number,
 .ant-select-selector {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  border: 1px solid var(--rh-minimal-border) !important;
-  box-shadow: var(--rh-inset-soft);
+  border-radius: 10px !important;
   transition: all 200ms ease;
 }
 
-.ant-input:hover,
-.ant-input-number:hover,
-.ant-select-selector:hover {
-  border-color: rgba(99, 103, 255, 0.26) !important;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(246, 248, 255, 0.92) 100%) !important;
+:root.dark .ant-input:not(.ant-input-affix-wrapper > input),
+:root.dark .ant-input-number,
+:root.dark .ant-select-selector {
+  background: #10121d !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: rgba(255, 255, 255, 0.95) !important;
 }
 
-:root.dark .ant-input:hover,
-:root.dark .ant-input-number:hover,
-:root.dark .ant-select-selector:hover {
-  border-color: rgba(132, 148, 255, 0.24) !important;
-  background: linear-gradient(135deg, rgba(28, 31, 48, 0.98) 0%, rgba(18, 20, 34, 0.94) 100%) !important;
+:root:not(.dark) .ant-input:not(.ant-input-affix-wrapper > input),
+:root:not(.dark) .ant-input-number,
+:root:not(.dark) .ant-select-selector {
+  background: #ffffff !important;
+  border: 1px solid rgba(99, 103, 255, 0.2) !important;
 }
 
-/* Ant Design Tag with minimal styling */
+/* Ant Design Tag — sleek pill tags without destructive !important overrides */
 .ant-tag {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  border: 1px solid var(--rh-minimal-border) !important;
-  color: var(--rh-text-secondary);
-  box-shadow: var(--rh-minimal-shadow);
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em;
+  padding: 2px 8px !important;
+  line-height: 18px !important;
+  transition: all 160ms ease;
+}
+
+:root.dark .ant-tag:not([class*='ant-tag-']) {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: rgba(255, 255, 255, 0.8) !important;
 }
 
 /* Tooltip skin shared with drag pointer bubble */
@@ -619,28 +652,40 @@ body {
   text-overflow: ellipsis;
 }
 
-/* Modal/Dialog and drawer with minimal styling */
-.ant-modal-content {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  border: 1px solid var(--rh-minimal-border) !important;
-  box-shadow: var(--rh-minimal-shadow) !important;
+/* Modal/Dialog and drawer with rich elevation & depth */
+.ant-modal .ant-modal-content {
+  border-radius: 16px !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0 40px rgba(107, 112, 255, 0.12) !important;
+  backdrop-filter: blur(24px);
   position: relative;
   overflow: hidden;
 }
 
-.ant-drawer-content {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
-  border-left: 1px solid var(--rh-minimal-border) !important;
-  box-shadow: var(--rh-minimal-shadow) !important;
+:root:not(.dark) .ant-modal .ant-modal-content {
+  border: 1px solid rgba(99, 103, 255, 0.16) !important;
+  box-shadow: 0 20px 50px -10px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(99, 103, 255, 0.10) !important;
+}
+
+.ant-drawer .ant-drawer-content {
+  border-left: 1px solid rgba(255, 255, 255, 0.10) !important;
+  box-shadow: -16px 0 48px rgba(0, 0, 0, 0.75) !important;
+  backdrop-filter: blur(24px);
   position: relative;
   overflow: hidden;
+}
+
+:root:not(.dark) .ant-drawer .ant-drawer-content {
+  border-left: 1px solid rgba(99, 103, 255, 0.14) !important;
+  box-shadow: -12px 0 36px rgba(15, 23, 42, 0.10) !important;
 }
 
 .ant-modal-header,
 .ant-drawer-header {
   background: transparent !important;
-  border-bottom: 1px solid var(--rh-minimal-border) !important;
-  padding-bottom: 12px !important;
+  border-bottom: 1px solid var(--rh-divider-subtle) !important;
+  padding-bottom: 14px !important;
+  margin-bottom: 14px !important;
 }
 
 .ant-modal-title,
@@ -864,5 +909,126 @@ body {
     0 12px 48px rgba(0, 0, 0, 0.35),
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
+
+/* ==========================================================================
+   ReLightHost Signature Audio & Signal Flow Animations
+   ========================================================================== */
+
+@keyframes rh-dash-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+.rh-flowing-signal {
+  stroke-dasharray: 6 6;
+  animation: rh-dash-flow 1.2s linear infinite;
+  will-change: stroke-dashoffset;
+}
+
+@keyframes rh-ring-wave {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.85;
+  }
+  60% {
+    transform: scale(1.55);
+    opacity: 0.15;
+  }
+  100% {
+    transform: scale(1.85);
+    opacity: 0;
+  }
+}
+
+.rh-ring-wave-pulse {
+  animation: rh-ring-wave 2s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+  transform-origin: center;
+  pointer-events: none;
+}
+
+@keyframes rh-pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(99, 103, 255, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(99, 103, 255, 0.65), 0 0 35px rgba(132, 148, 255, 0.3);
+  }
+}
+
+.rh-endpoint-active {
+  animation: rh-pulse-glow 2.8s ease-in-out infinite;
+}
+
+@keyframes rh-vad-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.6);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 0 0 6px rgba(82, 196, 26, 0);
+  }
+}
+
+.rh-vad-active {
+  animation: rh-vad-pulse 1.4s ease-out infinite;
+}
+
+.rh-engine-badge {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.rh-engine-badge:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+
+.rh-engine-badge:active {
+  transform: translateY(0);
+}
+
+/* ==========================================================================
+   Plugin Search Input & Elevated Modal Elements
+   ========================================================================== */
+
+.plugin-search-input {
+  border-radius: 12px !important;
+  padding: 8px 14px !important;
+  font-size: 13.5px !important;
+  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+:root.dark .plugin-search-input {
+  background: rgba(14, 16, 26, 0.95) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.45) !important;
+}
+
+:root:not(.dark) .plugin-search-input {
+  background: #ffffff !important;
+  border: 1px solid rgba(99, 103, 255, 0.24) !important;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06) !important;
+}
+
+.plugin-search-input:hover {
+  border-color: var(--rh-primary-soft) !important;
+}
+
+.plugin-search-input.ant-input-affix-wrapper-focused,
+.plugin-search-input:focus-within {
+  border-color: var(--rh-primary) !important;
+  box-shadow: 0 0 0 3px rgba(107, 112, 255, 0.28), inset 0 2px 4px rgba(0, 0, 0, 0.35) !important;
+}
+
+.plugin-search-input input::placeholder {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+:root:not(.dark) .plugin-search-input input::placeholder {
+  color: rgba(0, 0, 0, 0.42) !important;
+}
+
+
 
 

@@ -1,6 +1,6 @@
 {
   "productName": "ReLightHost",
-  "version": "2.3.5",
+  "version": "2.4.0",
   "identifier": "ReLightHost",
   "build": {
     "frontendDist": "../dist",
@@ -39,7 +39,9 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "resources": {}
+    "resources": {
+      "target/release/vst3_sandbox_host.exe": "vst3_sandbox_host.exe"
+    }
   },
   "plugins": {
     "updater": {

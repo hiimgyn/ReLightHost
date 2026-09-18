@@ -17,9 +17,11 @@ export function usePluginLibraryFilters({
 }: UsePluginLibraryFiltersOptions) {
   const filteredPlugins = useMemo(() => {
     const query = searchQuery.toLowerCase();
-    return availablePlugins.filter(plugin => {
-      const matchesSearch = plugin.name.toLowerCase().includes(query) ||
-                           plugin.manufacture.toLowerCase().includes(query);
+    return availablePlugins.filter((plugin) => {
+      const matchesSearch =
+        plugin.name.toLowerCase().includes(query) ||
+        (plugin.manufacture?.toLowerCase().includes(query) ?? false) ||
+        (plugin.category?.toLowerCase().includes(query) ?? false);
       const matchesFormat = filterFormat === 'all' || plugin.format === filterFormat;
       return matchesSearch && matchesFormat;
     });

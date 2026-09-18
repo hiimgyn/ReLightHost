@@ -11,7 +11,7 @@ interface PluginAuthorGroupProps {
   group: PluginInfo[];
   isCollapsed: boolean;
   onToggleCollapse: () => void;
-  isMutating: boolean;
+  addingPluginId?: string | null;
   addLocked: boolean;
   onSelect: (plugin: PluginInfo) => void;
   onAdd: (plugin: PluginInfo) => void;
@@ -23,7 +23,7 @@ export default function PluginAuthorGroup({
   group,
   isCollapsed,
   onToggleCollapse,
-  isMutating,
+  addingPluginId,
   addLocked,
   onSelect,
   onAdd,
@@ -34,42 +34,40 @@ export default function PluginAuthorGroup({
   return (
     <div style={{ marginBottom: 12 }}>
       <div
-        className="minimal-surface"
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: 12,
-          padding: '10px 12px',
+          padding: '10px 14px',
           borderRadius: 10,
-          background: token.colorBgElevated,
+          background: token.colorBgContainer,
           border: `1px solid ${token.colorBorderSecondary}`,
-          boxShadow: 'none',
           cursor: 'pointer',
-          transition: 'border-color 160ms ease',
+          transition: 'all 160ms ease',
         }}
         onClick={onToggleCollapse}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 }}>
           <div
             style={{
-              width: 28,
-              height: 28,
+              width: 32,
+              height: 32,
               borderRadius: 8,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              background: `${authorColor}18`,
-              border: `1px solid ${authorColor}33`,
+              background: `${authorColor}22`,
+              border: `1px solid ${authorColor}44`,
               flexShrink: 0,
             }}
           >
-            <AppstoreOutlined style={{ color: authorColor, fontSize: 14 }} />
+            <AppstoreOutlined style={{ color: authorColor, fontSize: 16 }} />
           </div>
           <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
             <Space size={6} align="center" style={{ minWidth: 0 }}>
               <Text strong style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getAuthorLabel(author)}</Text>
-              <Tag style={{ margin: 0 }}>{group.length}</Tag>
+              <Tag style={{ margin: 0, fontSize: 11 }}>{group.length}</Tag>
             </Space>
             <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.2 }}>
               {author === 'Unknown' ? 'Plugins without manufacturer metadata' : 'Grouped by manufacturer'}
@@ -94,7 +92,7 @@ export default function PluginAuthorGroup({
             <PluginListItem
               key={plugin.id}
               plugin={plugin}
-              isMutating={isMutating}
+              isAdding={addingPluginId === plugin.id}
               addLocked={addLocked}
               token={token}
               getFormatColor={getFormatColor}

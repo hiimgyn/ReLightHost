@@ -6,22 +6,18 @@
 //!   2. Call `effEditOpen(hwnd)` — the plugin creates a child window inside ours.
 //!   3. Run a standard blocking Win32 message loop.
 //!   4. On close: `effEditClose`, then let the GUI thread exit naturally.
-//!
-//! The `SendableEditor` wrapper allows sending `Box<dyn Editor>` across threads.
-//! vst-rs's concrete `EditorInstance` type only contains `Arc<Send+Sync>` + bool,
-//! so this is safe even though `Editor` is not declared Send in the crate.
 
 use anyhow::{anyhow, Result};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
-use super::super::processor::vst2::SendableEditor;
+use super::super::processor::vst2::RawPlugin;
 
 // ── Platform stub for non-Windows ────────────────────────────────────────────
 
 #[cfg(not(target_os = "windows"))]
-pub fn open_vst2_gui(
-    _editor_arc: Arc<Mutex<Option<SendableEditor>>>,
+pub(crate) fn open_vst2_gui(
+    _plugin: Arc<Mutex<RawPlugin>>,
     plugin_name: &str,
     gui_flag: Arc<AtomicBool>,
     _gui_hwnd: Arc<AtomicIsize>,
@@ -33,23 +29,23 @@ pub fn open_vst2_gui(
 // ── Windows implementation ────────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
-pub fn open_vst2_gui(
-    editor_arc: Arc<Mutex<Option<SendableEditor>>>,
+pub(crate) fn open_vst2_gui(
+    plugin: Arc<Mutex<RawPlugin>>,
     plugin_name: &str,
     gui_flag: Arc<AtomicBool>,
     gui_hwnd: Arc<AtomicIsize>,
 ) -> Result<()> {
     // Verify the plugin has an editor before spawning a thread.
     {
-        let guard = editor_arc.lock()
-            .map_err(|_| anyhow!("VST2 editor mutex poisoned for '{}'", plugin_name))?;
-        if guard.is_none() {
+        let guard = plugin.lock()
+            .map_err(|_| anyhow!("VST2 plugin mutex poisoned for '{}'", plugin_name))?;
+        if !guard.has_editor() {
             gui_flag.store(false, Ordering::Release);
             return Err(anyhow!("'{}' has no VST2 editor", plugin_name));
         }
     }
 
-    let editor_arc_clone = Arc::clone(&editor_arc);
+    let plugin_clone = Arc::clone(&plugin);
     let name_owned = plugin_name.to_string();
 
     std::thread::Builder::new()
@@ -69,7 +65,7 @@ pub fn open_vst2_gui(
             }
             let _guard = GuiFlagGuard(gui_flag, Arc::clone(&gui_hwnd));
 
-            if let Err(e) = win::run_vst2_editor_impl(&editor_arc_clone, &name_owned, &gui_hwnd) {
+            if let Err(e) = win::run_vst2_editor_impl(&plugin_clone, &name_owned, &gui_hwnd) {
                 log::error!("VST2 GUI error for '{}': {}", name_owned, e);
             }
         })
@@ -82,13 +78,11 @@ pub fn open_vst2_gui(
 
 #[cfg(target_os = "windows")]
 mod win {
-    use super::SendableEditor;
+    use super::RawPlugin;
     use anyhow::{anyhow, Result};
     use std::ptr;
     use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicIsize, Ordering};
-    #[allow(unused_imports)] // Method dispatch on Box<dyn Editor> vtable works without the trait in scope
-    use vst::editor::Editor;
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetModuleHandleA, LoadLibraryA, GetProcAddress};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -111,20 +105,18 @@ mod win {
     }
 
     pub fn run_vst2_editor_impl(
-        editor_arc: &Arc<Mutex<Option<SendableEditor>>>,
+        plugin: &Arc<Mutex<RawPlugin>>,
         plugin_name: &str,
         gui_hwnd_arc: &Arc<AtomicIsize>,
     ) -> Result<()> {
-        // Obtain the editor. We hold the lock only long enough to open the window,
-        // then release it so audio-state callers are not blocked.
-        let mut editor_guard = editor_arc.lock()
-            .map_err(|_| anyhow!("VST2 editor mutex poisoned for '{}'", plugin_name))?;
-
-        let editor = editor_guard.as_mut()
-            .ok_or_else(|| anyhow!("'{}' has no VST2 editor", plugin_name))?;
+        // Hold the lock only long enough to open the window, then release it
+        // so audio-processing / state calls are not blocked for the GUI's
+        // whole lifetime (see Vst2Processor::process_stereo's try_lock()).
+        let mut guard = plugin.lock()
+            .map_err(|_| anyhow!("VST2 plugin mutex poisoned for '{}'", plugin_name))?;
 
         // Query initial editor size.
-        let (mut width, mut height) = editor.0.size();
+        let (mut width, mut height) = guard.editor_size();
         if width  <= 0 { width  = 640; }
         if height <= 0 { height = 480; }
 
@@ -136,14 +128,14 @@ mod win {
 
         // Open the VST2 editor inside our window (effEditOpen).
         // The plugin creates a child window at coords (0, 0) inside hwnd.
-        let opened = editor.0.open(hwnd);
+        let opened = guard.editor_open(hwnd);
         if !opened {
             unsafe { DestroyWindow(hwnd); }
             return Err(anyhow!("'{}': VST2 effEditOpen returned false", plugin_name));
         }
 
         // Some plugins report the correct size only after open().
-        let (post_w, post_h) = editor.0.size();
+        let (post_w, post_h) = guard.editor_size();
         if post_w > 10 && post_h > 10 && (post_w != width || post_h != height) {
             let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
             let mut wr = RECT { left: 0, top: 0, right: post_w, bottom: post_h };
@@ -173,10 +165,10 @@ mod win {
             SetForegroundWindow(hwnd);
         }
 
-        // Release the editor lock before entering the message loop so that
-        // other threads (e.g. preset save) are not blocked for the entire
-        // runtime of the GUI.
-        drop(editor_guard);
+        // Release the plugin lock before entering the message loop so that
+        // other threads (e.g. preset save, audio processing) are not blocked
+        // for the entire runtime of the GUI.
+        drop(guard);
 
         // ── Message loop ──────────────────────────────────────────────────────
         // Standard blocking Win32 loop.  Plugin child-windows get WM_PAINT etc.
@@ -190,12 +182,10 @@ mod win {
         }
 
         // ── Cleanup ───────────────────────────────────────────────────────────
-        // Re-acquire the editor lock to call effEditClose.
+        // Re-acquire the lock to call effEditClose.
         // The plugin should destroy its child window during close().
-        if let Ok(mut guard) = editor_arc.lock() {
-            if let Some(ref mut ed) = *guard {
-                ed.0.close();
-            }
+        if let Ok(mut guard) = plugin.lock() {
+            guard.editor_close();
         }
 
         log::debug!("'{}' VST2 GUI cleanup complete", plugin_name);

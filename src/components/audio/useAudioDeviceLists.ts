@@ -42,17 +42,17 @@ export function useAudioDeviceLists({
   );
   // Separate output / input lists for non-ASIO
   const outputDevices = useMemo(
-    () => filteredDevices.filter((d) => d.output_channels > 0 && d.input_channels === 0),
+    () => filteredDevices.filter((d) => d.output_channels > 0),
     [filteredDevices],
   );
   const inputDevices = useMemo(
-    () => filteredDevices.filter((d) => d.input_channels > 0 && d.output_channels === 0),
+    () => filteredDevices.filter((d) => d.input_channels > 0),
     [filteredDevices],
   );
   const monitorOutputDevices = useMemo(
     () =>
       devices.filter(
-        (d) => d.output_channels > 0 && d.input_channels === 0 && !isAsioHost(d.host_type),
+        (d) => d.output_channels > 0 && !isAsioHost(d.host_type),
       ),
     [devices],
   );

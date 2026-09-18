@@ -5,11 +5,11 @@ use std::time::Instant;
 use std::sync::Mutex;
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{BufferSize, SampleFormat, SampleRate, StreamConfig};
+use cpal::{BufferSize, SampleFormat, StreamConfig};
 use ringbuf::{HeapRb, traits::{Producer, Consumer, Split}};
 
 use crate::audio::types::{AudioStatus, AudioConfig};
-use crate::audio::device::AudioDevice;
+use crate::audio::device::{AudioDevice, cpal_device_name};
 use crate::audio::vu_meter::VUMeter;
 
 /// Holds live CPAL streams for input monitoring (kept alive while monitoring is on)
@@ -245,7 +245,7 @@ impl AudioManager {
             // ASIO: let the driver decide sample rate (it controls the HW clock).
             // Non-ASIO: pass the user-configured rate as a preference.
             let sample_rate = if is_asio {
-                let driver_rate = default_cfg.sample_rate().0;
+                let driver_rate = default_cfg.sample_rate();
                 if driver_rate != config.sample_rate {
                     log::warn!(
                         "ASIO driver sample rate {} Hz differs from configured {} Hz; \
@@ -260,7 +260,7 @@ impl AudioManager {
             };
             let stream_cfg = StreamConfig {
                 channels: default_cfg.channels(),
-                sample_rate: SampleRate(sample_rate),
+                sample_rate,
                 // BufferSize::Default lets the ASIO driver report its own block size;
                 // WASAPI treats it as a hint. The output callback handles variable
                 // frame counts via left_buf/right_buf dynamic resizing.
@@ -270,14 +270,14 @@ impl AudioManager {
         };
 
         let select_virtual_output_config = |device: &cpal::Device, is_asio: bool| -> Result<(StreamConfig, usize, SampleFormat)> {
-            let device_name = device.name().unwrap_or_else(|_| "<unknown>".to_string());
+            let device_name = cpal_device_name(device).unwrap_or_else(|| "<unknown>".to_string());
             let default_cfg = device.default_output_config()
                 .map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
             log::info!(
                 "Virtual output default config for '{}': {}ch @ {}Hz ({:?})",
                 device_name,
                 default_cfg.channels(),
-                default_cfg.sample_rate().0,
+                default_cfg.sample_rate(),
                 default_cfg.sample_format()
             );
             let default_stream_cfg = StreamConfig {
@@ -303,12 +303,12 @@ impl AudioManager {
                     log::info!(
                         "Virtual output supported: {}ch @ {}-{}Hz ({:?})",
                         range.channels(),
-                        range.min_sample_rate().0,
-                        range.max_sample_rate().0,
+                        range.min_sample_rate(),
+                        range.max_sample_rate(),
                         range.sample_format()
                     );
-                    let min_rate = range.min_sample_rate().0;
-                    let max_rate = range.max_sample_rate().0;
+                    let min_rate = range.min_sample_rate();
+                    let max_rate = range.max_sample_rate();
                     let requested = config.sample_rate;
                     let rate = if is_asio {
                         max_rate
@@ -319,14 +319,14 @@ impl AudioManager {
                     };
                     let stream_cfg = StreamConfig {
                         channels: range.channels(),
-                        sample_rate: SampleRate(rate),
+                        sample_rate: rate,
                         buffer_size: BufferSize::Default,
                     };
                     candidates.push((stream_cfg, range.channels() as usize, range.sample_format()));
                     if !is_asio && range.channels() > 2 {
                         let stereo_cfg = StreamConfig {
                             channels: 2,
-                            sample_rate: SampleRate(rate),
+                            sample_rate: rate,
                             buffer_size: BufferSize::Default,
                         };
                         candidates.push((stereo_cfg, 2, range.sample_format()));
@@ -337,7 +337,7 @@ impl AudioManager {
             let try_build = |cfg: &StreamConfig, fmt: SampleFormat| -> Result<()> {
                 let result = match fmt {
                     SampleFormat::F32 => device.build_output_stream(
-                        cfg,
+                        *cfg,
                         |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                             for sample in data.iter_mut() {
                                 *sample = 0.0;
@@ -347,7 +347,7 @@ impl AudioManager {
                         None,
                     ),
                     SampleFormat::I16 => device.build_output_stream(
-                        cfg,
+                        *cfg,
                         |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
                             for sample in data.iter_mut() {
                                 *sample = 0;
@@ -357,7 +357,7 @@ impl AudioManager {
                         None,
                     ),
                     SampleFormat::U16 => device.build_output_stream(
-                        cfg,
+                        *cfg,
                         |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
                             for sample in data.iter_mut() {
                                 *sample = u16::MAX / 2;
@@ -367,7 +367,7 @@ impl AudioManager {
                         None,
                     ),
                     SampleFormat::I32 => device.build_output_stream(
-                        cfg,
+                        *cfg,
                         |data: &mut [i32], _: &cpal::OutputCallbackInfo| {
                             for sample in data.iter_mut() {
                                 *sample = 0;
@@ -390,7 +390,7 @@ impl AudioManager {
                         log::warn!(
                             "Virtual output config rejected: {}ch @ {}Hz ({:?}) -> {e}",
                             cfg.channels,
-                            cfg.sample_rate.0,
+                            cfg.sample_rate,
                             fmt
                         );
                     }
@@ -431,7 +431,7 @@ impl AudioManager {
         // -----------------------------------------------------------------
         let in_stream = input_device
             .build_input_stream(
-                &in_cfg,
+                in_cfg,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     for chunk in data.chunks(input_channels.max(1)) {
                         // Always produce exactly 2 samples (L, R) per frame
@@ -511,9 +511,9 @@ impl AudioManager {
         let out_stream_opt = if let (Some(out_dev), Some(out_cfg), Some(output_channels)) =
             (output_device_opt.as_ref(), out_cfg_opt.as_ref(), output_channels_opt)
         {
-            let sample_rate_hz = out_cfg.sample_rate.0 as f64;
+            let sample_rate_hz = out_cfg.sample_rate as f64;
             let out_stream = out_dev.build_output_stream(
-                out_cfg,
+                *out_cfg,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let frames = data.len() / output_channels.max(1);
 
@@ -633,7 +633,7 @@ impl AudioManager {
         {
             let stream_result: anyhow::Result<cpal::Stream> = match virt_fmt {
                 SampleFormat::F32 => dev.build_output_stream(
-                    &virt_cfg,
+                    virt_cfg,
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let frames = data.len() / virt_ch.max(1);
                         for frame in 0..frames {
@@ -648,7 +648,7 @@ impl AudioManager {
                     None,
                 ).map_err(Into::into),
                 SampleFormat::I16 => dev.build_output_stream(
-                    &virt_cfg,
+                    virt_cfg,
                     move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
                         let frames = data.len() / virt_ch.max(1);
                         for frame in 0..frames {
@@ -664,7 +664,7 @@ impl AudioManager {
                     None,
                 ).map_err(Into::into),
                 SampleFormat::U16 => dev.build_output_stream(
-                    &virt_cfg,
+                    virt_cfg,
                     move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
                         let frames = data.len() / virt_ch.max(1);
                         for frame in 0..frames {
@@ -680,7 +680,7 @@ impl AudioManager {
                     None,
                 ).map_err(Into::into),
                 SampleFormat::I32 => dev.build_output_stream(
-                    &virt_cfg,
+                    virt_cfg,
                     move |data: &mut [i32], _: &cpal::OutputCallbackInfo| {
                         let frames = data.len() / virt_ch.max(1);
                         for frame in 0..frames {

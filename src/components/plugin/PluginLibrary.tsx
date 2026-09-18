@@ -38,6 +38,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [selectedPlugin, setSelectedPlugin] = useState<PluginInfo | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [addingPluginId, setAddingPluginId] = useState<string | null>(null);
 
   const { filteredPlugins, groupedByAuthor, authorKeys, tabItems } = usePluginLibraryFilters({
     availablePlugins,
@@ -51,10 +52,13 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
 
   const handleAddPlugin = useCallback(async (plugin: PluginInfo) => {
     if (addLocked) return;
+    setAddingPluginId(plugin.id);
     try {
       await addToChain(plugin);
     } catch (error) {
       console.error('Failed to add plugin:', error);
+    } finally {
+      setAddingPluginId(null);
     }
   }, [addLocked, addToChain]);
 
@@ -67,15 +71,34 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   return (
     <>
       <Drawer
-        className="minimal-panel"
         title={
-          <Space>
-            <AppstoreOutlined style={{ fontSize: 20, color: token.colorPrimary }} />
-            <Text strong style={{ fontSize: 15, letterSpacing: '-0.01em', color: token.colorText }}>Plugin Library</Text>
+          <Space size={10} align="center">
+            <div
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 8,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: `${token.colorPrimary}1c`,
+                border: `1px solid ${token.colorPrimary}38`,
+              }}
+            >
+              <AppstoreOutlined style={{ fontSize: 16, color: token.colorPrimary }} />
+            </div>
+            <div>
+              <Text strong style={{ fontSize: 15, display: 'block', lineHeight: 1.2, color: token.colorText }}>
+                Plugin Library
+              </Text>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                {availablePlugins.length} plugins available
+              </Text>
+            </div>
           </Space>
         }
         placement="right"
-        size={480}
+        width={480}
         onClose={onClose}
         open={isOpen}
         extra={
@@ -83,7 +106,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
             <Tooltip title="Plugin Scan Settings">
               <Button
                 type="text"
-                icon={<SettingOutlined />}
+                icon={<SettingOutlined style={{ color: token.colorTextSecondary, fontSize: 16 }} />}
                 onClick={() => setShowSettings(true)}
               />
             </Tooltip>
@@ -92,18 +115,13 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
       >
         {/* Search Bar */}
         <Input
-          className="minimal-surface"
+          className="plugin-search-input"
           size="large"
-          placeholder="Search plugins..."
-          prefix={<SearchOutlined />}
+          placeholder="Search plugins by name, manufacturer, category..."
+          prefix={<SearchOutlined style={{ color: token.colorPrimary, fontSize: 16, marginRight: 4 }} />}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          style={{
-            marginBottom: 16,
-            borderRadius: 10,
-            border: '1px solid var(--rh-surface-soft-border-strong)',
-            background: 'var(--rh-surface-soft-gradient)',
-          }}
+          style={{ marginBottom: 16 }}
           allowClear
         />
 
@@ -134,7 +152,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
                 group={groupedByAuthor[author]}
                 isCollapsed={!!collapsedGroups[author]}
                 onToggleCollapse={() => setCollapsedGroups(prev => ({ ...prev, [author]: !prev[author] }))}
-                isMutating={isMutating}
+                addingPluginId={addingPluginId}
                 addLocked={addLocked}
                 onSelect={handleSelectPlugin}
                 onAdd={handleAddPlugin}
@@ -145,7 +163,7 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           <Empty
               image={<AppstoreOutlined style={{ fontSize: 64, color: token.colorTextTertiary }} />}
             description={
-              <Space orientation="vertical" size={0}>
+              <Space direction="vertical" size={0}>
                 <Text type="secondary">No plugins found</Text>
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   {searchQuery ? 'Try a different search' : 'Click "Scan Plugins" to find plugins'}
@@ -162,28 +180,28 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
           bottom: 0,
           left: 0,
           right: 0,
-          padding: '16px 24px',
-          background: 'linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%)',
-          borderTop: '1px solid var(--rh-minimal-border)'
+          padding: '14px 20px',
+          background: token.colorBgElevated,
+          borderTop: `1px solid ${token.colorBorderSecondary}`,
+          boxShadow: '0 -8px 24px rgba(0, 0, 0, 0.25)',
         }}>
           {isChainInitializing && (
-            <div style={{ textAlign: 'center', marginBottom: 8, color: 'var(--rh-text-muted)', fontSize: 12 }}>
+            <div style={{ textAlign: 'center', marginBottom: 8, color: token.colorWarning, fontSize: 12 }}>
               Initial chain is loading, adding plugins is temporarily locked.
             </div>
           )}
           <Button
+            type="primary"
             block
             size="large"
-            icon={<ReloadOutlined />}
+            icon={<ReloadOutlined spin={isScanning} />}
             onClick={scanPlugins}
             loading={isScanning}
             disabled={isMutating}
+            style={{ borderRadius: 10 }}
           >
             {isScanning ? 'Scanning...' : 'Scan for Plugins'}
           </Button>
-          <div style={{ textAlign: 'center', marginTop: 8, color: 'var(--rh-text-muted)', fontSize: 12 }}>
-            {availablePlugins.length} plugin{availablePlugins.length !== 1 ? 's' : ''} available
-          </div>
         </div>
       </Drawer>
 

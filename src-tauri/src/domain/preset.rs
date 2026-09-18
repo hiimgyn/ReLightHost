@@ -76,8 +76,13 @@ impl Preset {
     }
 
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
+        // Write to a temp file then rename over the target — rename is atomic on
+        // the same volume, so a crash/power-loss mid-write can never leave a
+        // truncated/corrupt autosave.json behind.
         let json = serde_json::to_string_pretty(&self)?;
-        fs::write(path, json)?;
+        let tmp_path = path.with_extension("json.tmp");
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, path)?;
         Ok(())
     }
 

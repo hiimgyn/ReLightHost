@@ -1,12 +1,15 @@
 [package]
 name = "ReLightHost"
-version = "2.3.5"
+version = "2.4.0"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
 license = "CC-BY-NC-SA-4.0"
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"
+# `pnpm tauri dev` runs `cargo run` with no --bin flag; without this, adding
+# the vst3_sandbox_host bin target made that ambiguous.
+default-run = "ReLightHost"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -26,7 +29,7 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
-thiserror = "1"
+thiserror = "2"
 auto-launch = "0.6.0"
 webbrowser = "1.0"
 
@@ -34,15 +37,17 @@ webbrowser = "1.0"
 # ASIO support: requires ASIO SDK (https://www.steinberg.net/asiosdk) and env var CPAL_ASIO_DIR
 # Set CPAL_ASIO_DIR=C:\path\to\asiosdk before building to enable VirtualASIO / Voicemeeter ASIO
 
-cpal = { version = "0.15", features = ["asio"] }
+cpal = { version = "0.18", features = ["asio"] }
 
 # Lock-free SPSC ring buffer for audio callbacks (avoids Mutex in realtime thread)
-ringbuf = "0.4"
+ringbuf = "0.5"
 parking_lot = "0.12"
 
 # Plugin hosting
 vst3 = "0.3"                                              # vst3-rs: VST3 plugin hosting
-vst = "0.3"                                               # vst-rs: VST2 plugin hosting
+# VST2 hosting uses raw FFI (see plugins::processor::vst2) — no crate: the
+# `vst` crate (vst-rs) is deprecated upstream and VST2 licensing has been
+# discontinued since 2018, but the ABI itself is small and frozen.
 
 # Built-in DSP — noise suppression via RNNoise (pure Rust)
 nnnoiseless = "0.5"
@@ -50,9 +55,9 @@ nnnoiseless = "0.5"
 # Utilities
 anyhow = "1.0"
 rayon = "1.10"
-dirs = "5.0"
-libloading = "0.8"
-sysinfo = "0.32"
+dirs = "7.0"
+libloading = "0.9"
+sysinfo = "0.39"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -64,4 +69,5 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",   # CreateWindowExW, WNDCLASSW, WM_* constants
     "Win32_Graphics_Gdi",             # RedrawWindow, InvalidateRect
     "Win32_UI_HiDpi",                 # GetDpiForWindow (DPI scale factor)
+    "Win32_System_JobObjects",        # kill-sandboxed-child-on-host-exit job object
 ] }

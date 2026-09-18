@@ -967,7 +967,18 @@ fn read_vst3_dll_info_generic(dll_path: &Path) -> Option<(String, String, String
 fn read_vst2_metadata(dll_path: &Path) -> Option<(String, String, String)> {
     use libloading::{Library, Symbol};
     use std::ffi::c_void;
-    use vst::api::{AEffect, DispatcherProc};
+
+    // Truncated AEffect: only the leading two fields (magic, dispatcher) are
+    // ever read here, so the full ~20-field VST 2.4 struct layout isn't
+    // needed — see plugins::processor::vst2 for the complete definition used
+    // by the actual host/processor.
+    #[repr(C)]
+    struct AEffect {
+        magic: i32,
+        dispatcher: DispatcherProc,
+    }
+    type DispatcherProc = unsafe extern "C" fn(*mut AEffect, i32, i32, isize, *mut c_void, f32) -> isize;
+    const VST_MAGIC: i32 = 0x5673_7450_u32 as i32; // 'VstP'
 
     // Minimal audioMaster callback: only handles `audioMasterVersion` (opcode 1).
     extern "C" fn scan_host_cb(
@@ -991,7 +1002,7 @@ fn read_vst2_metadata(dll_path: &Path) -> Option<(String, String, String)> {
         return None;
     }
     // Validate VST2 magic number (kEffectMagic = 0x56737450)
-    if unsafe { (*effect).magic } != vst::api::consts::VST_MAGIC {
+    if unsafe { (*effect).magic } != VST_MAGIC {
         return None;
     }
 
@@ -1000,7 +1011,7 @@ fn read_vst2_metadata(dll_path: &Path) -> Option<(String, String, String)> {
     // Inner helper: call a string-returning opcode.
     fn read_str(dispatch: DispatcherProc, effect: *mut AEffect, opcode: i32) -> String {
         let mut buf = [0u8; 64];
-        dispatch(effect, opcode, 0, 0, buf.as_mut_ptr() as *mut c_void, 0.0);
+        unsafe { dispatch(effect, opcode, 0, 0, buf.as_mut_ptr() as *mut c_void, 0.0) };
         let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
         String::from_utf8_lossy(&buf[..end]).trim().to_string()
     }
@@ -1010,7 +1021,7 @@ fn read_vst2_metadata(dll_path: &Path) -> Option<(String, String, String)> {
     let product     = read_str(dispatch, effect, 48); // effGetProductString
 
     // effGetVendorVersion (49) returns a packed integer; format as "major.minor".
-    let ver_int = dispatch(effect, 49, 0, 0, std::ptr::null_mut(), 0.0);
+    let ver_int = unsafe { dispatch(effect, 49, 0, 0, std::ptr::null_mut(), 0.0) };
     let version = if ver_int > 0 {
         format!("{}.{}", ver_int / 1000, (ver_int % 1000) / 10)
     } else {
@@ -1018,7 +1029,7 @@ fn read_vst2_metadata(dll_path: &Path) -> Option<(String, String, String)> {
     };
 
     // effClose (plugin opcode 1) — let the plugin clean up before DLL unload.
-    dispatch(effect, 1, 0, 0, std::ptr::null_mut(), 0.0);
+    unsafe { dispatch(effect, 1, 0, 0, std::ptr::null_mut(), 0.0) };
 
     let name = if !effect_name.is_empty() {
         effect_name

@@ -1,6 +1,7 @@
 import { Modal, Button, Tag, Typography, Space, Descriptions, theme, Grid } from 'antd';
 import { FolderOpenOutlined, InfoCircleOutlined, AppstoreOutlined } from '@ant-design/icons';
 import type { PluginInfo } from '../../lib/types';
+import { getFormatColor } from './pluginLibraryHelpers';
 
 const { Text } = Typography;
 
@@ -9,12 +10,6 @@ interface PluginInfoModalProps {
   isOpen: boolean;
   onClose: () => void;
   onLoad?: () => void;
-}
-
-function getFormatColor(format: string) {
-  if (format === 'vst3') return 'purple';
-  if (format === 'vst') return 'blue';
-  return 'green';
 }
 
 export default function PluginInfoModal({ plugin, isOpen, onClose, onLoad }: PluginInfoModalProps) {
@@ -26,40 +21,69 @@ export default function PluginInfoModal({ plugin, isOpen, onClose, onLoad }: Plu
 
   return (
     <Modal
-      className="minimal-panel"
       open={isOpen}
       onCancel={onClose}
       width={modalWidth}
-      style={{ top: 12, maxWidth: 448 }}
+      style={{ top: 20, maxWidth: 448 }}
       styles={{
         body: {
-          maxHeight: 'calc(100vh - 220px)',
+          maxHeight: 'calc(100vh - 200px)',
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '12px 14px 14px',
+          padding: '14px 18px 18px',
         },
       }}
       title={
-        <Space>
-          <AppstoreOutlined style={{ color: token.colorPrimary }} />
-          <Text strong style={{ fontSize: 15, letterSpacing: '-0.01em' }}>{plugin.name}</Text>
-          <Tag color={getFormatColor(plugin.format)}>{plugin.format.toUpperCase()}</Tag>
+        <Space size={10} align="center">
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: `${token.colorPrimary}1c`,
+              border: `1px solid ${token.colorPrimary}38`,
+            }}
+          >
+            <AppstoreOutlined style={{ color: token.colorPrimary, fontSize: 16 }} />
+          </div>
+          <div>
+            <Space size={6} align="center">
+              <Text strong style={{ fontSize: 15, lineHeight: 1.2 }}>{plugin.name}</Text>
+              <Tag color={getFormatColor(plugin.format)} style={{ margin: 0 }}>
+                {plugin.format.toUpperCase()}
+              </Tag>
+            </Space>
+            <Text type="secondary" style={{ fontSize: 11, display: 'block' }}>
+              {plugin.manufacture || 'Unknown developer'}
+            </Text>
+          </div>
         </Space>
       }
       footer={
         <Space>
-          <Button onClick={onClose}>Close</Button>
+          <Button onClick={onClose} style={{ minWidth: 70, borderRadius: 8 }}>
+            Close
+          </Button>
           {onLoad && (
-            <Button type="primary" onClick={() => { onLoad(); onClose(); }}>
+            <Button
+              type="primary"
+              onClick={() => {
+                onLoad();
+                onClose();
+              }}
+              style={{ borderRadius: 8 }}
+            >
               Load Plugin
             </Button>
           )}
         </Space>
       }
     >
-
       <Descriptions column={descColumns} size="small" bordered style={{ marginBottom: 16 }}>
-        <Descriptions.Item label="Manufacture">{plugin.manufacture || '—'}</Descriptions.Item>
+        <Descriptions.Item label="Manufacturer">{plugin.manufacture || '—'}</Descriptions.Item>
         <Descriptions.Item label="Version">{plugin.version || '—'}</Descriptions.Item>
         <Descriptions.Item label="Format">
           <Tag color={getFormatColor(plugin.format)}>{plugin.format.toUpperCase()}</Tag>
@@ -73,15 +97,17 @@ export default function PluginInfoModal({ plugin, isOpen, onClose, onLoad }: Plu
         </Descriptions.Item>
       </Descriptions>
 
-      <div className="minimal-surface" style={{
-        background: token.colorInfoBg,
-        border: `1px solid ${token.colorInfoBorder}`,
-        borderRadius: token.borderRadius,
-        padding: '10px 14px',
-      }}>
-        <Space>
-          <InfoCircleOutlined style={{ color: token.colorInfo }} />
-          <Text style={{ fontSize: 12, color: token.colorInfoText }}>
+      <div
+        style={{
+          background: `${token.colorPrimary}12`,
+          border: `1px solid ${token.colorPrimary}2e`,
+          borderRadius: 8,
+          padding: '10px 14px',
+        }}
+      >
+        <Space align="start" size={10}>
+          <InfoCircleOutlined style={{ color: token.colorPrimary, marginTop: 2 }} />
+          <Text style={{ fontSize: 12, color: token.colorTextSecondary }}>
             This is a {plugin.format.toUpperCase()} plugin. Click "Load Plugin" to add it to your signal chain.
           </Text>
         </Space>

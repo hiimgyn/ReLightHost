@@ -1,11 +1,19 @@
 import { useState, useEffect } from 'react';
-import { Modal, Button, Space, Typography, Tag, Divider, message, theme, Tooltip } from 'antd';
-import { FolderOpenOutlined, DeleteOutlined, PlusOutlined, SettingOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
+import { Modal, Button, Space, Typography, Tag, message, theme, Tooltip } from 'antd';
+import {
+  FolderOpenOutlined,
+  DeleteOutlined,
+  PlusOutlined,
+  SettingOutlined,
+  ReloadOutlined,
+  CopyOutlined,
+  InfoCircleOutlined,
+} from '@ant-design/icons';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { usePluginStore } from '../../stores/pluginStore';
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 interface PluginSettingsProps {
   isOpen: boolean;
@@ -18,7 +26,7 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
   const { scanPlugins, isScanning } = usePluginStore();
   const [messageApi, contextHolder] = message.useMessage();
   const { token } = theme.useToken();
-  const modalWidth = typeof window === 'undefined' ? 416 : 'clamp(300px, 54vw, 416px)';
+  const modalWidth = typeof window === 'undefined' ? 440 : 'clamp(320px, 56vw, 440px)';
 
   useEffect(() => {
     if (isOpen) loadPaths();
@@ -86,34 +94,56 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
 
   return (
     <Modal
-      className="minimal-panel"
       title={
-        <Space>
-          <SettingOutlined style={{ color: token.colorPrimary }} />
-          <Text strong style={{ fontSize: 15, letterSpacing: '-0.01em', color: token.colorText }}>Plugin Scan Paths</Text>
+        <Space size={10} align="center">
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: `${token.colorPrimary}1c`,
+              border: `1px solid ${token.colorPrimary}38`,
+            }}
+          >
+            <SettingOutlined style={{ color: token.colorPrimary, fontSize: 16 }} />
+          </div>
+          <div>
+            <Text strong style={{ fontSize: 15, display: 'block', lineHeight: 1.2 }}>
+              Plugin Scan Paths
+            </Text>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              Configure VST3, VST2, and CLAP directories
+            </Text>
+          </div>
         </Space>
       }
       open={isOpen}
       onCancel={onClose}
       width={modalWidth}
-      style={{ top: 12, maxWidth: 416 }}
+      style={{ top: 20, maxWidth: 440 }}
       styles={{
         body: {
-          maxHeight: 'calc(100vh - 220px)',
+          maxHeight: 'calc(100vh - 200px)',
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '12px 14px 14px',
+          padding: '14px 18px 18px',
         },
       }}
       zIndex={1200}
       footer={[
-        <Button key="close" onClick={onClose}>Close</Button>,
+        <Button key="close" onClick={onClose} style={{ minWidth: 70, borderRadius: 8 }}>
+          Close
+        </Button>,
         <Button
           key="rescan"
           type="primary"
-          icon={<ReloadOutlined />}
+          icon={<ReloadOutlined spin={loading || isScanning} />}
           loading={loading || isScanning}
           onClick={rescanPlugins}
+          style={{ borderRadius: 8 }}
         >
           Rescan All Plugins
         </Button>,
@@ -121,105 +151,179 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
     >
       {contextHolder}
 
-
       {/* Info banner */}
-      <div className="minimal-surface" style={{
-        background: 'var(--rh-primary-glow)',
-        border: `1px solid ${token.colorPrimary}`,
-        borderRadius: 8,
-        padding: '10px 14px',
-        marginBottom: 20,
-      }}>
-        <Paragraph style={{ margin: 0, fontSize: 13 }} type="secondary">
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 12,
+          padding: '12px 14px',
+          borderRadius: 10,
+          background: `${token.colorPrimary}12`,
+          border: `1px solid ${token.colorPrimary}30`,
+          marginBottom: 18,
+        }}
+      >
+        <InfoCircleOutlined style={{ color: token.colorPrimary, fontSize: 15, marginTop: 2, flexShrink: 0 }} />
+        <Text style={{ fontSize: 12, lineHeight: 1.5, color: token.colorTextSecondary }}>
           Add custom directories where your VST3 and CLAP plugins are installed.
-          These paths are scanned in addition to the default system paths.
-        </Paragraph>
+          These paths are scanned in addition to default system locations.
+        </Text>
       </div>
 
       {/* Default paths */}
-      <Text strong style={{ fontSize: 12, letterSpacing: '0.05em' }}>DEFAULT SYSTEM PATHS</Text>
-      <div style={{ marginTop: 8, marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {DEFAULT_PATHS.map(p => (
-          <Tooltip key={p} title={p}>
-            <Text code style={{ fontSize: 12, display: 'inline-block', maxWidth: '100%', overflowWrap: 'anywhere' }}>{p}</Text>
-          </Tooltip>
-        ))}
+      <div style={{ marginBottom: 18 }}>
+        <Text
+          strong
+          style={{
+            fontSize: 11,
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            color: token.colorTextSecondary,
+          }}
+        >
+          Default System Paths
+        </Text>
+        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {DEFAULT_PATHS.map((p) => (
+            <div
+              key={p}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '7px 10px',
+                borderRadius: 6,
+                background: token.colorBgContainer,
+                border: `1px solid ${token.colorBorderSecondary}`,
+                fontFamily: 'monospace',
+                fontSize: 11.5,
+                color: token.colorText,
+              }}
+            >
+              <FolderOpenOutlined style={{ color: token.colorPrimary, fontSize: 13, flexShrink: 0 }} />
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {p}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Custom paths */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <Text strong style={{ fontSize: 12, letterSpacing: '0.05em' }}>CUSTOM PATHS</Text>
-        <Button size="small" icon={<PlusOutlined />} onClick={addPath}>Add Path</Button>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <Text
+          strong
+          style={{
+            fontSize: 11,
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            color: token.colorTextSecondary,
+          }}
+        >
+          Custom Paths
+        </Text>
+        <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={addPath} style={{ borderRadius: 6 }}>
+          Add Path
+        </Button>
       </div>
 
       {customPaths.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {customPaths.map((path, i) => (
             <div
-              className="minimal-surface"
               key={i}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
                 padding: '8px 12px',
-                background: 'var(--rh-surface-soft-gradient)',
-                border: `1px solid var(--rh-surface-soft-border)`,
-                borderRadius: 6,
-                transition: 'all 200ms ease',
+                background: token.colorBgContainer,
+                border: `1px solid ${token.colorBorderSecondary}`,
+                borderRadius: 8,
+                transition: 'all 160ms ease',
               }}
             >
               <FolderOpenOutlined style={{ color: token.colorPrimary, flexShrink: 0 }} />
               <Tooltip title={path}>
-                <Text style={{ flex: 1, fontSize: 12, fontFamily: 'monospace', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>
+                <Text
+                  style={{
+                    flex: 1,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    overflowWrap: 'anywhere',
+                    wordBreak: 'break-all',
+                  }}
+                >
                   {path}
                 </Text>
               </Tooltip>
-              <Button
-                type="text"
-                size="small"
-                icon={<CopyOutlined />}
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(path);
-                    messageApi.success('Path copied');
-                  } catch {
-                    messageApi.error('Failed to copy');
-                  }
-                }}
-              />
-              <Button
-                type="text"
-                danger
-                size="small"
-                icon={<DeleteOutlined />}
-                onClick={() => removePath(path)}
-              />
+              <Tooltip title="Copy path">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<CopyOutlined style={{ color: token.colorTextSecondary }} />}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(path);
+                      messageApi.success('Path copied');
+                    } catch {
+                      messageApi.error('Failed to copy');
+                    }
+                  }}
+                />
+              </Tooltip>
+              <Tooltip title="Remove path">
+                <Button
+                  type="text"
+                  danger
+                  size="small"
+                  icon={<DeleteOutlined />}
+                  onClick={() => removePath(path)}
+                />
+              </Tooltip>
             </div>
           ))}
         </div>
       ) : (
-        <div className="minimal-surface" style={{
-          textAlign: 'center',
-          padding: '24px 0',
-          color: token.colorTextTertiary,
-          border: `1px dashed ${token.colorBorderSecondary}`,
-          borderRadius: 8,
-          background: token.colorBgContainer,
-        }}>
-          <Text type="secondary" style={{ fontSize: 13 }}>No custom paths configured</Text><br />
-          <Text type="secondary" style={{ fontSize: 12 }}>Click "Add Path" to add a custom scan directory</Text>
+        <div
+          style={{
+            textAlign: 'center',
+            padding: '22px 16px',
+            color: token.colorTextTertiary,
+            border: `1px dashed ${token.colorBorderSecondary}`,
+            borderRadius: 10,
+            background: 'rgba(255, 255, 255, 0.02)',
+          }}
+        >
+          <FolderOpenOutlined style={{ fontSize: 24, color: token.colorTextQuaternary, marginBottom: 6, display: 'inline-block' }} />
+          <div><Text type="secondary" style={{ fontSize: 12 }}>No custom paths configured</Text></div>
+          <div style={{ marginTop: 2 }}>
+            <Text type="secondary" style={{ fontSize: 11 }}>Click "Add Path" to add a custom scan directory</Text>
+          </div>
         </div>
       )}
 
       {/* Format tags */}
-      <Divider />
-      <Space size={6}>
-        <Text type="secondary" style={{ fontSize: 12 }}>Supported formats:</Text>
-        <Tag color="purple">VST3</Tag>
-        <Tag color="blue">VST2 (.dll)</Tag>
-        <Tag color="green">CLAP</Tag>
-      </Space>
+      <div
+        style={{
+          marginTop: 18,
+          paddingTop: 14,
+          borderTop: `1px solid ${token.colorBorderSecondary}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 8,
+        }}
+      >
+        <Text type="secondary" style={{ fontSize: 11 }}>Supported formats:</Text>
+        <Space size={6}>
+          <Tag color="purple">VST3</Tag>
+          <Tag color="blue">VST2 (.dll)</Tag>
+          <Tag color="green">CLAP</Tag>
+        </Space>
+      </div>
     </Modal>
   );
 }

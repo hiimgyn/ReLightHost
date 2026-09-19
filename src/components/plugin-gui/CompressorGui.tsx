@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal, Slider, Typography, Space, Badge, Tooltip, theme } from 'antd';
-import { FunctionOutlined, UndoOutlined, SlidersOutlined } from '@ant-design/icons';
+import { Activity, RotateCcw, Sliders } from 'lucide-react';
 import * as tauri from '../../lib/tauri';
 import type { PluginInstanceInfo } from '../../lib/types';
+import { useTranslation } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -39,22 +40,22 @@ interface ParamRowProps {
   defaultValue: number;
   primaryColor: string;
   tertiaryColor: string;
+  resetTooltip?: string;
   onChange: (v: number) => void;
 }
 
 function ParamRow({
   label, value, min, max, step,
   format, leftLabel, rightLabel,
-  defaultValue, primaryColor, tertiaryColor, onChange,
+  defaultValue, primaryColor, tertiaryColor, resetTooltip = "Reset to default", onChange,
 }: ParamRowProps) {
   return (
     <div
-      className="minimal-surface"
       style={{
-        padding: '8px 10px',
-        borderRadius: 8,
-        background: 'var(--rh-surface-soft-gradient)',
-        border: '1px solid var(--rh-surface-soft-border)',
+        padding: '10px 14px',
+        borderRadius: 10,
+        background: 'var(--rh-surface-card)',
+        border: '1px solid var(--rh-border-subtle)',
         transition: 'border-color 160ms ease, box-shadow 160ms ease',
       }}
     >
@@ -62,9 +63,10 @@ function ParamRow({
         <Text style={{ fontSize: 13 }}>{label}</Text>
         <Space size={6} align="center">
           {value !== defaultValue && (
-            <Tooltip title="Reset to default">
-              <UndoOutlined
-                style={{ fontSize: 11, cursor: 'pointer', color: tertiaryColor }}
+            <Tooltip title={resetTooltip}>
+              <RotateCcw
+                size={11}
+                style={{ cursor: 'pointer', color: tertiaryColor }}
                 onClick={() => onChange(defaultValue)}
               />
             </Tooltip>
@@ -91,9 +93,10 @@ function ParamRow({
 
 export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const pc = token.colorPrimary;
   const tc = token.colorTextTertiary;
-  const modalWidth = typeof window === 'undefined' ? 340 : 'clamp(320px, 32vw, 360px)';
+  const modalWidth = typeof window === 'undefined' ? 520 : 'clamp(460px, 48vw, 540px)';
 
   const [threshold, setThreshold] = useState(() => paramValue(plugin, P_THRESHOLD, -18));
   const [ratio,     setRatio]     = useState(() => paramValue(plugin, P_RATIO,       4));
@@ -169,41 +172,40 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
     <Modal
       title={
         <Space>
-          <FunctionOutlined style={{ color: token.colorPrimary }} />
-          <span>Compressor</span>
-          <Badge color="cyan" text="Built-in" />
+          <Activity size={16} style={{ color: token.colorPrimary }} />
+          <span>{t('compressor.title')}</span>
+          <Badge color="cyan" text={t('common.builtin')} />
         </Space>
       }
       open={isOpen}
       onCancel={onClose}
       footer={null}
       width={modalWidth}
-      style={{ top: 16, maxWidth: 360 }}
-      styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'hidden', padding: '14px 16px 16px' } }}
+      style={{ top: 24, maxWidth: 540 }}
+      styles={{ body: { maxHeight: 'calc(100vh - 140px)', overflowY: 'auto', overflowX: 'hidden', padding: '16px 20px 22px' } }}
     >
-      <Space orientation="vertical" size={14} style={{ width: '100%' }}>
+      <Space direction="vertical" size={14} style={{ width: '100%' }}>
 
         {/* ── Signature Visual Dynamic Badge ──────────────────── */}
         <div
-          className="minimal-surface"
           style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '10px 14px',
+            padding: '12px 16px',
             borderRadius: 10,
-            background: 'linear-gradient(135deg, rgba(99,103,255,0.12) 0%, rgba(132,148,255,0.06) 100%)',
+            background: 'var(--rh-surface-elevated)',
             border: `1px solid ${token.colorPrimary}44`,
           }}
         >
           <Space size={8} align="center">
-            <SlidersOutlined style={{ color: token.colorPrimary, fontSize: 16 }} />
+            <Sliders size={16} style={{ color: token.colorPrimary }} />
             <div>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', color: token.colorPrimary }}>
-                Dynamics Profile
+                {t('compressor.dynamicsProfile')}
               </div>
               <Text type="secondary" style={{ fontSize: 11 }}>
-                {ratio >= 10 ? 'Limiting / Brickwall' : ratio >= 4 ? 'Standard Compression' : ratio > 1 ? 'Gentle Leveling' : 'Linear (1:1)'}
+                {ratio >= 10 ? t('compressor.limiting') : ratio >= 4 ? t('compressor.standard') : ratio > 1 ? t('compressor.gentle') : t('compressor.linear')}
               </Text>
             </div>
           </Space>
@@ -219,60 +221,60 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
 
         {/* ── Dynamics ──────────────────────────────────────── */}
         <ParamRow
-          label="Threshold" value={threshold} defaultValue={-18} min={-60} max={0} step={0.5}
+          label={t('compressor.threshold')} value={threshold} defaultValue={-18} min={-60} max={0} step={0.5}
           format={v => `${v >= 0 ? '+' : ''}${v.toFixed(1)} dB`}
-          leftLabel="-60 dB (always)" rightLabel="0 dB (never)"
-          primaryColor={pc} tertiaryColor={tc}
+          leftLabel={t('compressor.thresholdLeft')} rightLabel={t('compressor.thresholdRight')}
+          primaryColor={pc} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
           onChange={v => { setThreshold(v); send(P_THRESHOLD, v); }}
         />
 
         <ParamRow
-          label="Ratio" value={ratio} defaultValue={4} min={1} max={20} step={0.1}
+          label={t('compressor.ratio')} value={ratio} defaultValue={4} min={1} max={20} step={0.1}
           format={v => `${v.toFixed(1)} : 1`}
-          leftLabel="1:1 (transparent)" rightLabel="20:1 (limiting)"
-          primaryColor={pc} tertiaryColor={tc}
+          leftLabel={t('compressor.ratioLeft')} rightLabel={t('compressor.ratioRight')}
+          primaryColor={pc} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
           onChange={v => { setRatio(v); send(P_RATIO, v); }}
         />
 
         {/* ── Timing ────────────────────────────────────────── */}
         <ParamRow
-          label="Attack" value={attack} defaultValue={10} min={0.1} max={200} step={0.1}
+          label={t('compressor.attack')} value={attack} defaultValue={10} min={0.1} max={200} step={0.1}
           format={v => v < 10 ? `${v.toFixed(1)} ms` : `${Math.round(v)} ms`}
-          leftLabel="0.1 ms (fast punch)" rightLabel="200 ms (slow transient)"
-          primaryColor={pc} tertiaryColor={tc}
+          leftLabel={t('compressor.attackLeft')} rightLabel={t('compressor.attackRight')}
+          primaryColor={pc} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
           onChange={v => { setAttack(v); send(P_ATTACK, v); }}
         />
 
         <ParamRow
-          label="Release" value={release} defaultValue={100} min={10} max={2000} step={1}
+          label={t('compressor.release')} value={release} defaultValue={100} min={10} max={2000} step={1}
           format={v => v < 1000 ? `${Math.round(v)} ms` : `${(v / 1000).toFixed(2)} s`}
-          leftLabel="10 ms (fast)" rightLabel="2000 ms (smooth)"
-          primaryColor={pc} tertiaryColor={tc}
+          leftLabel={t('compressor.releaseLeft')} rightLabel={t('compressor.releaseRight')}
+          primaryColor={pc} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
           onChange={v => { setRelease(v); send(P_RELEASE, v); }}
         />
 
         {/* ── Output ────────────────────────────────────────── */}
         <ParamRow
-          label="Makeup Gain" value={makeup} defaultValue={0} min={0} max={30} step={0.5}
+          label={t('compressor.makeupGain')} value={makeup} defaultValue={0} min={0} max={30} step={0.5}
           format={v => `+${v.toFixed(1)} dB`}
           leftLabel="0 dB" rightLabel="+30 dB"
-          primaryColor={pc} tertiaryColor={tc}
+          primaryColor={pc} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
           onChange={v => { setMakeup(v); send(P_MAKEUP, v); }}
         />
 
         <ParamRow
-          label="Knee" value={knee} defaultValue={3} min={0} max={12} step={0.5}
+          label={t('compressor.knee')} value={knee} defaultValue={3} min={0} max={12} step={0.5}
           format={v => `${v.toFixed(1)} dB`}
-          leftLabel="0 dB (hard)" rightLabel="12 dB (soft curve)"
-          primaryColor={pc} tertiaryColor={tc}
+          leftLabel={t('compressor.kneeLeft')} rightLabel={t('compressor.kneeRight')}
+          primaryColor={pc} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
           onChange={v => { setKnee(v); send(P_KNEE, v); }}
         />
 
         <ParamRow
-          label="Parallel Mix" value={mix} defaultValue={1} min={0} max={1} step={0.01}
+          label={t('compressor.parallelMix')} value={mix} defaultValue={1} min={0} max={1} step={0.01}
           format={v => `${Math.round(v * 100)}%`}
-          leftLabel="0% (dry only)" rightLabel="100% (wet)"
-          primaryColor={pc} tertiaryColor={tc}
+          leftLabel={t('compressor.parallelMixLeft')} rightLabel={t('compressor.parallelMixRight')}
+          primaryColor={pc} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
           onChange={v => { setMix(v); send(P_MIX, v); }}
         />
 

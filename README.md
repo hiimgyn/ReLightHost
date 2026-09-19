@@ -6,7 +6,7 @@
 
 ReLightHost is a desktop audio host for loading external plugins into a linear chain, routing live audio through them, and managing the whole session from a native Tauri app.
 
-[![Version](https://img.shields.io/badge/version-2.4.0-9b72cf?style=for-the-badge)](https://github.com/hiimgyn/ReLightHost)
+[![Version](https://img.shields.io/badge/version-2.4.1-9b72cf?style=for-the-badge)](https://github.com/hiimgyn/ReLightHost)
 [![Platform](https://img.shields.io/badge/platform-Windows-0d7adf?style=for-the-badge)](https://github.com)
 [![Rust](https://img.shields.io/badge/rust-1.77%2B-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Tauri](https://img.shields.io/badge/tauri-2.x-24c8db?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app)

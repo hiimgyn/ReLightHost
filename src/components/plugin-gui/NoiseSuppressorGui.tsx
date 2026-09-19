@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal, Slider, Typography, Space, Divider, Badge, Collapse, Tooltip, Alert, theme } from 'antd';
-import { AudioOutlined, SoundOutlined, SettingOutlined, UndoOutlined, WarningOutlined } from '@ant-design/icons';
+import { Mic, Volume2, Sliders, RotateCcw, AlertTriangle } from 'lucide-react';
 import * as tauri from '../../lib/tauri';
 import { useAudioStore } from '../../stores/audioStore';
 import type { PluginInstanceInfo } from '../../lib/types';
+import { useTranslation } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -28,6 +29,7 @@ interface NoiseParamRowProps {
   defaultValue: number;
   primaryColor: string;
   tertiaryColor: string;
+  resetTooltip?: string;
   onChange: (v: number) => void;
 }
 
@@ -35,25 +37,25 @@ interface NoiseParamRowProps {
 function NoiseParamRow({
   label, value, min, max, step,
   format, leftLabel, rightLabel,
-  defaultValue, primaryColor, tertiaryColor, onChange,
+  defaultValue, primaryColor, tertiaryColor, resetTooltip = "Reset to default", onChange,
 }: NoiseParamRowProps) {
   return (
     <div
-      className="minimal-surface"
       style={{
-        padding: '8px 10px',
-        borderRadius: 8,
-        background: 'var(--rh-surface-soft-gradient)',
-        border: '1px solid var(--rh-surface-soft-border)',
+        padding: '10px 14px',
+        borderRadius: 10,
+        background: 'var(--rh-surface-card)',
+        border: '1px solid var(--rh-border-subtle)',
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <Text style={{ fontSize: 13 }}>{label}</Text>
         <Space size={6} align="center">
           {value !== defaultValue && (
-            <Tooltip title="Reset to default">
-              <UndoOutlined
-                style={{ fontSize: 11, cursor: 'pointer', color: tertiaryColor }}
+            <Tooltip title={resetTooltip}>
+              <RotateCcw
+                size={11}
+                style={{ cursor: 'pointer', color: tertiaryColor }}
                 onClick={() => onChange(defaultValue)}
               />
             </Tooltip>
@@ -84,10 +86,11 @@ function paramValue(plugin: PluginInstanceInfo, id: number, fallback: number) {
 
 export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const sampleRate = useAudioStore(state => state.sampleRate);
   const isSampleRateMismatch = Math.abs(sampleRate - 48000) > 1;
 
-  const modalWidth = typeof window === 'undefined' ? 340 : 'clamp(320px, 32vw, 360px)';
+  const modalWidth = typeof window === 'undefined' ? 520 : 'clamp(460px, 52vw, 540px)';
 
   const [mix,        setMix]        = useState(() => paramValue(plugin, 0, 1.0));
   const [vadGate,    setVadGate]    = useState(() => paramValue(plugin, 1, 0.0));
@@ -154,66 +157,77 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
     };
   }, [isOpen, plugin.instance_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll VAD while open and visible
-  const pollVad = useCallback(async () => {
+  // Real-time Voice Activity Detection (VAD) visualizer polling
+  const pollVad = useCallback(() => {
     if (!mountedRef.current) return;
-    if (document.visibilityState === 'visible') {
-      try {
-        const v = await tauri.getNoiseSuppressorVad(plugin.instance_id);
-        setVad(v);
-        setHistory(prev => [...prev.slice(1), v]);
-      } catch { /* instance removed mid-flight */ }
-    }
-    if (mountedRef.current) {
-      rafRef.current = window.setTimeout(pollVad, 100);
-    }
+    tauri.getPluginParameters(plugin.instance_id)
+      .then((params) => {
+        if (!mountedRef.current) return;
+        const vadParam = params?.find(p => p.id === 4);
+        if (vadParam !== undefined) {
+          const clamped = Math.max(0, Math.min(1, vadParam.value));
+          setVad(clamped);
+          setHistory(prev => {
+            const next = [...prev.slice(1), clamped];
+            return next;
+          });
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mountedRef.current) {
+          rafRef.current = window.setTimeout(pollVad, 100);
+        }
+      });
   }, [plugin.instance_id]);
 
   useEffect(() => {
-    if (isOpen) {
-      mountedRef.current = true;
-      pollVad();
-    }
+    if (!isOpen) return;
+    mountedRef.current = true;
+    pollVad();
     return () => {
       mountedRef.current = false;
-      if (rafRef.current !== null) clearTimeout(rafRef.current);
+      if (rafRef.current) {
+        clearTimeout(rafRef.current);
+        rafRef.current = null;
+      }
     };
   }, [isOpen, pollVad]);
 
   // VAD colour thresholds
   const isVoiceDetected = vad > 0.65;
   const vadColor   = isVoiceDetected ? token.colorSuccess : vad > 0.35 ? token.colorWarning : token.colorTextQuaternary;
-  const vadLabel   = isVoiceDetected ? 'Voice detected' : vad > 0.35 ? 'Uncertain' : 'Background noise';
+  const vadLabel   = isVoiceDetected ? t('noise.voiceDetected') : vad > 0.35 ? t('noise.uncertain') : t('noise.backgroundNoise');
   const vadPercent = Math.round(vad * 100);
 
   return (
     <Modal
       title={
-        <Space>
-          <AudioOutlined style={{ color: token.colorPrimary }} />
-          <span>Noise Suppressor (RNNoise)</span>
-          <Badge color="cyan" text="Built-in" />
+        <Space size={10}>
+          <Mic size={16} style={{ color: token.colorPrimary }} />
+          <span style={{ fontWeight: 700 }}>{t('noise.title')}</span>
+          <Badge color="cyan" text={t('common.builtin')} />
         </Space>
       }
       open={isOpen}
       onCancel={onClose}
       footer={null}
       width={modalWidth}
-      style={{ top: 16, maxWidth: 360 }}
-      styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'hidden', padding: '14px 16px 16px' } }}
+      style={{ top: 28, maxWidth: 540 }}
+      styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'hidden', padding: '16px 22px 22px' } }}
     >
-      <Space orientation="vertical" size={14} style={{ width: '100%' }}>
+      <Space direction="vertical" size={14} style={{ width: '100%' }}>
 
         {/* ── Sample Rate Warning if not 48 kHz ───────────────── */}
         {isSampleRateMismatch && (
           <Alert
             type="warning"
             showIcon
-            icon={<WarningOutlined />}
-            message="Sample Rate Mismatch"
+            icon={<AlertTriangle size={15} />}
+            message={t('noise.sampleRateMismatch')}
             description={
               <span style={{ fontSize: 12 }}>
-                RNNoise neural network requires <strong>48 kHz</strong> (current host: {sampleRate} Hz). Plugin will run in pass-through mode without reducing noise.
+                {t('noise.sampleRateMismatchDesc', { rate: sampleRate })}
               </span>
             }
           />
@@ -223,7 +237,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
             <Text type="secondary" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>
-              Voice Activity
+              {t('noise.voiceActivity')}
             </Text>
             <Text style={{ fontSize: 12, color: vadColor, fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
               {vadPercent}% — {vadLabel}
@@ -316,14 +330,15 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <Space>
-              <SoundOutlined style={{ color: token.colorPrimary }} />
-              <Text strong style={{ fontSize: 13 }}>Noise Reduction Mix</Text>
+              <Volume2 size={15} style={{ color: token.colorPrimary }} />
+              <Text strong style={{ fontSize: 13 }}>{t('noise.mixTitle')}</Text>
             </Space>
             <Space size={6} align="center">
               {mix !== 1.0 && (
-                <Tooltip title="Reset to default">
-                  <UndoOutlined
-                    style={{ fontSize: 11, cursor: 'pointer', color: token.colorTextTertiary }}
+                <Tooltip title={t('common.resetToDefault')}>
+                  <RotateCcw
+                    size={11}
+                    style={{ cursor: 'pointer', color: token.colorTextTertiary }}
                     onClick={() => { setMix(1.0); send(0, 1.0); }}
                   />
                 </Tooltip>
@@ -346,8 +361,8 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
           />
 
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
-            <Text type="secondary" style={{ fontSize: 11 }}>Dry (pass-through)</Text>
-            <Text type="secondary" style={{ fontSize: 11 }}>Full noise reduction</Text>
+            <Text type="secondary" style={{ fontSize: 11 }}>{t('noise.mixDry')}</Text>
+            <Text type="secondary" style={{ fontSize: 11 }}>{t('noise.mixFull')}</Text>
           </div>
         </div>
 
@@ -358,48 +373,50 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
             key: 'advanced',
             label: (
               <Space size={6}>
-                <SettingOutlined style={{ color: token.colorTextSecondary }} />
-                <Text style={{ fontSize: 13, color: token.colorTextSecondary, fontWeight: 500 }}>Advanced Settings</Text>
+                <Sliders size={14} style={{ color: token.colorTextSecondary }} />
+                <Text style={{ fontSize: 13, color: token.colorTextSecondary, fontWeight: 500 }}>{t('noise.advancedSettings')}</Text>
               </Space>
             ),
             children: (
-              <Space orientation="vertical" size="middle" style={{ width: '100%', paddingTop: 4 }}>
+              <Space direction="vertical" size="middle" style={{ width: '100%', paddingTop: 4 }}>
 
                 {/* VAD Gate Threshold */}
                 <NoiseParamRow
-                  label="VAD Gate Threshold"
+                  label={t('noise.vadGateThreshold')}
                   value={vadGate}
                   defaultValue={0.0}
                   min={0}
                   max={1}
                   step={0.01}
-                  format={v => v === 0 ? 'Off' : `${Math.round(v * 100)}%`}
-                  leftLabel="Off (no gating)"
-                  rightLabel="Gate all non-speech"
+                  format={v => v === 0 ? t('noise.off') : `${Math.round(v * 100)}%`}
+                  leftLabel={t('noise.gateOff')}
+                  rightLabel={t('noise.gateAll')}
                   primaryColor={token.colorPrimary}
                   tertiaryColor={token.colorTextTertiary}
+                  resetTooltip={t('common.resetToDefault')}
                   onChange={(v) => { setVadGate(v); send(1, v); }}
                 />
 
                 {/* Gate Attenuation */}
                 <NoiseParamRow
-                  label="Gate Attenuation"
+                  label={t('noise.gateAtten')}
                   value={gateAtten}
                   defaultValue={0.0}
                   min={0}
                   max={1}
                   step={0.01}
                   format={v => `${Math.round(v * 100)}%`}
-                  leftLabel="No reduction"
-                  rightLabel="Full silence"
+                  leftLabel={t('noise.attenNone')}
+                  rightLabel={t('noise.attenFull')}
                   primaryColor={token.colorPrimary}
                   tertiaryColor={token.colorTextTertiary}
+                  resetTooltip={t('common.resetToDefault')}
                   onChange={(v) => { setGateAtten(v); send(2, v); }}
                 />
 
                 {/* Output Gain */}
                 <NoiseParamRow
-                  label="Output Gain"
+                  label={t('noise.outputGain')}
                   value={outputGain}
                   defaultValue={0.0}
                   min={-24}
@@ -410,6 +427,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
                   rightLabel="+12 dB"
                   primaryColor={token.colorPrimary}
                   tertiaryColor={token.colorTextTertiary}
+                  resetTooltip={t('common.resetToDefault')}
                   onChange={(v) => { setOutputGain(v); send(3, v); }}
                 />
 
@@ -430,7 +448,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
           }}
         >
           <Text type="secondary" style={{ fontSize: 11 }}>
-            Powered by <strong>RNNoise</strong> — deep neural network trained for real-time speech enhancement. Runs with zero external models.
+            {t('noise.footerDesc')}
           </Text>
         </div>
 

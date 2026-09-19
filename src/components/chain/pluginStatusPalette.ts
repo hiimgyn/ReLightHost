@@ -36,8 +36,8 @@ export function getPluginStatusPalette(
   const paletteByKind: Record<PluginStatusKind, { color: string; bg: string; border: string }> = {
     crashed: {
       color: token.colorError,
-      bg: 'rgba(255,77,79,0.12)',
-      border: 'rgba(255,77,79,0.26)',
+      bg: 'rgba(244, 63, 94, 0.14)',
+      border: 'rgba(244, 63, 94, 0.32)',
     },
     bypassed: {
       color: token.colorTextTertiary,
@@ -46,13 +46,13 @@ export function getPluginStatusPalette(
     },
     live: {
       color: token.colorWarning,
-      bg: 'rgba(250,173,20,0.14)',
-      border: 'rgba(250,173,20,0.3)',
+      bg: 'rgba(245, 158, 11, 0.14)',
+      border: 'rgba(245, 158, 11, 0.32)',
     },
     active: {
       color: token.colorSuccess,
-      bg: 'rgba(110,200,166,0.12)',
-      border: 'rgba(110,200,166,0.3)',
+      bg: 'rgba(16, 185, 129, 0.14)',
+      border: 'rgba(16, 185, 129, 0.32)',
     },
   };
   const palette = paletteByKind[statusKind];

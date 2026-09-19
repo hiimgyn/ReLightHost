@@ -1,7 +1,8 @@
 import { memo } from 'react';
 import { Button, Space, Tag, Tooltip, Typography, theme } from 'antd';
-import { InfoCircleOutlined, PlusCircleOutlined } from '@ant-design/icons';
+import { Info, Plus } from 'lucide-react';
 import type { PluginInfo } from '../../lib/types';
+import { useTranslation } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -24,6 +25,8 @@ const PluginListItem = memo(function PluginListItem({
   onSelect,
   onAdd,
 }: PluginListItemProps) {
+  const { t } = useTranslation();
+
   return (
     <div
       className="plugin-list-item"
@@ -45,7 +48,7 @@ const PluginListItem = memo(function PluginListItem({
               {plugin.name}
             </Text>
             <Text type="secondary" style={{ fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {plugin.manufacture || 'Unknown'}
+              {plugin.manufacture || t('info.unknownDeveloper')}
             </Text>
             <div style={{ marginTop: 6 }}>
               <Space size={4} wrap>
@@ -63,11 +66,11 @@ const PluginListItem = memo(function PluginListItem({
           </div>
         </div>
         <div style={{ marginLeft: 8, display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-          <Tooltip title="Plugin Info" key="info">
+          <Tooltip title={t('library.infoTooltip')} key="info">
             <Button
               type="text"
               size="small"
-              icon={<InfoCircleOutlined style={{ color: token.colorTextSecondary, fontSize: 14 }} />}
+              icon={<Info size={14} style={{ color: token.colorTextSecondary }} />}
               onClick={(e) => {
                 e.stopPropagation();
                 onSelect(plugin);
@@ -75,11 +78,11 @@ const PluginListItem = memo(function PluginListItem({
               style={{ borderRadius: 8, width: 28, height: 28 }}
             />
           </Tooltip>
-          <Tooltip title="Add to Chain" key="add">
+          <Tooltip title={t('library.addToChainTooltip')} key="add">
             <Button
               type="primary"
               size="small"
-              icon={<PlusCircleOutlined style={{ fontSize: 13 }} />}
+              icon={<Plus size={14} strokeWidth={2.5} />}
               loading={isAdding}
               disabled={addLocked}
               onClick={(e) => {

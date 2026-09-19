@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { PluginInfo } from '../../lib/types';
+import { useTranslation } from '../../i18n';
 
 type FormatFilter = 'all' | 'vst3' | 'vst' | 'clap' | 'builtin';
 
@@ -15,6 +16,7 @@ export function usePluginLibraryFilters({
   searchQuery,
   filterFormat,
 }: UsePluginLibraryFiltersOptions) {
+  const { t } = useTranslation();
   const filteredPlugins = useMemo(() => {
     const query = searchQuery.toLowerCase();
     return availablePlugins.filter((plugin) => {
@@ -42,12 +44,12 @@ export function usePluginLibraryFilters({
   const clapCount = useMemo(() => availablePlugins.filter(p => p.format === 'clap').length, [availablePlugins]);
 
   const tabItems = useMemo(() => [
-    { key: 'all', label: `All (${availablePlugins.length})`, children: null },
-    { key: 'builtin', label: `Built-in (${builtinCount})`, children: null },
-    { key: 'vst3', label: `VST3 (${vst3Count})`, children: null },
-    { key: 'vst', label: `VST2 (${vstCount})`, children: null },
-    { key: 'clap', label: `CLAP (${clapCount})`, children: null },
-  ], [availablePlugins.length, builtinCount, clapCount, vst3Count, vstCount]);
+    { key: 'all', label: t('library.tabAll', { count: availablePlugins.length }), children: null },
+    { key: 'builtin', label: t('library.tabBuiltin', { count: builtinCount }), children: null },
+    { key: 'vst3', label: t('library.tabVst3', { count: vst3Count }), children: null },
+    { key: 'vst', label: t('library.tabVst', { count: vstCount }), children: null },
+    { key: 'clap', label: t('library.tabClap', { count: clapCount }), children: null },
+  ], [t, availablePlugins.length, builtinCount, clapCount, vst3Count, vstCount]);
 
   return { filteredPlugins, groupedByAuthor, authorKeys, tabItems };
 }

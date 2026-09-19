@@ -1,7 +1,7 @@
 {
   "name": "relighthost",
   "private": true,
-  "version": "2.4.0",
+  "version": "2.4.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,12 +10,13 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@ant-design/icons": "^6.3.4",
     "@tailwindcss/postcss": "^4.3.3",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "antd": "^6.6.4",
     "esbuild": "^0.28.2",
+    "gsap": "^3.15.0",
+    "lucide-react": "^1.47.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "zustand": "^5.0.15"

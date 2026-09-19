@@ -1,7 +1,8 @@
 import { Alert, Form, Select } from 'antd';
-import { ThunderboltOutlined } from '@ant-design/icons';
+import { Zap } from 'lucide-react';
 import type { AudioDeviceInfo } from '../../lib/types';
 import { DeviceOption } from './audioDeviceDisplay';
+import { useTranslation } from '../../i18n';
 
 interface AsioDeviceFieldsProps {
   asioDevices: AudioDeviceInfo[];
@@ -10,30 +11,25 @@ interface AsioDeviceFieldsProps {
 
 /** ASIO mode: a single full-duplex device handles both input and output. */
 export default function AsioDeviceFields({ asioDevices, monitorOutputDevices }: AsioDeviceFieldsProps) {
+  const { t } = useTranslation();
+
   return (
     <>
       <Alert
         type="info"
         showIcon
-        icon={<ThunderboltOutlined />}
+        icon={<Zap size={15} />}
         style={{ marginBottom: 16 }}
-        title="ASIO — Full-Duplex"
-        description={
-          <>
-            ASIO drivers manage input and output through a single device.
-            Select one device below; it will be used for both input and
-            output. The buffer size must match your ASIO driver's current
-            setting (configured in the driver's own control panel).
-          </>
-        }
+        title={t('audioSettings.asioAlertTitle')}
+        description={t('audioSettings.asioAlertDesc')}
       />
 
       <Form.Item
-        label="ASIO Device"
+        label={t('audioSettings.asioDeviceLabel')}
         name="asioDevice"
-        rules={[{ required: true, message: 'Please select an ASIO device' }]}
+        rules={[{ required: true, message: t('audioSettings.selectAsioDevice') }]}
       >
-        <Select size="large" placeholder="Select ASIO device" optionLabelProp="label">
+        <Select size="large" placeholder={t('audioSettings.selectAsioDevice')} optionLabelProp="label">
           {asioDevices.map((device) => (
             <Select.Option key={device.id} value={device.id} label={device.name}>
               <DeviceOption device={device} />
@@ -43,13 +39,13 @@ export default function AsioDeviceFields({ asioDevices, monitorOutputDevices }: 
       </Form.Item>
 
       <Form.Item
-        label="Monitor Output"
+        label={t('audioSettings.asioMonitorLabel')}
         name="virtualOutputDevice"
         extra="WASAPI monitor output used with the Monitor Output toggle to check audio."
       >
-        <Select size="large" placeholder="None (disabled)" allowClear optionLabelProp="label">
-          <Select.Option value="" label="None (disabled)">
-            <span>None (disabled)</span>
+        <Select size="large" placeholder={t('audioSettings.noneDisabled')} allowClear optionLabelProp="label">
+          <Select.Option value="" label={t('audioSettings.noneDisabled')}>
+            <span>{t('audioSettings.noneDisabled')}</span>
           </Select.Option>
           {monitorOutputDevices.map((device) => (
             <Select.Option key={device.id} value={device.id} label={device.name}>

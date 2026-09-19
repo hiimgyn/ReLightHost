@@ -1,12 +1,13 @@
 import { Tag, Tooltip, theme } from 'antd';
 import {
-  AppstoreOutlined,
-  ApartmentOutlined,
-  FieldNumberOutlined,
-  TagOutlined,
-} from '@ant-design/icons';
+  Boxes,
+  Building2,
+  Hash,
+  Tag as TagIcon,
+} from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { PluginInstanceInfo } from '../../lib/types';
+import { useTranslation } from '../../i18n';
 
 interface MetaChip {
   key: string;
@@ -29,12 +30,12 @@ function getFormatPalette(format: PluginInstanceInfo['format']) {
   }
 }
 
-function normalizeManufacturerLabel(format: PluginInstanceInfo['format'], value?: string) {
+function normalizeManufacturerLabel(format: PluginInstanceInfo['format'], value?: string, systemLabel = 'System') {
   if (!value) return null;
   const normalized = value.trim();
   if (!normalized) return null;
   if (format === 'builtin' && normalized.toLowerCase().includes('built')) {
-    return 'System';
+    return systemLabel;
   }
   return normalized;
 }
@@ -42,15 +43,15 @@ function normalizeManufacturerLabel(format: PluginInstanceInfo['format'], value?
 function metaChipIconFor(key: string): ReactNode {
   switch (key) {
     case 'format':
-      return <AppstoreOutlined />;
+      return <Boxes size={10} />;
     case 'manufacture':
-      return <ApartmentOutlined />;
+      return <Building2 size={10} />;
     case 'version':
-      return <FieldNumberOutlined />;
+      return <Hash size={10} />;
     case 'category':
-      return <TagOutlined />;
+      return <TagIcon size={10} />;
     default:
-      return <TagOutlined />;
+      return <TagIcon size={10} />;
   }
 }
 
@@ -61,6 +62,7 @@ interface PluginMetaChipsProps {
 /** Row of small tags: format, manufacturer, version, category. */
 export default function PluginMetaChips({ plugin }: PluginMetaChipsProps) {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const formatPalette = getFormatPalette(plugin.format);
 
   const metaChipStyleFor = (chip: MetaChip): CSSProperties => {
@@ -70,55 +72,70 @@ export default function PluginMetaChips({ plugin }: PluginMetaChipsProps) {
     return {
       display: 'inline-flex',
       alignItems: 'center',
-      gap: 3,
+      gap: 4,
       minWidth: 0,
-      padding: isPrimary ? '2px 6px' : '1px 5px',
+      maxWidth: isPrimary ? 80 : 110,
+      padding: isPrimary ? '2px 8px' : '1px 6px',
       margin: 0,
-      borderRadius: 999,
+      borderRadius: 6,
       border: `1px solid ${isPrimary ? formatPalette.border : token.colorBorderSecondary}`,
       background: isPrimary
         ? formatPalette.background
         : isManufacturer
-        ? token.colorBgElevated
-        : token.colorBgContainer,
+        ? token.colorBgContainer
+        : token.colorFillQuaternary,
       color: isPrimary ? formatPalette.color : token.colorTextSecondary,
-      fontSize: isPrimary ? 8.5 : 7.5,
-      fontWeight: isPrimary ? 700 : 600,
-      letterSpacing: isPrimary ? 0.3 : 0.08,
+      fontSize: isPrimary ? 9.5 : 9,
+      fontWeight: isPrimary ? 700 : 500,
+      letterSpacing: isPrimary ? 0.4 : 0.1,
       textTransform: isPrimary ? 'uppercase' : 'none',
       boxShadow: 'none',
-      overflow: 'visible',
+      overflow: 'hidden',
       whiteSpace: 'nowrap',
-      flexShrink: 0,
-      lineHeight: 1,
-      minHeight: 18,
+      textOverflow: 'ellipsis',
+      flexShrink: isPrimary ? 0 : 1,
+      lineHeight: 1.2,
+      height: 20,
     };
   };
 
-  const manufacturerLabel = normalizeManufacturerLabel(plugin.format, plugin.manufacture);
+  const manufacturerLabel = normalizeManufacturerLabel(plugin.format, plugin.manufacture, t('common.system'));
+
   const metaChips: MetaChip[] = [
-    { key: 'format', label: plugin.format === 'builtin' ? 'SYSTEM' : plugin.format.toUpperCase(), icon: metaChipIconFor('format') },
+    { key: 'format', label: plugin.format === 'builtin' ? t('common.system') : plugin.format.toUpperCase(), icon: metaChipIconFor('format') },
     manufacturerLabel
       ? { key: 'manufacture', label: manufacturerLabel, tooltip: plugin.manufacture, icon: metaChipIconFor('manufacture') }
-      : null,
-    plugin.version
-      ? { key: 'version', label: `v${plugin.version}`, tooltip: `v${plugin.version}`, icon: metaChipIconFor('version') }
       : null,
     plugin.category && plugin.category !== 'Unknown'
       ? { key: 'category', label: plugin.category, tooltip: plugin.category, icon: metaChipIconFor('category') }
       : null,
+    plugin.version
+      ? { key: 'version', label: `v${plugin.version}`, tooltip: `v${plugin.version}`, icon: metaChipIconFor('version') }
+      : null,
   ].filter((chip): chip is MetaChip => chip !== null);
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', overflow: 'visible', maxHeight: 30, width: '100%', paddingTop: 1 }}>
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        flexWrap: 'nowrap',
+        overflow: 'hidden',
+        width: '100%',
+        minHeight: 22,
+      }}
+    >
       {metaChips.map((chip) => (
         <Tooltip title={chip.tooltip ?? chip.label} key={chip.key}>
           <Tag color="default" style={metaChipStyleFor(chip)}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0, whiteSpace: 'nowrap' }}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 8, opacity: 0.88 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0, overflow: 'hidden' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 9, opacity: 0.85, flexShrink: 0 }}>
                 {chip.icon}
               </span>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chip.label}</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {chip.label}
+              </span>
             </span>
           </Tag>
         </Tooltip>

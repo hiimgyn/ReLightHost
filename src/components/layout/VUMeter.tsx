@@ -28,18 +28,15 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
 
   return (
     <div style={{
-      position: 'relative', flex: 1, height: 5, borderRadius: 3,
-      background: isDark
-        ? 'linear-gradient(135deg, rgba(38,42,64,0.78) 0%, rgba(30,34,54,0.72) 100%)'
-        : 'linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.76) 100%)',
-      border: `1px solid ${isDark ? 'rgba(132,148,255,0.24)' : 'rgba(99,103,255,0.18)'}`,
-      boxShadow: isDark ? 'inset 0 1px 0 rgba(255,255,255,0.05)' : 'var(--rh-inset-soft)',
+      position: 'relative', flex: 1, height: 6, borderRadius: 3,
+      background: isDark ? 'rgba(0, 0, 0, 0.45)' : 'rgba(0, 0, 0, 0.08)',
+      border: `1px solid ${isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)'}`,
     }}>
       {/* RMS ghost */}
       <div style={{
         position: 'absolute', top: 0, left: 0, bottom: 0,
         width: rmsPct + '%', borderRadius: 3,
-        background: isDark ? 'rgba(99,103,255,0.28)' : 'rgba(99,103,255,0.24)',
+        background: isDark ? 'rgba(99,102,241,0.32)' : 'rgba(99,102,241,0.22)',
       }} />
       {/* Peak fill */}
       <div style={{
@@ -47,7 +44,6 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
         width: peakPct + '%', borderRadius: 3,
         background: clip ? BAR_GRAD_CLIP : BAR_GRAD,
         transition: 'width 80ms linear',
-        boxShadow: 'none',
       }} />
       {/* Peak-hold tick */}
       {peak_hold > 0.001 && holdPct < 99 && (
@@ -55,8 +51,7 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
           position: 'absolute', top: -1, bottom: -1,
           left: 'calc(' + holdPct + '% - 1px)',
           width: 2, borderRadius: 1,
-          background: isDark ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.95)',
-          boxShadow: 'none',
+          background: isDark ? 'rgba(255,255,255,0.9)' : 'rgba(15,23,42,0.9)',
         }} />
       )}
     </div>
@@ -122,16 +117,14 @@ export function VUMeter({ updateInterval = 160, isDark = true }: { updateInterva
 
   return (
     <div style={{
-      display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6,
-      padding: '3px 10px',
+      display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8,
+      padding: '4px 12px',
       width: '100%',
       maxWidth: 'clamp(240px, 42vw, 760px)',
       minWidth: 0,
-      borderRadius: 6,
-      background: isDark
-        ? 'linear-gradient(135deg, rgba(38,42,64,0.78) 0%, rgba(30,34,54,0.72) 100%)'
-        : 'linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.76) 100%)',
-      border: `1px solid ${isDark ? 'rgba(132,148,255,0.24)' : 'rgba(99,103,255,0.18)'}`,
+      borderRadius: 8,
+      background: 'var(--rh-surface-card)',
+      border: '1px solid var(--rh-border-subtle)',
     }}>
       {/* L channel */}
       <span style={labelCss}>L</span>

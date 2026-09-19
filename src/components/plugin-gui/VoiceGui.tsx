@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal, Slider, Typography, Space, Badge, Tooltip, theme } from 'antd';
-import { CustomerServiceOutlined, UndoOutlined } from '@ant-design/icons';
+import { Mic, RotateCcw } from 'lucide-react';
 import * as tauri from '../../lib/tauri';
 import type { PluginInstanceInfo } from '../../lib/types';
+import { useTranslation } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -57,31 +58,32 @@ interface ParamRowProps {
   defaultValue: number;
   color: string;
   tertiaryColor: string;
+  resetTooltip?: string;
   onChange: (v: number) => void;
 }
 
 function ParamRow({
   label, value, min, max, step,
   format, leftLabel, rightLabel,
-  defaultValue, color, tertiaryColor, onChange,
+  defaultValue, color, tertiaryColor, resetTooltip = "Reset to default", onChange,
 }: ParamRowProps) {
   return (
     <div
-      className="minimal-surface"
       style={{
-        padding: '8px 10px',
-        borderRadius: 8,
-        background: 'var(--rh-surface-soft-gradient)',
-        border: '1px solid var(--rh-surface-soft-border)',
+        padding: '10px 14px',
+        borderRadius: 10,
+        background: 'var(--rh-surface-card)',
+        border: '1px solid var(--rh-border-subtle)',
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
         <Text style={{ fontSize: 13 }}>{label}</Text>
         <Space size={6} align="center">
           {value !== defaultValue && (
-            <Tooltip title="Reset to default">
-              <UndoOutlined
-                style={{ fontSize: 11, cursor: 'pointer', color: tertiaryColor }}
+            <Tooltip title={resetTooltip}>
+              <RotateCcw
+                size={11}
+                style={{ cursor: 'pointer', color: tertiaryColor }}
                 onClick={() => onChange(defaultValue)}
               />
             </Tooltip>
@@ -110,8 +112,9 @@ function ParamRow({
 
 export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const tc = token.colorTextTertiary;
-  const modalWidth = typeof window === 'undefined' ? 540 : 'clamp(320px, 34vw, 560px)';
+  const modalWidth = typeof window === 'undefined' ? 540 : 'clamp(480px, 50vw, 580px)';
 
   const [low,     setLow]     = useState(() => paramValue(plugin, P_LOW,      0));
   const [mid,     setMid]     = useState(() => paramValue(plugin, P_MID,      0));
@@ -193,43 +196,43 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
     <Modal
       title={
         <Space>
-          <CustomerServiceOutlined style={{ color: token.colorPrimary }} />
-          <span>Voice Designer</span>
-          <Badge color="cyan" text="Built-in" />
+          <Mic size={16} style={{ color: token.colorPrimary }} />
+          <span>{t('voice.title')}</span>
+          <Badge color="cyan" text={t('common.builtin')} />
         </Space>
       }
       open={isOpen}
       onCancel={onClose}
       footer={null}
       width={modalWidth}
-      style={{ top: 16, maxWidth: 560 }}
-      styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'hidden', padding: '14px 16px 16px' } }}
+      style={{ top: 24, maxWidth: 580 }}
+      styles={{ body: { maxHeight: 'calc(100vh - 140px)', overflowY: 'auto', overflowX: 'hidden', padding: '16px 20px 22px' } }}
     >
-      <Space orientation="vertical" size={14} style={{ width: '100%' }}>
+      <Space direction="vertical" size={14} style={{ width: '100%' }}>
 
         {/* ── EQ ───────────────────────────────────────────── */}
         <div>
-          <SectionHeader title="3-Band EQ" color={EQ_COLOR} />
-          <Space orientation="vertical" size={10} style={{ width: '100%' }}>
+          <SectionHeader title={t('voice.eqSection')} color={EQ_COLOR} />
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
             <ParamRow
-              label="Low (200 Hz)" value={low} defaultValue={0} min={-12} max={12} step={0.5}
+              label={t('voice.low')} value={low} defaultValue={0} min={-12} max={12} step={0.5}
               format={fmtDb}
-              leftLabel="−12 dB (cut bass)" rightLabel="+12 dB (boost bass)"
-              color={EQ_COLOR} tertiaryColor={tc}
+              leftLabel={t('voice.lowLeft')} rightLabel={t('voice.lowRight')}
+              color={EQ_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
               onChange={v => { setLow(v); send(P_LOW, v); }}
             />
             <ParamRow
-              label="Mid (2 kHz)" value={mid} defaultValue={0} min={-12} max={12} step={0.5}
+              label={t('voice.mid')} value={mid} defaultValue={0} min={-12} max={12} step={0.5}
               format={fmtDb}
-              leftLabel="−12 dB (thin)" rightLabel="+12 dB (body / presence)"
-              color={EQ_COLOR} tertiaryColor={tc}
+              leftLabel={t('voice.midLeft')} rightLabel={t('voice.midRight')}
+              color={EQ_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
               onChange={v => { setMid(v); send(P_MID, v); }}
             />
             <ParamRow
-              label="High (8 kHz)" value={high} defaultValue={0} min={-12} max={12} step={0.5}
+              label={t('voice.high')} value={high} defaultValue={0} min={-12} max={12} step={0.5}
               format={fmtDb}
-              leftLabel="−12 dB (dark)" rightLabel="+12 dB (bright / air)"
-              color={EQ_COLOR} tertiaryColor={tc}
+              leftLabel={t('voice.highLeft')} rightLabel={t('voice.highRight')}
+              color={EQ_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
               onChange={v => { setHigh(v); send(P_HIGH, v); }}
             />
           </Space>
@@ -237,36 +240,36 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
 
         {/* ── Saturation ───────────────────────────────────── */}
         <div>
-          <SectionHeader title="Saturation" color={SAT_COLOR} />
+          <SectionHeader title={t('voice.saturationSection')} color={SAT_COLOR} />
           <ParamRow
-            label="Drive" value={drive} defaultValue={0} min={0} max={1} step={0.01}
+            label={t('voice.drive')} value={drive} defaultValue={0} min={0} max={1} step={0.01}
             format={fmtPct}
-            leftLabel="0% (clean)" rightLabel="100% (warm saturation)"
-            color={SAT_COLOR} tertiaryColor={tc}
+            leftLabel={t('voice.driveLeft')} rightLabel={t('voice.driveRight')}
+            color={SAT_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
             onChange={v => { setDrive(v); send(P_DRIVE, v); }}
           />
         </div>
 
         {/* ── Doubler ──────────────────────────────────────── */}
         <div>
-          <SectionHeader title="Stereo Doubler" color={DBL_COLOR} />
+          <SectionHeader title={t('voice.doublerSection')} color={DBL_COLOR} />
           <ParamRow
-            label="Width" value={width} defaultValue={0} min={0} max={1} step={0.01}
+            label={t('voice.width')} value={width} defaultValue={0} min={0} max={1} step={0.01}
             format={fmtPct}
-            leftLabel="0% (mono)" rightLabel="100% (wide stereo)"
-            color={DBL_COLOR} tertiaryColor={tc}
+            leftLabel={t('voice.widthLeft')} rightLabel={t('voice.widthRight')}
+            color={DBL_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
             onChange={v => { setWidth(v); send(P_WIDTH, v); }}
           />
         </div>
 
         {/* ── Limiter ──────────────────────────────────────── */}
         <div>
-          <SectionHeader title="Limiter" color={LIM_COLOR} />
+          <SectionHeader title={t('voice.limiterSection')} color={LIM_COLOR} />
           <ParamRow
-            label="Ceiling" value={ceiling} defaultValue={0} min={-12} max={0} step={0.5}
+            label={t('voice.ceiling')} value={ceiling} defaultValue={0} min={-12} max={0} step={0.5}
             format={fmtDb}
-            leftLabel="−12 dB (heavy limit)" rightLabel="0 dB (unity / safety)"
-            color={LIM_COLOR} tertiaryColor={tc}
+            leftLabel={t('voice.ceilingLeft')} rightLabel={t('voice.ceilingRight')}
+            color={LIM_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
             onChange={v => { setCeiling(v); send(P_CEILING, v); }}
           />
         </div>

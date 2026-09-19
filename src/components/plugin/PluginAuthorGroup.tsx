@@ -1,8 +1,9 @@
 import { Space, Tag, Typography, theme } from 'antd';
-import { AppstoreOutlined, DownOutlined, RightOutlined } from '@ant-design/icons';
+import { Layers, ChevronDown, ChevronRight } from 'lucide-react';
 import type { PluginInfo } from '../../lib/types';
 import PluginListItem from './PluginListItem';
 import { getAuthorAccent, getAuthorLabel, getFormatColor } from './pluginLibraryHelpers';
+import { useTranslation } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -29,6 +30,7 @@ export default function PluginAuthorGroup({
   onAdd,
 }: PluginAuthorGroupProps) {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const authorColor = getAuthorAccent(token, author);
 
   return (
@@ -62,26 +64,26 @@ export default function PluginAuthorGroup({
               flexShrink: 0,
             }}
           >
-            <AppstoreOutlined style={{ color: authorColor, fontSize: 16 }} />
+            <Layers size={16} style={{ color: authorColor }} />
           </div>
           <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
             <Space size={6} align="center" style={{ minWidth: 0 }}>
-              <Text strong style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getAuthorLabel(author)}</Text>
+              <Text strong style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getAuthorLabel(author)}</Text>
               <Tag style={{ margin: 0, fontSize: 11 }}>{group.length}</Tag>
             </Space>
             <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.2 }}>
-              {author === 'Unknown' ? 'Plugins without manufacturer metadata' : 'Grouped by manufacturer'}
+              {author === 'Unknown' ? t('library.unknownMfg') : t('library.groupedByMfg')}
             </Text>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
           <Text style={{ color: token.colorTextTertiary, fontSize: 12 }}>
-            {isCollapsed ? 'Collapsed' : 'Expanded'}
+            {isCollapsed ? t('library.collapsed') : t('library.expanded')}
           </Text>
           {isCollapsed ? (
-            <RightOutlined style={{ color: token.colorTextQuaternary, fontSize: 11 }} />
+            <ChevronRight size={14} style={{ color: token.colorTextQuaternary }} />
           ) : (
-            <DownOutlined style={{ color: token.colorTextQuaternary, fontSize: 11 }} />
+            <ChevronDown size={14} style={{ color: token.colorTextQuaternary }} />
           )}
         </div>
       </div>

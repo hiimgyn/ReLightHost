@@ -5,20 +5,22 @@ import { getVersion } from "@tauri-apps/api/app";
 
 const { Text, Title } = Typography;
 import {
-  AudioOutlined,
-  SettingOutlined,
-  BulbOutlined,
-  BulbFilled,
-  LoadingOutlined,
-  ReloadOutlined,
-  SoundOutlined,
-  MutedOutlined,
-  RetweetOutlined,
-} from "@ant-design/icons";
+  Sliders,
+  Settings2,
+  Sun,
+  Moon,
+  Loader2,
+  RotateCw,
+  Volume2,
+  VolumeX,
+  Headphones,
+  Languages,
+} from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useThemeStore } from "../../stores/themeStore";
 import { useAudioStore } from "../../stores/audioStore";
 import { usePluginStore } from "../../stores/pluginStore";
+import { useTranslation } from "../../i18n";
 import AudioSettings from "../audio/AudioSettings";
 import AppSettings from "../settings/AppSettings";
 
@@ -79,6 +81,7 @@ const Logo = ({ src, size = 52 }: { src: string; size?: number }) => {
 
 export default function Header() {
   const { theme: appTheme, toggleTheme } = useThemeStore();
+  const { t, locale, toggleLocale } = useTranslation();
   const { token } = theme.useToken();
   const {
     status,
@@ -119,10 +122,10 @@ export default function Header() {
   const engineLabel = status.is_monitoring
     ? (isChainInitializing
       ? (restoreTargetCount != null
-        ? `Preparing plugins... ${restoredCount}/${restoreTargetCount} restored`
-        : 'Preparing plugins...')
-      : 'Engine on')
-    : 'Engine off';
+        ? `${t('header.preparingPlugins')} ${restoredCount}/${restoreTargetCount} ${t('header.pluginsRestored')}`
+        : t('header.preparingPlugins'))
+      : t('header.engineOn'))
+    : t('header.engineOff');
 
   useEffect(() => {
     getVersion()
@@ -153,10 +156,10 @@ export default function Header() {
     try {
       const nextState = !status.is_monitoring;
       await toggleMonitoring(nextState);
-      message.info(nextState ? "Audio engine started" : "Audio engine stopped");
+      message.info(nextState ? t('header.engineStarted') : t('header.engineStopped'));
     } catch (error) {
       console.error("Failed to toggle engine:", error);
-      message.error("Failed to toggle engine");
+      message.error(t('header.engineToggleFailed'));
     } finally {
       setIsTogglingEngine(false);
     }
@@ -166,10 +169,10 @@ export default function Header() {
     setIsReloadingDevice(true);
     try {
       await reloadDeviceConfig();
-      message.success("Audio device reloaded");
+      message.success(t('header.deviceReloaded'));
     } catch (error) {
       console.error("Failed to reload audio device:", error);
-      message.error("Failed to reload audio device");
+      message.error(t('header.deviceReloadFailed'));
     } finally {
       setIsReloadingDevice(false);
     }
@@ -245,7 +248,7 @@ export default function Header() {
 
         {/* Controls */}
         <Space size={10} wrap style={{ justifyContent: "flex-end" }}>
-          <Tooltip title={status.is_monitoring ? "Click to stop audio engine" : "Click to start audio engine"}>
+          <Tooltip title={status.is_monitoring ? t('header.clickToStopEngine') : t('header.clickToStartEngine')}>
             <div
               role="button"
               tabIndex={0}
@@ -267,13 +270,11 @@ export default function Header() {
               className="rh-engine-badge"
             >
               {isTogglingEngine ? (
-                <LoadingOutlined style={{ fontSize: 12, color: token.colorPrimary }} />
+                <Loader2 className="animate-spin" size={13} style={{ color: token.colorPrimary }} />
               ) : isEngineReady ? (
                 <Badge status="processing" color={token.colorSuccess} />
               ) : status.is_monitoring ? (
-                <LoadingOutlined
-                  style={{ fontSize: 12, color: token.colorWarning }}
-                />
+                <Loader2 className="animate-spin" size={13} style={{ color: token.colorWarning }} />
               ) : (
                 <Badge status="default" color={token.colorTextQuaternary} />
               )}
@@ -295,15 +296,15 @@ export default function Header() {
           </Tooltip>
 
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2, padding: 4, borderRadius: 12, background: token.colorBgContainer, border: `1px solid ${token.colorBorderSecondary}` }}>
-            <Tooltip title={isMuted ? "Unmute output" : "Mute output"}>
+            <Tooltip title={isMuted ? t('header.unmuteOutput') : t('header.muteOutput')}>
               <Button
                 type="text"
                 size="small"
                 icon={
                   isMuted ? (
-                    <MutedOutlined style={{ color: token.colorError }} />
+                    <VolumeX size={15} style={{ color: token.colorError }} />
                   ) : (
-                    <SoundOutlined style={{ color: token.colorSuccess }} />
+                    <Volume2 size={15} style={{ color: token.colorSuccess }} />
                   )
                 }
                 onClick={() => setMuted(!isMuted)}
@@ -312,15 +313,16 @@ export default function Header() {
             <Tooltip
               title={
                 isLoopbackEnabled
-                  ? "Monitor Output on — hear processed audio"
-                  : "Monitor Output off — hardware out silent"
+                  ? t('header.monitorOutputOn')
+                  : t('header.monitorOutputOff')
               }
             >
               <Button
                 type="text"
                 size="small"
                 icon={
-                  <RetweetOutlined
+                  <Headphones
+                    size={15}
                     style={{
                       color: isLoopbackEnabled
                         ? token.colorPrimary
@@ -331,48 +333,65 @@ export default function Header() {
                 onClick={() => setLoopback(!isLoopbackEnabled)}
               />
             </Tooltip>
-            <Tooltip title="Reapply the current audio device configuration">
+            <Tooltip title={t('header.reloadDeviceTooltip')}>
               <Button
                 type="text"
                 size="small"
-                icon={<ReloadOutlined style={{ color: token.colorInfo }} />}
+                icon={<RotateCw size={14} className={isReloadingDevice ? "animate-spin" : ""} style={{ color: token.colorInfo }} />}
                 loading={isReloadingDevice}
                 onClick={handleReloadDevice}
-              >
-              </Button>
+              />
             </Tooltip>
           </div>
 
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2, padding: 4, borderRadius: 12, background: token.colorBgContainer, border: `1px solid ${token.colorBorderSecondary}` }}>
-             <Tooltip title="Audio devices & engine">
+             <Tooltip title={t('header.audioSettingsTooltip')}>
               <Button
                 type="text"
                 size="small"
-                icon={<AudioOutlined style={{ color: token.colorInfo }} />}
+                icon={<Sliders size={15} style={{ color: token.colorInfo }} />}
                 onClick={() => setShowAudioSettings(true)}
               />
             </Tooltip>
-            <Tooltip title="Application settings">
+            <Tooltip title={t('header.appSettingsTooltip')}>
               <Button
                 type="text"
                 size="small"
-                icon={<SettingOutlined style={{ color: token.colorPrimary }} />}
+                icon={<Settings2 size={15} style={{ color: token.colorPrimary }} />}
                 onClick={() => setShowAppSettings(true)}
               />
             </Tooltip>
-          
           </div>
 
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2, padding: 4, borderRadius: 12, background: token.colorBgContainer, border: `1px solid ${token.colorBorderSecondary}` }}>
-             <Tooltip title={appTheme === "dark" ? "Light theme" : "Dark theme"}>
+            <Tooltip title={t('header.languageTooltip')}>
+              <Button
+                type="text"
+                size="small"
+                onClick={toggleLocale}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: token.colorPrimary,
+                  padding: '0 6px',
+                }}
+              >
+                <Languages size={14} />
+                <span>{locale.toUpperCase()}</span>
+              </Button>
+            </Tooltip>
+            <Tooltip title={appTheme === "dark" ? t('header.lightThemeTooltip') : t('header.darkThemeTooltip')}>
               <Button
                 type="text"
                 size="small"
                 icon={
                   appTheme === "dark" ? (
-                    <BulbFilled style={{ color: token.colorWarning }} />
+                    <Moon size={15} style={{ color: token.colorWarning }} />
                   ) : (
-                    <BulbOutlined style={{ color: token.colorWarning }} />
+                    <Sun size={15} style={{ color: token.colorWarning }} />
                   )
                 }
                 onClick={toggleTheme}

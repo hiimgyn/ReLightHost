@@ -2,53 +2,54 @@
 @import "tailwindcss";
 
 /* Brand — keep in sync with Layout ConfigProvider colorPrimary / colorInfo */
+/* Brand & Modern Studio Tokens */
 :root {
-  --rh-primary: #6367FF;
-  --rh-primary-soft: #8494FF;
-  --rh-primary-glow: rgba(99, 103, 255, 0.4);
-  --rh-info: #8494FF;
-  --rh-wash-lilac: #C9BEFF;
-  --rh-wash-rose: #FFDBFD;
-  --rh-minimal-ink: #1F2333;
-  --rh-minimal-slate: #8B92A8;
-  --rh-minimal-mist: #EEF1FA;
-  --rh-glass-bg: rgba(255, 255, 255, 0.7);
-  --rh-glass-bg-strong: rgba(255, 255, 255, 0.92);
-  --rh-glass-border: rgba(72, 78, 200, 0.5);
-  --rh-glass-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
-  --rh-glass-inset:
-    inset 0 1px 0 rgba(255, 255, 255, 0.56),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 12px 6px rgba(255, 255, 255, 0.4);
-  --rh-minimal-bg: rgba(255, 255, 255, 0.92);
-  --rh-minimal-bg-strong: rgba(250, 251, 255, 0.98);
-  --rh-minimal-border: rgba(99, 103, 255, 0.14);
-  --rh-minimal-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
-  --rh-tooltip-bg: rgba(255, 255, 255, 0.96);
-  --rh-tooltip-surface: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(247,249,255,0.92) 100%);
-  --rh-tooltip-border: rgba(99, 103, 255, 0.18);
-  --rh-tooltip-shadow: 0 6px 16px rgba(15, 23, 42, 0.1);
-  --rh-surface-soft-gradient: linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.14) 100%);
-  --rh-surface-soft-border: rgba(255,255,255,0.3);
-  --rh-surface-soft-border-strong: rgba(255,255,255,0.34);
-  --rh-divider-subtle: rgba(0, 0, 0, 0.14);
-  --rh-text-muted: rgba(0, 0, 0, 0.52);
-  --rh-inset-soft: inset 0 1px 0 rgba(255,255,255,0.16);
-  --rh-header-shadow: 0 1px 4px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.12);
-  --rh-footer-shadow: 0 -1px 4px rgba(15,23,42,0.06), inset 0 1px 0 rgba(255,255,255,0.12);
-  --rh-chain-toolbar-shadow: 0 4px 12px rgba(15,23,42,0.09), inset 0 1px 0 rgba(255,255,255,0.12);
-  --rh-chain-panel-shadow: 0 4px 14px rgba(15,23,42,0.1), inset 0 1px 0 rgba(255,255,255,0.12);
-  --rh-chain-well-bg: linear-gradient(135deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0.38) 100%);
-  --rh-chain-well-border: rgba(31,35,51,0.2);
-  --rh-chain-insert-bg: linear-gradient(135deg, rgba(99,103,255,0.26), rgba(132,148,255,0.22));
+  --rh-primary: #6366f1;
+  --rh-primary-soft: #818cf8;
+  --rh-primary-glow: rgba(99, 102, 241, 0.35);
+  --rh-info: #38bdf8;
+  --rh-success: #10b981;
+  --rh-warning: #f59e0b;
+  --rh-error: #f43f5e;
+  --rh-wash-lilac: #c7d2fe;
+  --rh-wash-rose: #fecdd3;
+  --rh-minimal-ink: #0f172a;
+  --rh-minimal-slate: #64748b;
+  --rh-minimal-mist: #f1f5f9;
+  --rh-glass-bg: rgba(255, 255, 255, 0.90);
+  --rh-glass-bg-strong: rgba(255, 255, 255, 0.98);
+  --rh-glass-border: rgba(99, 102, 241, 0.16);
+  --rh-glass-shadow: 0 8px 30px rgba(15, 23, 42, 0.08);
+  --rh-glass-inset: none;
+  --rh-minimal-bg: #ffffff;
+  --rh-minimal-bg-strong: #f8fafc;
+  --rh-minimal-border: rgba(99, 102, 241, 0.14);
+  --rh-minimal-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
+  --rh-tooltip-bg: #1e293b;
+  --rh-tooltip-surface: #1e293b;
+  --rh-tooltip-border: rgba(99, 102, 241, 0.24);
+  --rh-tooltip-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  --rh-surface-soft-gradient: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.90) 100%);
+  --rh-surface-soft-border: rgba(99, 102, 241, 0.14);
+  --rh-surface-soft-border-strong: rgba(99, 102, 241, 0.22);
+  --rh-divider-subtle: rgba(15, 23, 42, 0.08);
+  --rh-text-muted: rgba(15, 23, 42, 0.50);
+  --rh-inset-soft: none;
+  --rh-header-shadow: 0 1px 0 rgba(15, 23, 42, 0.06);
+  --rh-footer-shadow: 0 -1px 0 rgba(15, 23, 42, 0.06);
+  --rh-chain-toolbar-shadow: none;
+  --rh-chain-panel-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+  --rh-chain-well-bg: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  --rh-chain-well-border: rgba(99, 102, 241, 0.12);
+  --rh-chain-insert-bg: rgba(99, 102, 241, 0.15);
 
   font-family: 'Inter', 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
   color-scheme: light;
-  color: rgba(0, 0, 0, 0.88);
-  background-color: #eef0f7;
+  color: rgba(15, 23, 42, 0.92);
+  background-color: #f4f6fb;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -58,37 +59,41 @@
 
 :root.dark {
   color-scheme: dark;
-  color: rgba(255, 255, 255, 0.96);
-  background-color: #0c0d14;
-  --rh-glass-bg: rgba(20, 23, 38, 0.75);
-  --rh-glass-bg-strong: rgba(26, 30, 48, 0.90);
-  --rh-glass-border: rgba(255, 255, 255, 0.11);
-  --rh-glass-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
-  --rh-glass-inset:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
-    inset 0 0 16px 2px rgba(107, 112, 255, 0.08);
-  --rh-minimal-bg: rgba(16, 18, 28, 0.94);
-  --rh-minimal-bg-strong: rgba(24, 27, 44, 0.98);
-  --rh-minimal-border: rgba(255, 255, 255, 0.10);
-  --rh-minimal-shadow: 0 16px 48px rgba(0, 0, 0, 0.70), 0 0 0 1px rgba(255, 255, 255, 0.08);
-  --rh-tooltip-bg: rgba(18, 21, 34, 0.98);
-  --rh-tooltip-surface: linear-gradient(180deg, rgba(28, 32, 52, 0.98) 0%, rgba(18, 21, 34, 0.96) 100%);
-  --rh-tooltip-border: rgba(107, 112, 255, 0.35);
+  color: rgba(255, 255, 255, 0.95);
+  background-color: #090b10;
+  --rh-primary: #6366f1;
+  --rh-primary-soft: #818cf8;
+  --rh-primary-glow: rgba(99, 102, 241, 0.4);
+  --rh-info: #38bdf8;
+  --rh-success: #10b981;
+  --rh-warning: #f59e0b;
+  --rh-error: #f43f5e;
+  --rh-glass-bg: rgba(20, 24, 36, 0.85);
+  --rh-glass-bg-strong: rgba(25, 30, 45, 0.95);
+  --rh-glass-border: rgba(255, 255, 255, 0.09);
+  --rh-glass-shadow: 0 12px 36px rgba(0, 0, 0, 0.65);
+  --rh-glass-inset: none;
+  --rh-minimal-bg: #111420;
+  --rh-minimal-bg-strong: #161a28;
+  --rh-minimal-border: rgba(255, 255, 255, 0.08);
+  --rh-minimal-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  --rh-tooltip-bg: #1e2436;
+  --rh-tooltip-surface: #1e2436;
+  --rh-tooltip-border: rgba(99, 102, 241, 0.35);
   --rh-tooltip-shadow: 0 12px 32px rgba(0, 0, 0, 0.75);
-  --rh-surface-soft-gradient: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%);
+  --rh-surface-soft-gradient: linear-gradient(180deg, rgba(22, 26, 38, 0.9) 0%, rgba(17, 20, 31, 0.9) 100%);
   --rh-surface-soft-border: rgba(255, 255, 255, 0.08);
-  --rh-surface-soft-border-strong: rgba(107, 112, 255, 0.28);
-  --rh-divider-subtle: rgba(255, 255, 255, 0.10);
-  --rh-text-muted: rgba(255, 255, 255, 0.60);
-  --rh-inset-soft: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  --rh-header-shadow: 0 1px 12px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  --rh-footer-shadow: 0 -1px 12px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  --rh-chain-toolbar-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  --rh-chain-panel-shadow: 0 12px 36px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  --rh-chain-well-bg: linear-gradient(180deg, rgba(14, 16, 26, 0.95) 0%, rgba(10, 11, 18, 0.98) 100%);
-  --rh-chain-well-border: rgba(255, 255, 255, 0.08);
-  --rh-chain-insert-bg: linear-gradient(135deg, rgba(107, 112, 255, 0.28), rgba(140, 145, 255, 0.20));
+  --rh-surface-soft-border-strong: rgba(99, 102, 241, 0.32);
+  --rh-divider-subtle: rgba(255, 255, 255, 0.08);
+  --rh-text-muted: rgba(255, 255, 255, 0.55);
+  --rh-inset-soft: none;
+  --rh-header-shadow: 0 1px 0 rgba(255, 255, 255, 0.07);
+  --rh-footer-shadow: 0 -1px 0 rgba(255, 255, 255, 0.07);
+  --rh-chain-toolbar-shadow: none;
+  --rh-chain-panel-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+  --rh-chain-well-bg: linear-gradient(180deg, #0b0e17 0%, #090b12 100%);
+  --rh-chain-well-border: rgba(255, 255, 255, 0.07);
+  --rh-chain-insert-bg: rgba(99, 102, 241, 0.25);
 }
 
 body {
@@ -98,8 +103,8 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background:
-    radial-gradient(920px 560px at 12% 8%, rgba(99, 103, 255, 0.14), transparent 60%),
-    linear-gradient(165deg, #f8f7fb 0%, #f4f5fb 100%);
+    radial-gradient(900px 500px at 15% 10%, rgba(99, 102, 241, 0.08), transparent 60%),
+    linear-gradient(180deg, #f8f9fd 0%, #edf1f7 100%);
 }
 
 #root {
@@ -109,9 +114,9 @@ body {
 
 :root.dark body {
   background:
-    radial-gradient(1000px 600px at 15% 10%, rgba(107, 112, 255, 0.12), transparent 65%),
-    radial-gradient(800px 500px at 85% 85%, rgba(56, 189, 248, 0.05), transparent 60%),
-    linear-gradient(180deg, #0e1018 0%, #08090d 100%);
+    radial-gradient(1200px 650px at 15% 5%, rgba(99, 102, 241, 0.09), transparent 70%),
+    radial-gradient(900px 500px at 85% 95%, rgba(56, 189, 248, 0.04), transparent 60%),
+    #090b10;
 }
 
 * {
@@ -127,15 +132,15 @@ body {
 }
 
 .glass-panel {
-  background: linear-gradient(135deg, var(--rh-glass-bg-strong) 0%, var(--rh-glass-bg) 100%);
-  border: 1px solid var(--rh-glass-border);
+  background: var(--rh-surface-soft-gradient);
+  border: 1px solid var(--rh-surface-soft-border);
   box-shadow: none;
   position: relative;
   overflow: hidden;
 }
 
 .minimal-panel {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%);
+  background: var(--rh-minimal-bg-strong);
   border: 1px solid var(--rh-minimal-border);
   box-shadow: none;
   position: relative;
@@ -143,78 +148,36 @@ body {
 }
 
 .minimal-surface {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%);
+  background: var(--rh-minimal-bg);
   border: 1px solid var(--rh-minimal-border);
 }
 
 .glass-card.ant-card,
 .glass-card.ant-modal-content,
 .glass-card.ant-drawer-content {
-  background: linear-gradient(135deg, var(--rh-glass-bg-strong) 0%, var(--rh-glass-bg) 100%) !important;
-  border: 1px solid var(--rh-glass-border) !important;
-  /* Border alone reads too faint on pale backgrounds (esp. light theme) —
-     a real shadow gives cards elevation-based separation too. */
-  box-shadow: var(--rh-glass-shadow) !important;
+  background: var(--rh-minimal-bg) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  box-shadow: var(--rh-minimal-shadow) !important;
 }
 
-.glass-panel::before,
-.glass-panel::after {
-  content: '';
-  position: absolute;
-  pointer-events: none;
-}
-
-.glass-panel::before {
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.78), transparent);
-}
-
-.glass-panel::after {
-  top: 0;
-  left: 0;
-  width: 1px;
-  height: 100%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.74), transparent 55%, rgba(255, 255, 255, 0.3));
-}
-
-/* Ant Design Card default: minimal. Major shell cards opt into glass-card. */
+/* Ant Design Card default */
 .ant-card {
-  background: linear-gradient(135deg, var(--rh-minimal-bg-strong) 0%, var(--rh-minimal-bg) 100%) !important;
+  border-radius: 12px !important;
   border: 1px solid var(--rh-minimal-border) !important;
   box-shadow: none !important;
   position: relative;
   overflow: hidden;
 }
 
-.glass-card.ant-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
-  pointer-events: none;
-}
-
-.glass-card.ant-card::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 1px;
-  height: 100%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.7), transparent 55%, rgba(255, 255, 255, 0.24));
-  pointer-events: none;
-}
-
-/* Signal chain dotted grid for a subtle technical texture */
+/* Signal chain dotted grid for a clean studio technical texture */
 .signal-chain-container {
-  background-image: radial-gradient(circle at 0 0, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-  background-size: 20px 20px;
+  background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+:root:not(.dark) .signal-chain-container {
+  background-image: radial-gradient(circle at 1px 1px, rgba(99, 102, 241, 0.08) 1px, transparent 0);
+  background-size: 24px 24px;
 }
 
 .rh-main-inner {
@@ -423,64 +386,55 @@ body {
   background-clip: content-box;
 }
 
-/* Button styles: pill, tonal/ghost, pastel glow — Fluent Design */
+/* Studio Button System */
 .btn-pill {
   border-radius: 8px;
-  padding: 8px 14px;
-  height: 36px;
+  padding: 6px 14px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12.5px;
   cursor: pointer;
-  transition: all 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: all 160ms cubic-bezier(0.4, 0, 0.2, 1);
   border: 1px solid transparent;
   position: relative;
   overflow: hidden;
+  user-select: none;
 }
 
-/* Tonal / ghost buttons — subtle Fluent style with enhanced opacity */
+/* Tonal / ghost buttons — subtle studio surface */
 .btn-tonal {
   background: var(--rh-muted-bg);
   color: var(--rh-text);
   border: 1px solid var(--rh-divider-subtle);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-}
-.dark .btn-tonal {
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
 }
 .btn-tonal:hover {
-  background: color-mix(in srgb, var(--rh-muted-bg) 85%, var(--rh-primary) 15%);
-  border-color: var(--rh-divider-subtle);
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.35);
+  color: var(--rh-text);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14);
-}
-.dark .btn-tonal:hover {
-  background: color-mix(in srgb, var(--rh-muted-bg) 82%, var(--rh-primary-soft) 18%);
-  border-color: var(--rh-divider-subtle);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
-/* Active (ON) button with pastel glow — Fluent vibrant accent */
+/* Active (ON) button with crisp studio LED glow */
 .btn-active {
-  background: linear-gradient(135deg, #7ee6b7 0%, #5cd99f 100%);
-  color: #042024;
-  border: 1px solid rgba(126, 230, 183, 0.3);
-  box-shadow:
-    0 4px 16px rgba(126, 230, 183, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
-  font-weight: 700;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #ffffff;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+  font-weight: 600;
 }
 .btn-active:hover {
-  transform: translateY(-2px);
-  box-shadow:
-    0 8px 24px rgba(126, 230, 183, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.5);
+  color: #ffffff;
 }
 
-/* Off / muted button — enhanced opacity */
+/* Off / muted button */
 .btn-off {
   background: var(--rh-muted-bg-light);
   color: var(--rh-text-secondary);
@@ -489,9 +443,10 @@ body {
 .btn-off:hover {
   background: var(--rh-muted-bg);
   border-color: var(--rh-divider-subtle);
+  color: var(--rh-text);
 }
 
-/* Small icon button — Fluent compact with enhanced opacity */
+/* Small icon button */
 .btn-icon {
   border-radius: 8px;
   color: var(--rh-text-tertiary);
@@ -500,29 +455,30 @@ body {
   padding: 6px;
   width: 32px;
   height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 160ms ease;
 }
 .btn-icon:hover {
-  color: var(--rh-danger-pastel);
+  color: var(--rh-text);
   background: var(--rh-muted-bg);
   border-color: var(--rh-divider-subtle);
 }
 
-/* Reset / action button variant — Fluent primary accent */
+/* Reset / warning button variant */
 .btn-reset {
   background: linear-gradient(135deg, var(--rh-primary) 0%, var(--rh-primary-soft) 100%);
-  color: #fff;
-  border: 1px solid rgba(99, 103, 255, 0.4);
-  box-shadow:
-    0 4px 16px rgba(99, 103, 255, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-  font-weight: 700;
+  color: #ffffff;
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+  font-weight: 600;
 }
 .btn-reset:hover {
   opacity: 0.95;
-  transform: translateY(-2px);
-  box-shadow:
-    0 8px 24px rgba(99, 103, 255, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.45);
+  color: #ffffff;
 }
 
 /* Make sure icons inside buttons align with text weight */
@@ -532,16 +488,16 @@ body {
 
 /* Input fields with crisp modern surfaces */
 .ant-input-affix-wrapper {
-  background: rgba(16, 18, 29, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 18, 29, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
   padding: 8px 12px;
-  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 180ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 :root:not(.dark) .ant-input-affix-wrapper {
   background: #ffffff;
-  border: 1px solid rgba(99, 103, 255, 0.22);
+  border: 1px solid rgba(99, 102, 241, 0.18);
 }
 
 .ant-input-affix-wrapper:hover {
@@ -551,7 +507,7 @@ body {
 .ant-input-affix-wrapper-focused,
 .ant-input-affix-wrapper:focus-within {
   border-color: var(--rh-primary) !important;
-  box-shadow: 0 0 0 3px rgba(107, 112, 255, 0.25) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22) !important;
 }
 
 .ant-input-affix-wrapper > input.ant-input {
@@ -569,14 +525,14 @@ body {
 .ant-input-number,
 .ant-select-selector {
   border-radius: 10px !important;
-  transition: all 200ms ease;
+  transition: all 180ms ease;
 }
 
 :root.dark .ant-input:not(.ant-input-affix-wrapper > input),
 :root.dark .ant-input-number,
 :root.dark .ant-select-selector {
-  background: #10121d !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  background: #0f121d !important;
+  border: 1px solid rgba(255, 255, 255, 0.09) !important;
   color: rgba(255, 255, 255, 0.95) !important;
 }
 
@@ -584,10 +540,10 @@ body {
 :root:not(.dark) .ant-input-number,
 :root:not(.dark) .ant-select-selector {
   background: #ffffff !important;
-  border: 1px solid rgba(99, 103, 255, 0.2) !important;
+  border: 1px solid rgba(99, 102, 241, 0.18) !important;
 }
 
-/* Ant Design Tag — sleek pill tags without destructive !important overrides */
+/* Ant Design Tag — sleek pill tags */
 .ant-tag {
   border-radius: 6px !important;
   font-size: 11px !important;
@@ -600,29 +556,28 @@ body {
 
 :root.dark .ant-tag:not([class*='ant-tag-']) {
   background: rgba(255, 255, 255, 0.06) !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  color: rgba(255, 255, 255, 0.8) !important;
+  border: 1px solid rgba(255, 255, 255, 0.09) !important;
+  color: rgba(255, 255, 255, 0.85) !important;
 }
 
 /* Tooltip skin shared with drag pointer bubble */
 .ant-tooltip-inner,
 .rh-floating-tip {
-  padding: 8px 10px;
+  padding: 8px 12px;
   border-radius: 10px;
   border: 1px solid var(--rh-tooltip-border);
   background: var(--rh-tooltip-surface) !important;
   box-shadow: var(--rh-tooltip-shadow);
-  color: var(--rh-text);
+  color: #ffffff;
   font-size: 12px;
-  font-weight: 600;
-  line-height: 1.2;
+  font-weight: 500;
+  line-height: 1.3;
 }
 
 .ant-tooltip-inner {
-  max-width: 220px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: 260px;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .ant-tooltip .ant-tooltip-arrow {
@@ -634,19 +589,19 @@ body {
   white-space: normal;
   overflow: visible;
   text-overflow: clip;
-  color: var(--rh-text) !important;
+  color: #ffffff !important;
 }
 
 .io-node-tooltip .ant-typography {
   margin: 0;
-  color: var(--rh-text) !important;
+  color: #ffffff !important;
 }
 
 .rh-floating-tip {
   position: fixed;
   pointer-events: none;
   z-index: 2000;
-  max-width: 220px;
+  max-width: 260px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -655,28 +610,28 @@ body {
 /* Modal/Dialog and drawer with rich elevation & depth */
 .ant-modal .ant-modal-content {
   border-radius: 16px !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0 40px rgba(107, 112, 255, 0.12) !important;
-  backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.09) !important;
+  box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.05) !important;
+  backdrop-filter: blur(20px);
   position: relative;
   overflow: hidden;
 }
 
 :root:not(.dark) .ant-modal .ant-modal-content {
-  border: 1px solid rgba(99, 103, 255, 0.16) !important;
-  box-shadow: 0 20px 50px -10px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(99, 103, 255, 0.10) !important;
+  border: 1px solid rgba(99, 102, 241, 0.16) !important;
+  box-shadow: 0 20px 50px -10px rgba(15, 23, 42, 0.12), 0 0 0 1px rgba(99, 102, 241, 0.08) !important;
 }
 
 .ant-drawer .ant-drawer-content {
-  border-left: 1px solid rgba(255, 255, 255, 0.10) !important;
-  box-shadow: -16px 0 48px rgba(0, 0, 0, 0.75) !important;
-  backdrop-filter: blur(24px);
+  border-left: 1px solid rgba(255, 255, 255, 0.09) !important;
+  box-shadow: -16px 0 48px rgba(0, 0, 0, 0.7) !important;
+  backdrop-filter: blur(20px);
   position: relative;
   overflow: hidden;
 }
 
 :root:not(.dark) .ant-drawer .ant-drawer-content {
-  border-left: 1px solid rgba(99, 103, 255, 0.14) !important;
+  border-left: 1px solid rgba(99, 102, 241, 0.14) !important;
   box-shadow: -12px 0 36px rgba(15, 23, 42, 0.10) !important;
 }
 
@@ -895,19 +850,10 @@ body {
 
 /* Popconfirm button styling */
 .ant-popconfirm-inner {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.84) 0%, rgba(255, 255, 255, 0.78) 100%) !important;
-  border: 1px solid rgba(99, 103, 255, 0.18);
-  box-shadow:
-    0 12px 48px rgba(0, 0, 0, 0.15),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
-}
-
-:root.dark .ant-popconfirm-inner {
-  background: linear-gradient(135deg, rgba(38, 42, 64, 0.82) 0%, rgba(30, 34, 54, 0.78) 100%) !important;
-  border: 1px solid rgba(132, 148, 255, 0.24);
-  box-shadow:
-    0 12px 48px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  background: var(--rh-minimal-bg) !important;
+  border: 1px solid var(--rh-minimal-border) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4) !important;
 }
 
 /* ==========================================================================

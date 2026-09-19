@@ -1,6 +1,7 @@
 import { Card, Tooltip, theme } from 'antd';
-import { AudioOutlined } from '@ant-design/icons';
+import { Mic, Volume2 } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useTranslation } from '../../i18n';
 
 interface ChainEndpointCardProps {
   variant: 'in' | 'out';
@@ -14,9 +15,10 @@ interface ChainEndpointCardProps {
  */
 export default function ChainEndpointCard({ variant, tooltipTitle, active = false }: ChainEndpointCardProps) {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const isIn = variant === 'in';
-  const label = isIn ? 'INPUT' : 'OUTPUT';
-  const badge = isIn ? 'IN' : 'OUT';
+  const label = isIn ? t('chain.input') : t('chain.output');
+  const badge = isIn ? t('chain.inBadge') : t('chain.outBadge');
 
   const accent = isIn
     ? {
@@ -42,15 +44,17 @@ export default function ChainEndpointCard({ variant, tooltipTitle, active = fals
 
   return (
     <Tooltip title={tooltipTitle}>
-      <div style={{ position: 'relative', width: 148, flexShrink: 0, borderRadius: 18 }}>
+      <div style={{ position: 'relative', width: 148, flexShrink: 0, borderRadius: 14 }}>
         <Card
-          className="glass-card"
+          className="rh-endpoint-card"
           style={{
             width: '100%',
-            height: 145,
+            height: 192,
             flexShrink: 0,
             overflow: 'hidden',
-            transition: 'all 300ms ease',
+            transition: 'all 240ms ease',
+            borderRadius: 14,
+            border: `1px solid ${accent.border}`,
           }}
           styles={{
             body: {
@@ -61,8 +65,7 @@ export default function ChainEndpointCard({ variant, tooltipTitle, active = fals
               justifyContent: 'space-between',
               padding: 12,
               height: '100%',
-              background: `linear-gradient(160deg, ${accent.bg} 0%, ${token.colorBgContainer} 55%, ${token.colorFillQuaternary} 100%)`,
-              border: `1px solid ${accent.border}`,
+              background: `linear-gradient(180deg, ${accent.bg} 0%, ${token.colorBgContainer} 100%)`,
               boxShadow: accent.boxShadow,
             },
           }}
@@ -127,14 +130,25 @@ export default function ChainEndpointCard({ variant, tooltipTitle, active = fals
                   }}
                 />
               )}
-              <AudioOutlined
-                style={{
-                  fontSize: 22,
-                  color: accent.dot,
-                  filter: active ? `drop-shadow(0 0 6px ${accent.dot})` : 'none',
-                  transition: 'filter 240ms ease',
-                }}
-              />
+              {isIn ? (
+                <Mic
+                  size={24}
+                  style={{
+                    color: accent.dot,
+                    filter: active ? `drop-shadow(0 0 6px ${accent.dot})` : 'none',
+                    transition: 'filter 240ms ease',
+                  }}
+                />
+              ) : (
+                <Volume2
+                  size={24}
+                  style={{
+                    color: accent.dot,
+                    filter: active ? `drop-shadow(0 0 6px ${accent.dot})` : 'none',
+                    transition: 'filter 240ms ease',
+                  }}
+                />
+              )}
             </div>
           </div>
         </Card>

@@ -1,17 +1,18 @@
 import { useState, useEffect } from 'react';
 import { Modal, Button, Space, Typography, Tag, message, theme, Tooltip } from 'antd';
 import {
-  FolderOpenOutlined,
-  DeleteOutlined,
-  PlusOutlined,
-  SettingOutlined,
-  ReloadOutlined,
-  CopyOutlined,
-  InfoCircleOutlined,
-} from '@ant-design/icons';
+  FolderOpen,
+  Trash2,
+  Plus,
+  FolderCog,
+  RefreshCw,
+  Copy,
+  Info,
+} from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { usePluginStore } from '../../stores/pluginStore';
+import { useTranslation } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -21,12 +22,13 @@ interface PluginSettingsProps {
 }
 
 export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps) {
+  const { t } = useTranslation();
   const [customPaths, setCustomPaths] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const { scanPlugins, isScanning } = usePluginStore();
   const [messageApi, contextHolder] = message.useMessage();
   const { token } = theme.useToken();
-  const modalWidth = typeof window === 'undefined' ? 440 : 'clamp(320px, 56vw, 440px)';
+  const modalWidth = typeof window === 'undefined' ? 640 : 'clamp(480px, 60vw, 660px)';
 
   useEffect(() => {
     if (isOpen) loadPaths();
@@ -43,14 +45,14 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
 
   const addPath = async () => {
     try {
-      const selected = await open({ directory: true, multiple: false, title: 'Select Plugin Directory' });
+      const selected = await open({ directory: true, multiple: false, title: t('scanSettings.selectDirectory') });
       if (selected && typeof selected === 'string') {
         await invoke('add_custom_scan_path', { path: selected });
         await loadPaths();
-        messageApi.success('Path added');
+        messageApi.success(t('scanSettings.pathAdded'));
       }
     } catch (err) {
-      messageApi.error(`Failed to add path: ${err}`);
+      messageApi.error(t('scanSettings.pathAddFailed', { error: String(err) }));
     }
   };
 
@@ -58,9 +60,9 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
     try {
       await invoke('remove_custom_scan_path', { path });
       await loadPaths();
-      messageApi.success('Path removed');
+      messageApi.success(t('scanSettings.pathRemoved'));
     } catch (err) {
-      messageApi.error(`Failed to remove path: ${err}`);
+      messageApi.error(t('scanSettings.pathRemoveFailed', { error: String(err) }));
     }
   };
 
@@ -68,10 +70,10 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
     setLoading(true);
     try {
       await scanPlugins();
-      messageApi.success('Plugin scan completed');
+      messageApi.success(t('scanSettings.scanCompleted'));
       onClose();
     } catch (err) {
-      messageApi.error(`Scan failed: ${err}`);
+      messageApi.error(t('scanSettings.scanFailed', { error: String(err) }));
     } finally {
       setLoading(false);
     }
@@ -95,12 +97,12 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
   return (
     <Modal
       title={
-        <Space size={10} align="center">
+        <Space size={12} align="center">
           <div
             style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
+              width: 36,
+              height: 36,
+              borderRadius: 10,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -108,14 +110,14 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
               border: `1px solid ${token.colorPrimary}38`,
             }}
           >
-            <SettingOutlined style={{ color: token.colorPrimary, fontSize: 16 }} />
+            <FolderCog size={18} style={{ color: token.colorPrimary }} />
           </div>
           <div>
-            <Text strong style={{ fontSize: 15, display: 'block', lineHeight: 1.2 }}>
-              Plugin Scan Paths
+            <Text strong style={{ fontSize: 16, display: 'block', lineHeight: 1.2 }}>
+              {t('scanSettings.title')}
             </Text>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              Configure VST3, VST2, and CLAP directories
+            <Text type="secondary" style={{ fontSize: 11.5 }}>
+              {t('scanSettings.subtitle')}
             </Text>
           </div>
         </Space>
@@ -123,29 +125,29 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
       open={isOpen}
       onCancel={onClose}
       width={modalWidth}
-      style={{ top: 20, maxWidth: 440 }}
+      style={{ top: 28, maxWidth: 660 }}
       styles={{
         body: {
-          maxHeight: 'calc(100vh - 200px)',
+          maxHeight: 'calc(100vh - 180px)',
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '14px 18px 18px',
+          padding: '16px 22px 22px',
         },
       }}
       zIndex={1200}
       footer={[
         <Button key="close" onClick={onClose} style={{ minWidth: 70, borderRadius: 8 }}>
-          Close
+          {t('scanSettings.close')}
         </Button>,
         <Button
           key="rescan"
           type="primary"
-          icon={<ReloadOutlined spin={loading || isScanning} />}
+          icon={<RefreshCw size={15} className={loading || isScanning ? "animate-spin" : ""} />}
           loading={loading || isScanning}
           onClick={rescanPlugins}
           style={{ borderRadius: 8 }}
         >
-          Rescan All Plugins
+          {t('scanSettings.rescanAll')}
         </Button>,
       ]}
     >
@@ -164,10 +166,9 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
           marginBottom: 18,
         }}
       >
-        <InfoCircleOutlined style={{ color: token.colorPrimary, fontSize: 15, marginTop: 2, flexShrink: 0 }} />
+        <Info size={15} style={{ color: token.colorPrimary, marginTop: 2, flexShrink: 0 }} />
         <Text style={{ fontSize: 12, lineHeight: 1.5, color: token.colorTextSecondary }}>
-          Add custom directories where your VST3 and CLAP plugins are installed.
-          These paths are scanned in addition to default system locations.
+          {t('scanSettings.infoBanner')}
         </Text>
       </div>
 
@@ -182,7 +183,7 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
             color: token.colorTextSecondary,
           }}
         >
-          Default System Paths
+          {t('scanSettings.defaultPaths')}
         </Text>
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {DEFAULT_PATHS.map((p) => (
@@ -201,7 +202,7 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
                 color: token.colorText,
               }}
             >
-              <FolderOpenOutlined style={{ color: token.colorPrimary, fontSize: 13, flexShrink: 0 }} />
+              <FolderOpen size={13} style={{ color: token.colorPrimary, flexShrink: 0 }} />
               <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {p}
               </span>
@@ -221,10 +222,10 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
             color: token.colorTextSecondary,
           }}
         >
-          Custom Paths
+          {t('scanSettings.customPaths')}
         </Text>
-        <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={addPath} style={{ borderRadius: 6 }}>
-          Add Path
+        <Button size="small" type="dashed" icon={<Plus size={13} strokeWidth={2} />} onClick={addPath} style={{ borderRadius: 6 }}>
+          {t('scanSettings.addPath')}
         </Button>
       </div>
 
@@ -244,41 +245,43 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
                 transition: 'all 160ms ease',
               }}
             >
-              <FolderOpenOutlined style={{ color: token.colorPrimary, flexShrink: 0 }} />
+              <FolderOpen size={14} style={{ color: token.colorPrimary, flexShrink: 0 }} />
               <Tooltip title={path}>
                 <Text
                   style={{
                     flex: 1,
                     fontSize: 12,
-                    fontFamily: 'monospace',
-                    overflowWrap: 'anywhere',
-                    wordBreak: 'break-all',
+                    fontFamily: 'JetBrains Mono, monospace',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    color: token.colorText,
                   }}
                 >
                   {path}
                 </Text>
               </Tooltip>
-              <Tooltip title="Copy path">
+              <Tooltip title={t('scanSettings.copyPath')}>
                 <Button
                   type="text"
                   size="small"
-                  icon={<CopyOutlined style={{ color: token.colorTextSecondary }} />}
+                  icon={<Copy size={13} style={{ color: token.colorTextSecondary }} />}
                   onClick={async () => {
                     try {
                       await navigator.clipboard.writeText(path);
-                      messageApi.success('Path copied');
+                      messageApi.success(t('scanSettings.pathCopied'));
                     } catch {
-                      messageApi.error('Failed to copy');
+                      messageApi.error(t('scanSettings.copyFailed'));
                     }
                   }}
                 />
               </Tooltip>
-              <Tooltip title="Remove path">
+              <Tooltip title={t('scanSettings.removePath')}>
                 <Button
                   type="text"
                   danger
                   size="small"
-                  icon={<DeleteOutlined />}
+                  icon={<Trash2 size={13} />}
                   onClick={() => removePath(path)}
                 />
               </Tooltip>
@@ -296,10 +299,10 @@ export default function PluginSettings({ isOpen, onClose }: PluginSettingsProps)
             background: 'rgba(255, 255, 255, 0.02)',
           }}
         >
-          <FolderOpenOutlined style={{ fontSize: 24, color: token.colorTextQuaternary, marginBottom: 6, display: 'inline-block' }} />
-          <div><Text type="secondary" style={{ fontSize: 12 }}>No custom paths configured</Text></div>
+          <FolderOpen size={24} style={{ color: token.colorTextQuaternary, marginBottom: 6, display: 'inline-block' }} />
+          <div><Text type="secondary" style={{ fontSize: 12 }}>{t('scanSettings.noCustomPaths')}</Text></div>
           <div style={{ marginTop: 2 }}>
-            <Text type="secondary" style={{ fontSize: 11 }}>Click "Add Path" to add a custom scan directory</Text>
+            <Text type="secondary" style={{ fontSize: 11 }}>{t('scanSettings.clickAddPath')}</Text>
           </div>
         </div>
       )}

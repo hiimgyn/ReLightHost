@@ -1,16 +1,18 @@
 import { useState, useEffect } from 'react';
-import { Modal, Switch, Descriptions, Space, Typography, Card, Button, theme } from 'antd';
+import { Modal, Switch, Descriptions, Space, Typography, Card, Button, Select, theme } from 'antd';
 import { 
-  SettingOutlined, 
-  RocketOutlined, 
-  InfoCircleOutlined,
-  SyncOutlined,
-  CloudDownloadOutlined,
-} from '@ant-design/icons';
+  Settings2, 
+  Rocket, 
+  Info,
+  RefreshCw,
+  Download,
+  Languages,
+} from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { APP_AUTHOR, APP_GITHUB_URL, APP_NAME } from '../../lib/appInfo';
 import { openExternalUrl } from '../../lib/tauri';
+import { useTranslation } from '../../i18n';
 
 const { Text, Paragraph } = Typography;
 
@@ -31,6 +33,7 @@ interface AppSettingsProps {
 }
 
 export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
+  const { t, locale, setLocale } = useTranslation();
   const [runOnStartup, setRunOnStartup] = useState(() => readCachedBool(KEYS.startup, false));
   const [showAppOnStartup, setShowAppOnStartup] = useState(() => readCachedBool(KEYS.showOnStartup, true));
   const [minimizeToTray, setMinimizeToTray] = useState(() => readCachedBool(KEYS.minimize, false));
@@ -40,7 +43,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   const [installing, setInstalling] = useState(false);
 
   const { token } = theme.useToken();
-  const modalWidth = typeof window === 'undefined' ? 660 : 'clamp(300px, 60vw, 660px)';
+  const modalWidth = typeof window === 'undefined' ? 660 : 'clamp(520px, 65vw, 680px)';
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => {});
@@ -135,9 +138,9 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '12px 14px',
+    padding: '12px 16px',
     background: token.colorBgContainer,
-    borderRadius: 8,
+    borderRadius: 10,
     border: `1px solid ${token.colorBorderSecondary}`,
     transition: 'all 160ms ease',
   };
@@ -145,12 +148,12 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   return (
     <Modal
       title={
-        <Space size={10} align="center">
+        <Space size={12} align="center">
           <div
             style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
+              width: 36,
+              height: 36,
+              borderRadius: 10,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -158,14 +161,14 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
               border: `1px solid ${token.colorPrimary}38`,
             }}
           >
-            <SettingOutlined style={{ color: token.colorPrimary, fontSize: 16 }} />
+            <Settings2 size={18} style={{ color: token.colorPrimary }} />
           </div>
           <div>
-            <Text strong style={{ fontSize: 15, display: 'block', lineHeight: 1.2, color: token.colorText }}>
-              Application Settings
+            <Text strong style={{ fontSize: 16, display: 'block', lineHeight: 1.2, color: token.colorText }}>
+              {t('appSettings.title')}
             </Text>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              Configure startup, tray behavior, and system updates
+            <Text type="secondary" style={{ fontSize: 11.5 }}>
+              {t('appSettings.subtitle')}
             </Text>
           </div>
         </Space>
@@ -173,23 +176,53 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
       open={isOpen}
       onCancel={onClose}
       width={modalWidth}
-      style={{ top: 20, maxWidth: 660 }}
+      style={{ top: 28, maxWidth: 680 }}
       styles={{
         body: {
           maxHeight: 'calc(100vh - 180px)',
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '14px 18px 18px',
+          padding: '16px 22px 22px',
         },
       }}
       footer={null}
     >
+      {/* Language Settings */}
+      <Card
+        title={
+          <Space>
+            <Languages size={16} style={{ color: token.colorPrimary }} />
+            <span>{t('appSettings.language')}</span>
+          </Space>
+        }
+        style={{ marginBottom: 20 }}
+        styles={{ body: { padding: 16 } }}
+      >
+        <div style={settingRowStyle}>
+          <div style={{ flex: 1, paddingRight: 16 }}>
+            <Text strong>{t('appSettings.language')}</Text>
+            <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
+              {t('appSettings.languageDesc')}
+            </Paragraph>
+          </div>
+          <Select
+            value={locale}
+            onChange={(val) => setLocale(val)}
+            style={{ width: 140 }}
+            options={[
+              { value: 'en', label: t('appSettings.languageEnglish') },
+              { value: 'vi', label: t('appSettings.languageVietnamese') },
+            ]}
+          />
+        </div>
+      </Card>
+
       {/* Startup Settings */}
       <Card
         title={
           <Space>
-            <RocketOutlined style={{ color: token.colorPrimary }} />
-            <span>Startup Behavior</span>
+            <Rocket size={16} style={{ color: token.colorPrimary }} />
+            <span>{t('appSettings.startupBehavior')}</span>
           </Space>
         }
         style={{ marginBottom: 20 }}
@@ -197,20 +230,20 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
       >
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <div style={settingRowStyle}>
-            <div style={{ flex: 1 }}>
-              <Text strong>Run on System Startup</Text>
+            <div style={{ flex: 1, paddingRight: 16 }}>
+              <Text strong>{t('appSettings.runOnStartup')}</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-                Automatically launch ReLightHost when your computer starts
+                {t('appSettings.runOnStartupDesc')}
               </Paragraph>
             </div>
             <Switch checked={runOnStartup} onChange={handleStartupToggle} />
           </div>
 
           <div style={{ ...settingRowStyle, opacity: runOnStartup ? 1 : 0.6 }}>
-            <div style={{ flex: 1 }}>
-              <Text strong>Show App Window on Startup</Text>
+            <div style={{ flex: 1, paddingRight: 16 }}>
+              <Text strong>{t('appSettings.showOnStartup')}</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-                When enabled, the app window appears after login. When disabled, it starts hidden in the system tray.
+                {t('appSettings.showOnStartupDesc')}
               </Paragraph>
             </div>
             <Switch
@@ -221,10 +254,10 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
           </div>
 
           <div style={settingRowStyle}>
-            <div style={{ flex: 1 }}>
-              <Text strong>Minimize to System Tray</Text>
+            <div style={{ flex: 1, paddingRight: 16 }}>
+              <Text strong>{t('appSettings.minimizeToTray')}</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-                Keep ReLightHost running in the background when closed
+                {t('appSettings.minimizeToTrayDesc')}
               </Paragraph>
             </div>
             <Switch checked={minimizeToTray} onChange={handleMinimizeToggle} />
@@ -236,23 +269,23 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
       <Card
         title={
           <Space>
-            <InfoCircleOutlined />
-            <span>About</span>
+            <Info size={16} />
+            <span>{t('appSettings.about')}</span>
           </Space>
         }
         styles={{ body: { padding: 16 } }}
       >
         <Descriptions bordered column={1} size="small">
-          <Descriptions.Item label="Application">
+          <Descriptions.Item label={t('appSettings.application')}>
             <Text strong>{APP_NAME}</Text>
           </Descriptions.Item>
-          <Descriptions.Item label="Version">
+          <Descriptions.Item label={t('appSettings.version')}>
             <Text strong>{appVersion ? `v${appVersion}` : 'Beta'}</Text>
           </Descriptions.Item>
-          <Descriptions.Item label="Author">
+          <Descriptions.Item label={t('appSettings.author')}>
             <Text strong>{APP_AUTHOR}</Text>
           </Descriptions.Item>
-          <Descriptions.Item label="GitHub">
+          <Descriptions.Item label={t('appSettings.github')}>
             <Button
               type="link"
               style={{ padding: 0, height: 'auto' }}
@@ -267,20 +300,20 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
               {APP_GITHUB_URL}
             </Button>
           </Descriptions.Item>
-          <Descriptions.Item label="Updates">
-            <Space orientation="vertical" size={4}>
+          <Descriptions.Item label={t('appSettings.updates')}>
+            <Space direction="vertical" size={4}>
               {updateInfo?.available ? (
-                <Space orientation="vertical" size={4}>
+                <Space direction="vertical" size={4}>
                   <Space>
-                    <Text type="success">v{updateInfo.version} available</Text>
+                    <Text type="success">{t('appSettings.versionAvailable', { version: updateInfo.version || '' })}</Text>
                     <Button
                       size="small"
                       type="primary"
-                      icon={<CloudDownloadOutlined />}
+                      icon={<Download size={14} />}
                       loading={installing}
                       onClick={handleInstallUpdate}
                     >
-                      Install &amp; Restart
+                      {t('appSettings.installRestart')}
                     </Button>
                   </Space>
                   {updateInfo.notes && (
@@ -290,24 +323,23 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
               ) : (
                 <Space>
                   {updateInfo !== null && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>You're up to date</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{t('appSettings.upToDate')}</Text>
                   )}
                   <Button
                     size="small"
-                    icon={<SyncOutlined />}
+                    icon={<RefreshCw size={13} className={checking ? "animate-spin" : ""} />}
                     loading={checking}
                     onClick={handleCheckUpdate}
                   >
-                    Check for updates
+                    {checking ? t('appSettings.checkingUpdates') : t('appSettings.checkForUpdates')}
                   </Button>
                 </Space>
               )}
             </Space>
           </Descriptions.Item>
-          <Descriptions.Item label="Description">
+          <Descriptions.Item label={t('appSettings.description')}>
             <Paragraph style={{ marginBottom: 0 }} type="secondary">
-              A modern VST/CLAP plugin host built with Rust and TypeScript.
-              Supports VST2, VST3, and CLAP plugin formats.
+              {t('appSettings.appDescription')}
             </Paragraph>
           </Descriptions.Item>
         </Descriptions>

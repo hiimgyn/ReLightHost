@@ -1,6 +1,7 @@
 import { Form, Select } from 'antd';
 import type { AudioDeviceInfo } from '../../lib/types';
 import { DeviceOption } from './audioDeviceDisplay';
+import { useTranslation } from '../../i18n';
 
 interface StandardDeviceFieldsProps {
   inputDevices: AudioDeviceInfo[];
@@ -9,12 +10,14 @@ interface StandardDeviceFieldsProps {
 
 /** Non-ASIO mode: separate input / virtual-output / monitor-output device pickers. */
 export default function StandardDeviceFields({ inputDevices, outputDevices }: StandardDeviceFieldsProps) {
+  const { t } = useTranslation();
+
   return (
     <>
-      <Form.Item label="Input Device" name="inputDevice">
-        <Select size="large" placeholder="None (No Input)" allowClear optionLabelProp="label">
-          <Select.Option value="" label="None (No Input)">
-            <span>None (No Input)</span>
+      <Form.Item label={t('audioSettings.standardInputLabel')} name="inputDevice">
+        <Select size="large" placeholder={t('audioSettings.noneNoInput')} allowClear optionLabelProp="label">
+          <Select.Option value="" label={t('audioSettings.noneNoInput')}>
+            <span>{t('audioSettings.noneNoInput')}</span>
           </Select.Option>
           {inputDevices.map((device) => (
             <Select.Option key={device.id} value={device.id} label={device.name}>
@@ -24,10 +27,10 @@ export default function StandardDeviceFields({ inputDevices, outputDevices }: St
         </Select>
       </Form.Item>
 
-      <Form.Item label="Virtual Output" name="virtualOutputDevice">
-        <Select size="large" placeholder="None (disabled)" allowClear optionLabelProp="label">
-          <Select.Option value="" label="None (disabled)">
-            <span>None (disabled)</span>
+      <Form.Item label={t('audioSettings.standardVirtualOutputLabel')} name="virtualOutputDevice">
+        <Select size="large" placeholder={t('audioSettings.noneDisabled')} allowClear optionLabelProp="label">
+          <Select.Option value="" label={t('audioSettings.noneDisabled')}>
+            <span>{t('audioSettings.noneDisabled')}</span>
           </Select.Option>
           {outputDevices.map((device) => (
             <Select.Option key={device.id} value={device.id} label={device.name}>
@@ -38,13 +41,13 @@ export default function StandardDeviceFields({ inputDevices, outputDevices }: St
       </Form.Item>
 
       <Form.Item
-        label="Monitor Output"
+        label={t('audioSettings.standardOutputLabel')}
         name="outputDevice"
         extra="Hardware monitoring device (speakers/headphones). Enabled when Monitor Output is ON."
       >
-        <Select size="large" placeholder="None (disabled)" allowClear optionLabelProp="label">
-          <Select.Option value="" label="None (disabled)">
-            <span>None (disabled)</span>
+        <Select size="large" placeholder={t('audioSettings.noneDisabled')} allowClear optionLabelProp="label">
+          <Select.Option value="" label={t('audioSettings.noneDisabled')}>
+            <span>{t('audioSettings.noneDisabled')}</span>
           </Select.Option>
           {outputDevices.map((device) => (
             <Select.Option key={device.id} value={device.id} label={device.name}>

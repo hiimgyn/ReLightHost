@@ -11,16 +11,17 @@ import {
   theme,
 } from "antd";
 import {
-  CheckOutlined,
-  AudioOutlined,
-  ThunderboltOutlined,
-  SyncOutlined,
-} from "@ant-design/icons";
+  Check,
+  Sliders,
+  Zap,
+  RefreshCw,
+} from 'lucide-react';
 import { useAudioStore } from "../../stores/audioStore";
 import { getHostTypeColor, isAsioHost, isAsioId } from "./audioDeviceDisplay";
 import { useAudioDeviceLists } from "./useAudioDeviceLists";
 import AsioDeviceFields from "./AsioDeviceFields";
 import StandardDeviceFields from "./StandardDeviceFields";
+import { useTranslation } from "../../i18n";
 
 interface AudioSettingsProps {
   isOpen: boolean;
@@ -31,6 +32,7 @@ const { Text } = Typography;
 
 export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const {
     devices,
     selectedDevice,
@@ -49,7 +51,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
   } = useAudioStore();
   const [form] = Form.useForm();
   const [selectedHostType, setSelectedHostType] = useState<string>("");
-  const modalWidth = typeof window === 'undefined' ? 544 : 'clamp(360px, 66vw, 544px)';
+  const modalWidth = typeof window === 'undefined' ? 660 : 'clamp(520px, 65vw, 680px)';
   const handleClose = () => {
     setSelectedHostType("");
     onClose();
@@ -170,24 +172,24 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       // Always restart the stream after config change.
       await toggleMonitoring(true);
       await fetchStatus();
-      message.success("Audio settings applied — stream restarted");
+      message.success(t('audioSettings.appliedSuccess'));
       localStorage.setItem("audioConfigured", "true");
       onClose();
     } catch (error) {
       console.error("Failed to apply settings:", error);
-      message.error("Failed to apply audio settings");
+      message.error(t('audioSettings.appliedFailed'));
     }
   };
 
   return (
     <Modal
       title={
-        <Space size={10} align="center">
+        <Space size={12} align="center">
           <div
             style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
+              width: 36,
+              height: 36,
+              borderRadius: 10,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -195,14 +197,14 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
               border: `1px solid ${token.colorPrimary}38`,
             }}
           >
-            <AudioOutlined style={{ color: token.colorPrimary, fontSize: 16 }} />
+            <Sliders size={18} style={{ color: token.colorPrimary }} />
           </div>
           <div>
-            <Text strong style={{ fontSize: 15, display: 'block', lineHeight: 1.2 }}>
-              Audio Settings
+            <Text strong style={{ fontSize: 16, display: 'block', lineHeight: 1.2 }}>
+              {t('audioSettings.title')}
             </Text>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              Configure soundcard, drivers, and buffer size
+            <Text type="secondary" style={{ fontSize: 11.5 }}>
+              {t('audioSettings.subtitle')}
             </Text>
           </div>
         </Space>
@@ -210,44 +212,43 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       open={isOpen}
       onCancel={handleClose}
       width={modalWidth}
-      style={{ top: 20, maxWidth: 544 }}
+      style={{ top: 28, maxWidth: 680 }}
       styles={{
         body: {
-          maxHeight: 'calc(100vh - 200px)',
+          maxHeight: 'calc(100vh - 180px)',
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '14px 18px 18px',
+          padding: '16px 22px 22px',
         },
       }}
       footer={[
         <Button key="cancel" onClick={handleClose} style={{ minWidth: 70, borderRadius: 8 }}>
-          Cancel
+          {t('audioSettings.cancel')}
         </Button>,
-        <Button key="refresh" icon={<SyncOutlined />} onClick={fetchDevices} style={{ borderRadius: 8 }}>
-          Refresh Devices
+        <Button key="refresh" icon={<RefreshCw size={14} />} onClick={fetchDevices} style={{ borderRadius: 8 }}>
+          {t('audioSettings.refreshDevices')}
         </Button>,
         <Button
           key="apply"
           type="primary"
-          icon={<CheckOutlined />}
+          icon={<Check size={14} strokeWidth={2.2} />}
           onClick={handleApply}
           style={{ borderRadius: 8 }}
         >
-          Apply
+          {t('audioSettings.apply')}
         </Button>,
       ]}
     >
-
       <Form
         form={form}
         layout="vertical"
         initialValues={{ sampleRate: "48000", bufferSize: "1024" }}
       >
         {/* Audio API */}
-        <Form.Item label="Audio API">
+        <Form.Item label={t('audioSettings.audioApi')}>
           <Select
             size="large"
-            placeholder="All APIs"
+            placeholder={t('audioSettings.allApis')}
             allowClear
             value={selectedHostType || undefined}
             onChange={(v) => handleHostTypeChange(v ?? "")}
@@ -257,8 +258,8 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
                 <Space>
                   <Tag color={getHostTypeColor(ht)}>{ht}</Tag>
                   {isAsioHost(ht) && (
-                    <Tag icon={<ThunderboltOutlined />} color="blue">
-                      Full-Duplex
+                    <Tag icon={<Zap size={11} style={{ display: 'inline-block', verticalAlign: '-1px' }} />} color="blue">
+                      {t('audioSettings.fullDuplex')}
                     </Tag>
                   )}
                 </Space>
@@ -273,48 +274,39 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
           <StandardDeviceFields inputDevices={inputDevices} outputDevices={outputDevices} />
         )}
 
-        {/* Sample Rate */}
-        <Form.Item label="Sample Rate" name="sampleRate">
-          <Select size="large">
-            <Select.Option value="44100">44.1 kHz</Select.Option>
-            <Select.Option value="48000">48 kHz</Select.Option>
-            <Select.Option value="88200">88.2 kHz</Select.Option>
-            <Select.Option value="96000">96 kHz</Select.Option>
-            <Select.Option value="192000">192 kHz</Select.Option>
-          </Select>
-        </Form.Item>
+        {/* Sample Rate & Buffer Size Grid */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
+          {/* Sample Rate */}
+          <Form.Item label={t('audioSettings.sampleRate')} name="sampleRate">
+            <Select size="large">
+              <Select.Option value="44100">44.1 kHz</Select.Option>
+              <Select.Option value="48000">48 kHz</Select.Option>
+              <Select.Option value="88200">88.2 kHz</Select.Option>
+              <Select.Option value="96000">96 kHz</Select.Option>
+              <Select.Option value="192000">192 kHz</Select.Option>
+            </Select>
+          </Form.Item>
 
-        {/* Buffer Size */}
-        <Form.Item
-          label="Buffer Size"
-          name="bufferSize"
-          extra={
-            asioMode
-              ? "Must match the buffer size set in your ASIO driver control panel"
-              : "Lower buffer size = lower latency but higher CPU usage"
-          }
-        >
-          <Select size="large">
-            <Select.Option value="64">
-              64 samples (1.3 ms @ 48 kHz)
-            </Select.Option>
-            <Select.Option value="128">
-              128 samples (2.7 ms @ 48 kHz)
-            </Select.Option>
-            <Select.Option value="256">
-              256 samples (5.3 ms @ 48 kHz)
-            </Select.Option>
-            <Select.Option value="512">
-              512 samples (10.7 ms @ 48 kHz)
-            </Select.Option>
-            <Select.Option value="1024">
-              1024 samples (21.3 ms @ 48 kHz)
-            </Select.Option>
-            <Select.Option value="2048">
-              2048 samples (42.7 ms @ 48 kHz)
-            </Select.Option>
-          </Select>
-        </Form.Item>
+          {/* Buffer Size */}
+          <Form.Item
+            label={t('audioSettings.bufferSize')}
+            name="bufferSize"
+            extra={
+              asioMode
+                ? t('audioSettings.bufferHintAsio')
+                : t('audioSettings.bufferHintStandard')
+            }
+          >
+            <Select size="large">
+              <Select.Option value="64">64 smp (1.3 ms)</Select.Option>
+              <Select.Option value="128">128 smp (2.7 ms)</Select.Option>
+              <Select.Option value="256">256 smp (5.3 ms)</Select.Option>
+              <Select.Option value="512">512 smp (10.7 ms)</Select.Option>
+              <Select.Option value="1024">1024 smp (21.3 ms)</Select.Option>
+              <Select.Option value="2048">2048 smp (42.7 ms)</Select.Option>
+            </Select>
+          </Form.Item>
+        </div>
       </Form>
     </Modal>
   );

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { InputRef } from 'antd';
 import type { MessageInstance } from 'antd/es/message/interface';
 import * as tauri from '../../lib/tauri';
+import { useTranslation } from '../../i18n';
 
 interface UsePluginRenameOptions {
   instanceId: string;
@@ -12,6 +13,7 @@ interface UsePluginRenameOptions {
 
 /** Inline rename state machine for a plugin card's name field. */
 export function usePluginRename({ instanceId, pluginName, interactionLocked, messageApi }: UsePluginRenameOptions) {
+  const { t } = useTranslation();
   const [isRenaming, setIsRenaming] = useState(false);
   const [isRenamingBusy, setIsRenamingBusy] = useState(false);
   const [editName, setEditName] = useState(pluginName);
@@ -43,10 +45,10 @@ export function usePluginRename({ instanceId, pluginName, interactionLocked, mes
         console.debug('PluginCard: rename confirm', { instanceId, from: pluginName, to: trimmed });
         await tauri.renamePlugin(instanceId, trimmed);
         if (!trimmed) {
-          messageApi.success('Plugin name reset to default');
+          messageApi.success(t('card.renameSuccess'));
         }
       } catch (err) {
-        messageApi.error(`Rename failed: ${err}`);
+        messageApi.error(t('card.renameFailed', { error: String(err) }));
         setEditName(pluginName);
       } finally {
         setIsRenamingBusy(false);

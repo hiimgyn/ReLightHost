@@ -212,9 +212,9 @@ function App() {
       {contextHolder}
       {notificationContextHolder}
       <Layout>
-        <div className="glass-panel rh-main-inner h-full w-full px-2 py-4 md:px-3 md:py-5">
+        <main className="h-full w-full p-2.5 md:p-3.5 flex flex-col min-h-0 overflow-hidden">
           <PluginChain />
-        </div>
+        </main>
         {showFirstTimeAudio && (
           <Suspense fallback={null}>
             <AudioSettings

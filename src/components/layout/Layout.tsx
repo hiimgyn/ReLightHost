@@ -2,7 +2,7 @@ import { ReactNode, useEffect, useState } from 'react';
 import { ConfigProvider, theme as antTheme, App as AntApp, Space, Typography, Divider, Tooltip } from 'antd';
 import { useShallow } from 'zustand/react/shallow';
 import { getThemeTokens, applyThemeCssVars } from '../../theme';
-import { HeartFilled } from '@ant-design/icons';
+import { Heart } from 'lucide-react';
 import Header from './Header';
 import { VUMeter } from './VUMeter';
 import { useThemeStore } from '../../stores/themeStore';
@@ -12,6 +12,7 @@ import { getSystemStats, openExternalUrl } from '../../lib/tauri';
 import { APP_AUTHOR, APP_GITHUB_URL } from '../../lib/appInfo';
 import type { SystemStats } from '../../lib/types';
 import { useVisibleInterval } from '../../lib/useVisibleInterval';
+import { useTranslation } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -53,6 +54,7 @@ function AppShell({ children, isDark }: { children: ReactNode; isDark: boolean }
 
 export default function Layout({ children }: LayoutProps) {
   const { theme } = useThemeStore();
+  const { antdLocale } = useTranslation();
 
   // Keep the dark CSS class in sync with the persisted theme value.
   useEffect(() => {
@@ -78,25 +80,27 @@ export default function Layout({ children }: LayoutProps) {
         headerBg: 'transparent',
       },
       Button: {
-        primaryShadow: isDark ? '0 4px 18px -2px rgba(107, 112, 255, 0.55)' : '0 4px 14px -2px rgba(99, 103, 255, 0.45)',
+        primaryShadow: isDark
+          ? '0 4px 18px -2px rgba(99, 102, 241, 0.5)'
+          : '0 4px 14px -2px rgba(99, 102, 241, 0.35)',
       },
       Modal: {
-        contentBg: isDark ? '#181b2c' : themeTokens.colorBgElevated,
+        contentBg: isDark ? '#141824' : '#ffffff',
         headerBg: 'transparent',
       },
       Drawer: {
-        colorBgElevated: isDark ? '#141624' : themeTokens.colorBgElevated,
+        colorBgElevated: isDark ? '#141824' : '#ffffff',
       },
       Input: {
-        colorBgContainer: isDark ? '#10121d' : '#ffffff',
-        colorBorder: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(99, 103, 255, 0.2)',
+        colorBgContainer: isDark ? '#0f121d' : '#ffffff',
+        colorBorder: isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(99, 102, 241, 0.2)',
         activeBorderColor: themeTokens.colorPrimary,
-        hoverBorderColor: isDark ? 'rgba(140, 145, 255, 0.45)' : 'rgba(99, 103, 255, 0.4)',
+        hoverBorderColor: isDark ? 'rgba(129, 140, 248, 0.45)' : 'rgba(99, 102, 241, 0.4)',
       },
       Select: {
-        colorBgContainer: isDark ? '#10121d' : '#ffffff',
-        colorBorder: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(99, 103, 255, 0.2)',
-        optionSelectedBg: isDark ? '#22273e' : '#eef0ff',
+        colorBgContainer: isDark ? '#0f121d' : '#ffffff',
+        colorBorder: isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(99, 102, 241, 0.2)',
+        optionSelectedBg: isDark ? '#1f2638' : '#eef2ff',
       },
       Slider: {
         trackBg: themeTokens.colorPrimary,
@@ -104,14 +108,18 @@ export default function Layout({ children }: LayoutProps) {
         handleColor: themeTokens.colorPrimary,
       },
       Tooltip: {
-        colorBgSpotlight: isDark ? '#1e2136' : 'rgba(255, 255, 255, 0.96)',
-        colorTextLightSolid: isDark ? '#ffffff' : '#1F2333',
+        colorBgSpotlight: isDark ? '#1a2030' : '#1e293b',
+        colorTextLightSolid: '#ffffff',
+      },
+      Descriptions: {
+        colorBorderSecondary: isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(99, 102, 241, 0.12)',
+        colorFillAlter: isDark ? 'rgba(255, 255, 255, 0.02)' : 'rgba(99, 102, 241, 0.02)',
       },
     },
   };
 
   return (
-    <ConfigProvider theme={providerTheme}>
+    <ConfigProvider theme={providerTheme} locale={antdLocale}>
       <AntApp>
         <AppShell isDark={isDark}>{children}</AppShell>
       </AntApp>
@@ -126,13 +134,12 @@ function MiniMeter({ value, color, width = 60 }: { value: number; color: string;
       style={{
         width,
         height: 6,
-        background: 'linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.08) 100%)',
+        background: 'rgba(0, 0, 0, 0.25)',
         borderRadius: 3,
         overflow: 'hidden',
         display: 'inline-block',
         verticalAlign: 'middle',
-        border: '1px solid rgba(255,255,255,0.1)',
-        boxShadow: 'none',
+        border: '1px solid var(--rh-border-subtle)',
       }}
     >
       <div
@@ -142,7 +149,6 @@ function MiniMeter({ value, color, width = 60 }: { value: number; color: string;
           background: color,
           borderRadius: 3,
           transition: 'width 0.55s linear',
-          boxShadow: 'none',
         }}
       />
     </div>
@@ -155,6 +161,7 @@ function Footer({ status, pluginCount, isDark }: {
   isDark: boolean;
 }) {
   const { token } = antTheme.useToken();
+  const { t } = useTranslation();
   const [sys, setSys] = useState<SystemStats>({ cpu_percent: 0, ram_percent: 0, ram_used_mb: 0, ram_total_mb: 0 });
 
   const handleOpenGitHub = async () => {
@@ -217,7 +224,7 @@ function Footer({ status, pluginCount, isDark }: {
         </Text>
         {sep}
         <Text style={{ fontSize: 11, color: token.colorTextTertiary }}>
-          {pluginCount} plugin{pluginCount !== 1 ? 's' : ''}
+          {t('footer.pluginsCount', { count: pluginCount, plural: pluginCount !== 1 ? 's' : '' })}
         </Text>
       </Space>
 
@@ -239,7 +246,7 @@ function Footer({ status, pluginCount, isDark }: {
       <div style={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'flex-end' }}>
       <Space size={0}>
         {/* CPU meter */}
-        <Tooltip title={`CPU: ${sys.cpu_percent.toFixed(1)}% (app)`}>
+        <Tooltip title={t('footer.cpuTooltip', { percent: sys.cpu_percent.toFixed(1) })}>
           <Space size={4} style={{ cursor: 'default' }}>
             <Text style={{ fontSize: 11, color: token.colorTextTertiary, width: 28, display: 'inline-block' }}>
               CPU
@@ -252,7 +259,7 @@ function Footer({ status, pluginCount, isDark }: {
         </Tooltip>
         {sep}
         {/* RAM meter */}
-        <Tooltip title={`RAM: ${sys.ram_used_mb} MB used`}>
+        <Tooltip title={t('footer.ramTooltip', { used: sys.ram_used_mb })}>
           <Space size={4} style={{ cursor: 'default' }}>
             <Text style={{ fontSize: 11, color: token.colorTextTertiary, width: 28, display: 'inline-block' }}>
               RAM
@@ -265,8 +272,8 @@ function Footer({ status, pluginCount, isDark }: {
         </Tooltip>
         {sep}
         <Text style={{ fontSize: 11, color: token.colorTextSecondary }}>
-          <HeartFilled style={{ color: token.colorError, fontSize: 10 }} />{' '}
-          <Tooltip title="Open GitHub repository">
+          <Heart size={11} fill="currentColor" style={{ color: token.colorError, display: 'inline-block', verticalAlign: '-1px' }} />{' '}
+          <Tooltip title={t('footer.openGithub')}>
             <button
               type="button"
               onClick={handleOpenGitHub}

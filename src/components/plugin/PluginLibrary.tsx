@@ -1,16 +1,17 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { Drawer, Input, Button, Tabs, Space, Typography, Tooltip, Empty, Spin } from 'antd';
 import {
-  SearchOutlined,
-  ReloadOutlined,
-  SettingOutlined,
-  AppstoreOutlined,
-} from '@ant-design/icons';
+  Search,
+  RotateCw,
+  FolderCog,
+  Boxes,
+} from 'lucide-react';
 import { usePluginStore } from '../../stores/pluginStore';
 import type { PluginInfo } from '../../lib/types';
 import { theme } from 'antd';
 import PluginAuthorGroup from './PluginAuthorGroup';
 import { usePluginLibraryFilters } from './usePluginLibraryFilters';
+import { useTranslation } from '../../i18n';
 
 const PluginSettings = lazy(() => import('./PluginSettings'));
 const PluginInfoModal = lazy(() => import('./PluginInfoModal'));
@@ -24,6 +25,7 @@ interface PluginLibraryProps {
 
 export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
   const { token } = theme.useToken();
+  const { t } = useTranslation();
   const {
     availablePlugins,
     isScanning,
@@ -85,123 +87,144 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
                 border: `1px solid ${token.colorPrimary}38`,
               }}
             >
-              <AppstoreOutlined style={{ fontSize: 16, color: token.colorPrimary }} />
+              <Boxes size={18} style={{ color: token.colorPrimary }} />
             </div>
             <div>
               <Text strong style={{ fontSize: 15, display: 'block', lineHeight: 1.2, color: token.colorText }}>
-                Plugin Library
+                {t('library.title')}
               </Text>
               <Text type="secondary" style={{ fontSize: 11 }}>
-                {availablePlugins.length} plugins available
+                {t('library.availableCount', { count: availablePlugins.length })}
               </Text>
             </div>
           </Space>
         }
         placement="right"
-        width={480}
+        width={540}
         onClose={onClose}
         open={isOpen}
         extra={
           <Space>
-            <Tooltip title="Plugin Scan Settings">
+            <Tooltip title={t('library.scanSettingsTooltip')}>
               <Button
                 type="text"
-                icon={<SettingOutlined style={{ color: token.colorTextSecondary, fontSize: 16 }} />}
+                icon={<FolderCog size={17} style={{ color: token.colorTextSecondary }} />}
                 onClick={() => setShowSettings(true)}
               />
             </Tooltip>
           </Space>
         }
+        styles={{
+          body: {
+            padding: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            height: '100%',
+          },
+          footer: {
+            padding: '12px 20px',
+            background: token.colorBgElevated,
+            borderTop: `1px solid ${token.colorBorderSecondary}`,
+          },
+        }}
+        footer={
+          <div>
+            {isChainInitializing && (
+              <div style={{ textAlign: 'center', marginBottom: 8, color: token.colorWarning, fontSize: 12 }}>
+                {t('library.initialChainLoading')}
+              </div>
+            )}
+            <Button
+              type="primary"
+              block
+              size="large"
+              icon={<RotateCw size={16} className={isScanning ? "animate-spin" : ""} />}
+              onClick={scanPlugins}
+              loading={isScanning}
+              disabled={isMutating}
+              style={{ borderRadius: 10 }}
+            >
+              {isScanning ? t('library.scanningButton') : t('library.scanForPlugins')}
+            </Button>
+          </div>
+        }
       >
-        {/* Search Bar */}
-        <Input
-          className="plugin-search-input"
-          size="large"
-          placeholder="Search plugins by name, manufacturer, category..."
-          prefix={<SearchOutlined style={{ color: token.colorPrimary, fontSize: 16, marginRight: 4 }} />}
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          style={{ marginBottom: 16 }}
-          allowClear
-        />
-
-        {/* Filter Tabs */}
-        <Tabs
-          className="plugin-library-tabs"
-          activeKey={filterFormat}
-          onChange={(key) => setFilterFormat(key as any)}
-          items={tabItems}
-          style={{ marginBottom: 16 }}
-        />
-
-        {/* Plugin List — paddingBottom prevents content hiding under absolute footer */}
-        <div style={{ paddingBottom: 90 }}>
-        {isScanning ? (
-          <div style={{ textAlign: 'center', padding: '60px 0' }}>
-            <Spin size="large" />
-            <div style={{ marginTop: 16, color: 'var(--rh-text-muted)' }}>
-              Scanning for plugins...
-            </div>
-          </div>
-        ) : filteredPlugins.length > 0 ? (
-          <div style={{ marginTop: 16 }}>
-            {authorKeys.map((author) => (
-              <PluginAuthorGroup
-                key={author}
-                author={author}
-                group={groupedByAuthor[author]}
-                isCollapsed={!!collapsedGroups[author]}
-                onToggleCollapse={() => setCollapsedGroups(prev => ({ ...prev, [author]: !prev[author] }))}
-                addingPluginId={addingPluginId}
-                addLocked={addLocked}
-                onSelect={handleSelectPlugin}
-                onAdd={handleAddPlugin}
-              />
-            ))}
-          </div>
-        ) : (
-          <Empty
-              image={<AppstoreOutlined style={{ fontSize: 64, color: token.colorTextTertiary }} />}
-            description={
-              <Space direction="vertical" size={0}>
-                <Text type="secondary">No plugins found</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {searchQuery ? 'Try a different search' : 'Click "Scan Plugins" to find plugins'}
-                </Text>
-              </Space>
-            }
+        {/* Sticky Header: Search Bar & Format Filter Tabs */}
+        <div
+          style={{
+            padding: '16px 20px 0',
+            background: token.colorBgElevated,
+            borderBottom: `1px solid ${token.colorBorderSecondary}`,
+            flexShrink: 0,
+            zIndex: 10,
+          }}
+        >
+          <Input
+            className="plugin-search-input"
+            size="large"
+            placeholder={t('library.searchPlaceholder')}
+            prefix={<Search size={16} style={{ color: token.colorPrimary, marginRight: 6 }} />}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{ marginBottom: 12 }}
+            allowClear
           />
-        )}
+
+          <Tabs
+            className="plugin-library-tabs"
+            activeKey={filterFormat}
+            onChange={(key) => setFilterFormat(key as any)}
+            items={tabItems}
+            style={{ marginBottom: 0 }}
+          />
         </div>
 
-        {/* Footer Actions */}
-        <div style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          padding: '14px 20px',
-          background: token.colorBgElevated,
-          borderTop: `1px solid ${token.colorBorderSecondary}`,
-          boxShadow: '0 -8px 24px rgba(0, 0, 0, 0.25)',
-        }}>
-          {isChainInitializing && (
-            <div style={{ textAlign: 'center', marginBottom: 8, color: token.colorWarning, fontSize: 12 }}>
-              Initial chain is loading, adding plugins is temporarily locked.
+        {/* Scrollable Plugin List */}
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            padding: '16px 20px',
+          }}
+        >
+          {isScanning ? (
+            <div style={{ textAlign: 'center', padding: '60px 0' }}>
+              <Spin size="large" />
+              <div style={{ marginTop: 16, color: 'var(--rh-text-muted)' }}>
+                {t('library.scanning')}
+              </div>
             </div>
+          ) : filteredPlugins.length > 0 ? (
+            <div>
+              {authorKeys.map((author) => (
+                <PluginAuthorGroup
+                  key={author}
+                  author={author}
+                  group={groupedByAuthor[author]}
+                  isCollapsed={!!collapsedGroups[author]}
+                  onToggleCollapse={() => setCollapsedGroups(prev => ({ ...prev, [author]: !prev[author] }))}
+                  addingPluginId={addingPluginId}
+                  addLocked={addLocked}
+                  onSelect={handleSelectPlugin}
+                  onAdd={handleAddPlugin}
+                />
+              ))}
+            </div>
+          ) : (
+            <Empty
+              image={<Boxes size={56} strokeWidth={1.5} style={{ color: token.colorTextTertiary, margin: '0 auto 12px' }} />}
+              description={
+                <Space direction="vertical" size={0}>
+                  <Text type="secondary">{t('library.noPluginsFound')}</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {searchQuery ? t('library.tryDifferentSearch') : t('library.clickScanPlugins')}
+                  </Text>
+                </Space>
+              }
+            />
           )}
-          <Button
-            type="primary"
-            block
-            size="large"
-            icon={<ReloadOutlined spin={isScanning} />}
-            onClick={scanPlugins}
-            loading={isScanning}
-            disabled={isMutating}
-            style={{ borderRadius: 10 }}
-          >
-            {isScanning ? 'Scanning...' : 'Scan for Plugins'}
-          </Button>
         </div>
       </Drawer>
 

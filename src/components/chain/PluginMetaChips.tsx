@@ -93,7 +93,10 @@ export default function PluginMetaChips({ plugin }: PluginMetaChipsProps) {
       overflow: 'hidden',
       whiteSpace: 'nowrap',
       textOverflow: 'ellipsis',
-      flexShrink: isPrimary ? 0 : 1,
+      // Never shrink below maxWidth — the row scrolls instead, so a chip's
+      // text is either shown in full or ellipsized on its own terms, never
+      // squeezed to illegibility by neighboring chips.
+      flexShrink: 0,
       lineHeight: 1.2,
       height: 20,
     };
@@ -116,14 +119,20 @@ export default function PluginMetaChips({ plugin }: PluginMetaChipsProps) {
 
   return (
     <div
+      className="rh-meta-chip-scroll"
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: 6,
         flexWrap: 'nowrap',
-        overflow: 'hidden',
+        overflowX: 'auto',
+        overflowY: 'hidden',
         width: '100%',
         minHeight: 22,
+        // Fades the row's trailing edge instead of hard-clipping chips, so an
+        // overflowing chip reads as "scroll for more" rather than vanishing.
+        WebkitMaskImage: 'linear-gradient(90deg, #000 calc(100% - 18px), transparent 100%)',
+        maskImage: 'linear-gradient(90deg, #000 calc(100% - 18px), transparent 100%)',
       }}
     >
       {metaChips.map((chip) => (

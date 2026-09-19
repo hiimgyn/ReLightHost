@@ -299,6 +299,9 @@ impl SandboxedVst3Processor {
         let (closed_tx, closed_rx) = mpsc::channel::<()>();
         *link.gui_closed_mailbox.lock() = Some(closed_tx);
 
+        #[cfg(target_os = "windows")]
+        win::allow_foreground(link.child.id());
+
         protocol::write_control(&mut link.stdin, &ControlRequest::OpenGui)
             .map_err(|e| anyhow!("failed to request GUI open: {e}"))?;
 
@@ -385,6 +388,25 @@ mod win {
             }
         }
         Ok(())
+    }
+
+    /// Grant the sandboxed child the right to call SetForegroundWindow once.
+    ///
+    /// Windows silently refuses SetForegroundWindow for a process with no
+    /// recent input of its own (the taskbar icon flashes instead) — a plain
+    /// spawned child process never has that standing on its own. The editor
+    /// window this backs (`gui::vst3::win`) still gets created and reports
+    /// success from IPlugView::attached(), but DWM never promotes it to a
+    /// properly composited top-level window, so it paints as a blank host
+    /// background instead of the plugin's own content. Call this from the
+    /// same Tauri-command call stack as the user's "Launch" click (still
+    /// within its input-event window) right before asking the child to open
+    /// its GUI, not once at spawn time — the grant does not survive
+    /// unrelated foreground-window changes in between.
+    pub fn allow_foreground(child_pid: u32) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
+        let ok = unsafe { AllowSetForegroundWindow(child_pid) };
+        log::debug!("AllowSetForegroundWindow({child_pid}) -> {ok} (0 = failed/refused)");
     }
 }
 

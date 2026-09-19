@@ -26,6 +26,7 @@ export interface SemanticColorMap {
     tooltipSurface: string;
     tooltipBorder: string;
     tooltipShadow: string;
+    tooltipText: string;
     softGradient: string;
     softBorder: string;
     softBorderStrong: string;
@@ -90,10 +91,11 @@ const LIGHT_MAP: SemanticColorMap = {
     minimalBgStrong: '#f8fafc',
     minimalBorder: 'rgba(99, 102, 241, 0.14)',
     minimalShadow: '0 4px 16px rgba(15, 23, 42, 0.05)',
-    tooltipBg: '#1e293b',
-    tooltipSurface: '#1e293b',
-    tooltipBorder: 'rgba(99, 102, 241, 0.24)',
-    tooltipShadow: '0 10px 24px rgba(15, 23, 42, 0.12)',
+    tooltipBg: '#ffffff',
+    tooltipSurface: '#ffffff',
+    tooltipBorder: 'rgba(99, 102, 241, 0.18)',
+    tooltipShadow: '0 10px 24px rgba(15, 23, 42, 0.14)',
+    tooltipText: 'rgba(15, 23, 42, 0.92)',
     softGradient: 'linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.90) 100%)',
     softBorder: 'rgba(99, 102, 241, 0.14)',
     softBorderStrong: 'rgba(99, 102, 241, 0.22)',
@@ -160,6 +162,7 @@ const DARK_MAP: SemanticColorMap = {
     tooltipSurface: '#1e2436',
     tooltipBorder: 'rgba(99, 102, 241, 0.35)',
     tooltipShadow: '0 12px 32px rgba(0, 0, 0, 0.75)',
+    tooltipText: '#ffffff',
     softGradient: 'linear-gradient(180deg, rgba(22, 26, 38, 0.9) 0%, rgba(17, 20, 31, 0.9) 100%)',
     softBorder: 'rgba(255, 255, 255, 0.08)',
     softBorderStrong: 'rgba(99, 102, 241, 0.32)',
@@ -227,6 +230,7 @@ export function applySemanticCssVars(root: HTMLElement, map: SemanticColorMap) {
   root.style.setProperty('--rh-tooltip-surface', map.surface.tooltipSurface);
   root.style.setProperty('--rh-tooltip-border', map.surface.tooltipBorder);
   root.style.setProperty('--rh-tooltip-shadow', map.surface.tooltipShadow);
+  root.style.setProperty('--rh-tooltip-text', map.surface.tooltipText);
 
   root.style.setProperty('--rh-surface-soft-gradient', map.surface.softGradient);
   root.style.setProperty('--rh-surface-soft-border', map.surface.softBorder);

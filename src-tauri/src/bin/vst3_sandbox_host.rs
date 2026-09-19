@@ -10,6 +10,11 @@
 //! handling) applies here unchanged. This binary only speaks the wire
 //! protocol and forwards to it.
 
+// Same rule as main.rs: no console window in release builds (stdio is piped
+// over pipes for the protocol, not a real console anyway), but keep it in
+// debug builds so `cargo run` output is visible.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 #[cfg(target_os = "windows")]
 fn main() {
     win::run();
@@ -32,6 +37,22 @@ mod win {
     use std::sync::{Arc, Mutex};
 
     pub fn run() {
+        // This binary previously never called log::set_logger, so every
+        // log::debug!/warn! in the shared code it reuses (gui::vst3::win,
+        // processor::vst3) was silently dropped — the sandboxed path had zero
+        // diagnostic visibility. stderr is inherited from the parent process
+        // (see spawn_child), so this at least makes it visible when the app
+        // is run from a terminal or under a debugger.
+        struct StderrLogger;
+        impl log::Log for StderrLogger {
+            fn enabled(&self, _m: &log::Metadata) -> bool { true }
+            fn log(&self, r: &log::Record) { eprintln!("[SANDBOX {}] {}", r.level(), r.args()); }
+            fn flush(&self) {}
+        }
+        static LOGGER: StderrLogger = StderrLogger;
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Debug);
+
         // Match the main app's DPI awareness so plugin window sizing
         // (GetDpiForWindow etc., used by gui::vst3::win) behaves the same
         // as it does in-process.

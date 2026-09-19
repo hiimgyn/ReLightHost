@@ -35,7 +35,7 @@ pub mod win {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED};
     use windows_sys::Win32::Graphics::Gdi::{RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE};
 
     type OnSizeCallback = Box<dyn Fn(i32, i32)>;
@@ -47,7 +47,26 @@ pub mod win {
     struct ComScope(bool);
     impl ComScope {
         fn new() -> Self {
-            let hr = unsafe { CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+            Self::with_apartment(COINIT_APARTMENTTHREADED as u32)
+        }
+
+        /// EXPERIMENTAL: join the process-wide MTA instead of a fresh STA.
+        /// Hypothesis under test — the GUI thread (createView/onSize) and the
+        /// vst3-attach thread (attached()) each get their OWN STA apartment
+        /// via CoInitializeEx(APARTMENTTHREADED). If a plugin's editor creates
+        /// real COM objects (DirectWrite/Direct2D factories, not just the
+        /// vtable-only IPlugView) inside attached() and then something on the
+        /// GUI thread touches them later (onSize, WM_PAINT), that's a
+        /// cross-apartment COM call without marshaling — undefined behavior
+        /// that can silently fail to render or corrupt the heap. MTA has no
+        /// such per-thread exclusivity, so this removes the apartment
+        /// mismatch between the two threads for real COM objects.
+        fn new_attach_thread() -> Self {
+            Self::with_apartment(COINIT_MULTITHREADED as u32)
+        }
+
+        fn with_apartment(coinit: u32) -> Self {
+            let hr = unsafe { CoInitializeEx(ptr::null(), coinit) };
             Self(hr == 0_i32 || hr == 1_i32)
         }
     }
@@ -176,6 +195,7 @@ pub mod win {
         gui_flag: Arc<AtomicBool>,
         gui_hwnd: Arc<AtomicIsize>,
         attachment_ready: Arc<std::sync::atomic::AtomicBool>,
+        com_access_lock: Arc<parking_lot::Mutex<()>>,
         sync_component_state: bool,
         restored_state_blob: Option<Vec<u8>>,
     ) -> Result<()> {
@@ -187,6 +207,12 @@ pub mod win {
             .name(format!("vst3-gui-{}", plugin_name))
             .spawn(move || {
                 use std::mem::ManuallyDrop;
+
+                // Held for the whole GUI session (createView through cleanup) —
+                // blocks here if get_state()/set_state() (autosave, manual save)
+                // is still mid-call from a just-closed previous session. See
+                // Vst3Processor::com_access_lock for why this matters.
+                let _com_access_guard = com_access_lock.lock();
 
                 // CleanupGuard releases the COM interface clones (controller +
                 // component) BEFORE it clears gui_open.  This ordering is
@@ -547,7 +573,8 @@ pub mod win {
                         // we cannot show it before run_message_loop(); this is the
                         // earliest safe moment.
                         ShowWindow(hwnd, SW_SHOW);
-                        SetForegroundWindow(hwnd);
+                        let fg_ok = SetForegroundWindow(hwnd);
+                        log::debug!("SetForegroundWindow -> {} (0 = failed/refused)", fg_ok);
 
                         // Shared AtomicU32: attach thread stores its Win32 TID so
                         // WM_CLOSE can send it WM_QUIT to exit its message loop.
@@ -569,7 +596,9 @@ pub mod win {
                                 // thread — unlike the GUI message-loop thread — had no
                                 // COM apartment at all, which crashed those plugins
                                 // with STATUS_ACCESS_VIOLATION inside attached().
-                                let _com = ComScope::new();
+                                // EXPERIMENTAL: MTA instead of a second, separate STA —
+                                // see ComScope::new_attach_thread's doc comment.
+                                let _com = ComScope::new_attach_thread();
 
                                 // Publish Win32 TID before doing any work so WM_CLOSE
                                 // can find us even if the user closes very quickly.
@@ -794,6 +823,7 @@ pub mod win {
         _gui_flag: Arc<AtomicBool>,
         _gui_hwnd: Arc<std::sync::atomic::AtomicIsize>,
         _attachment_ready: Arc<AtomicBool>,
+        _com_access_lock: Arc<parking_lot::Mutex<()>>,
         _sync_component_state: bool,
         _restored_state_blob: Option<Vec<u8>>,
     ) -> Result<()> {

@@ -13,6 +13,7 @@ mod win {
     use std::time::{Duration, Instant};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
+    use parking_lot::Mutex as PLMutex;
     use windows_sys::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
     use vst3::Steinberg::{
@@ -187,6 +188,18 @@ mod win {
         /// Audio processing checks this before calling process() to ensure plugin
         /// initialization is fully complete.
         attachment_ready: Arc<AtomicBool>,
+        /// Held for the *entire* GUI-open lifetime (createView through cleanup),
+        /// not just the initial attach handshake — closes a TOCTOU race where
+        /// autosave's get_state()/set_state() (from the autosave-worker
+        /// thread) could still be mid-call into the plugin's component when a
+        /// quick re-open already flips `attachment_ready` back to false and
+        /// starts a fresh createView()/attached() sequence on another thread.
+        /// Both windows into the same live COM object at once is exactly the
+        /// kind of concurrent access fragile plugins (Supertone Clear) don't
+        /// tolerate. try_lock() here always yields to an open GUI session
+        /// rather than block; get_state()/set_state() already treat "can't
+        /// safely read/write it right now" as an empty/no-op result.
+        com_access_lock: Arc<PLMutex<()>>,
         /// maxSamplesPerBlock negotiated with the plugin via setupProcessing.
         /// The VST3 spec forbids calling process() with more samples than this;
         /// fragile plugins (e.g. Supertone Clear, which uses fixed-size internal
@@ -385,6 +398,7 @@ mod win {
                 // Processing is safe immediately after load(); this flag is only
                 // toggled during GUI attach to avoid init-time races.
                 attachment_ready: Arc::new(AtomicBool::new(true)),
+                com_access_lock: Arc::new(PLMutex::new(())),
                 max_block: block_size.max(1),
             })
         }
@@ -486,10 +500,12 @@ mod win {
         /// Snapshot the plugin state as raw bytes (serialised via IComponent::getState).
         pub fn get_state(&self) -> Vec<u8> {
             ensure_com_initialized();
-            // While the editor is attaching, the GUI thread calls into this same
-            // component/controller with no lock (see open_gui). Autosave or a
-            // manual save can land on this thread concurrently — skip rather
-            // than race, matching the guard process_stereo() already uses.
+            // com_access_lock is held for the GUI's entire open lifetime (see
+            // open_gui_window) — try_lock skips rather than races if a GUI
+            // session is active anywhere in it, not just mid-attach.
+            let Some(_guard) = self.com_access_lock.try_lock() else {
+                return Vec::new();
+            };
             if !self.attachment_ready.load(std::sync::atomic::Ordering::Acquire) {
                 return Vec::new();
             }
@@ -506,6 +522,9 @@ mod win {
         /// Restore plugin state from raw bytes.
         pub fn set_state(&self, data: &[u8]) {
             ensure_com_initialized();
+            let Some(_guard) = self.com_access_lock.try_lock() else {
+                return;
+            };
             if !self.attachment_ready.load(std::sync::atomic::Ordering::Acquire) {
                 return;
             }
@@ -545,6 +564,7 @@ mod win {
             //   2. replay the restored snapshot into controller.setComponentState()
             let component = self.component.clone();
             let attachment_ready = Arc::clone(&self.attachment_ready);
+            let com_access_lock = Arc::clone(&self.com_access_lock);
 
             if let Err(e) = crate::plugins::gui::vst3::win::open_gui_window(
                 controller,
@@ -553,6 +573,7 @@ mod win {
                 gui_flag,
                 gui_hwnd,
                 attachment_ready.clone(),
+                com_access_lock,
                 sync_component_state,
                 restored_state_blob,
             ) {

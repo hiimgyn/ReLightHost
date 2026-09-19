@@ -108,8 +108,8 @@ export default function Layout({ children }: LayoutProps) {
         handleColor: themeTokens.colorPrimary,
       },
       Tooltip: {
-        colorBgSpotlight: isDark ? '#1a2030' : '#1e293b',
-        colorTextLightSolid: '#ffffff',
+        colorBgSpotlight: isDark ? '#1e2436' : '#ffffff',
+        colorTextLightSolid: isDark ? '#ffffff' : 'rgba(15, 23, 42, 0.92)',
       },
       Descriptions: {
         colorBorderSecondary: isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(99, 102, 241, 0.12)',

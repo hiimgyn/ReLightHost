@@ -330,44 +330,6 @@ function PluginCard({
         {/* ── Meta chips row ──────────────────────────────────────── */}
         <PluginMetaChips plugin={plugin} />
 
-        {/* ── Dedicated Status Pill row ───────────────────────────── */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, minHeight: 22 }}>
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 5,
-              padding: '2px 8px',
-              borderRadius: 999,
-              fontSize: 9.5,
-              fontWeight: 700,
-              letterSpacing: '0.04em',
-              textTransform: 'uppercase',
-              color: statusDotColor,
-              background: bypassButtonBg,
-              border: `1px solid ${bypassButtonBorder}`,
-              boxShadow: isActive ? `0 0 8px ${statusDotColor}22` : 'none',
-              transition: 'all 160ms ease',
-            }}
-          >
-            <span
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: '50%',
-                background: statusDotColor,
-                boxShadow: isActive ? `0 0 6px ${statusDotColor}` : 'none',
-              }}
-            />
-            {statusText}
-          </span>
-          {plugin.format === 'builtin' && (
-            <span style={{ fontSize: 9.5, color: token.colorTextTertiary, fontFamily: 'monospace', letterSpacing: 0.5 }}>
-              {t('card.dspCore')}
-            </span>
-          )}
-        </div>
-
         {/* ── Crash status if crashed ─────────────────────────────── */}
         {isCrashed ? (
           <div
@@ -393,7 +355,7 @@ function PluginCard({
         ) : null}
 
         {/* ── Bottom status + actions ────────────────────────────── */}
-        <div style={{ display: 'flex', gap: 8, width: '100%', alignItems: 'center', marginTop: 'auto' }}>
+        <div style={{ display: 'flex', gap: 8, width: '100%', alignItems: 'flex-start', marginTop: 'auto' }}>
           {isCrashed && (
             <Tooltip title={t('card.resetCrash')}>
               <Button
@@ -411,29 +373,57 @@ function PluginCard({
           )}
 
           {!isCrashed && (
-            <Tooltip title={plugin.bypassed ? t('card.enablePlugin') : t('card.bypassPlugin')}>
-              <Button
-                type="text"
-                size="small"
-                icon={<Power size={14} strokeWidth={2.2} />}
-                onClick={() => { void handleToggleBypassClick(); }}
-                loading={isBypassBusy}
-                className="btn-pill"
-                disabled={isControlLocked}
-                aria-label={plugin.bypassed ? t('card.enablePlugin') : t('card.bypassPlugin')}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+              <Tooltip title={plugin.bypassed ? t('card.enablePlugin') : t('card.bypassPlugin')}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<Power size={14} strokeWidth={2.2} />}
+                  onClick={() => { void handleToggleBypassClick(); }}
+                  loading={isBypassBusy}
+                  className="btn-pill"
+                  disabled={isControlLocked}
+                  aria-label={plugin.bypassed ? t('card.enablePlugin') : t('card.bypassPlugin')}
+                  style={{
+                    minWidth: 36,
+                    width: 36,
+                    height: 32,
+                    justifyContent: 'center',
+                    paddingInline: 0,
+                    color: plugin.bypassed ? token.colorTextSecondary : bypassButtonColor,
+                    background: bypassButtonBg,
+                    borderColor: bypassButtonBorder,
+                    boxShadow: isActive ? `0 0 10px ${bypassButtonColor}22` : 'none',
+                  }}
+                />
+              </Tooltip>
+              {/* Status caption — plain text under the toggle, not a badge */}
+              <span
                 style={{
-                  minWidth: 36,
-                  width: 36,
-                  height: 32,
-                  justifyContent: 'center',
-                  paddingInline: 0,
-                  color: plugin.bypassed ? token.colorTextSecondary : bypassButtonColor,
-                  background: bypassButtonBg,
-                  borderColor: bypassButtonBorder,
-                  boxShadow: isActive ? `0 0 10px ${bypassButtonColor}22` : 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 3,
+                  fontSize: 8,
+                  fontWeight: 700,
+                  letterSpacing: '0.03em',
+                  textTransform: 'uppercase',
+                  color: statusDotColor,
+                  whiteSpace: 'nowrap',
                 }}
-              />
-            </Tooltip>
+              >
+                <span
+                  style={{
+                    width: 4,
+                    height: 4,
+                    borderRadius: '50%',
+                    background: statusDotColor,
+                    boxShadow: isActive ? `0 0 4px ${statusDotColor}` : 'none',
+                    flexShrink: 0,
+                  }}
+                />
+                {statusText}
+              </span>
+            </div>
           )}
 
           {!isCrashed && (

@@ -1,5 +1,6 @@
 import { Button, Popconfirm, Space, Tooltip, Typography, theme } from 'antd';
 import { Plus, Trash2, AudioWaveform, ArrowLeftRight } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { useTranslation } from '../../i18n';
 
 const { Text } = Typography;
@@ -11,6 +12,10 @@ interface ChainToolbarProps {
   pluginChainLength: number;
   onAddPlugin: () => void;
   onDeleteAll: () => void;
+  /** IN endpoint pill — rendered next to the title, not the plugin row. */
+  inSlot?: ReactNode;
+  /** OUT endpoint pill — rendered at the far right, not the plugin row. */
+  outSlot?: ReactNode;
 }
 
 export default function ChainToolbar({
@@ -20,6 +25,8 @@ export default function ChainToolbar({
   pluginChainLength,
   onAddPlugin,
   onDeleteAll,
+  inSlot,
+  outSlot,
 }: ChainToolbarProps) {
   const { token } = theme.useToken();
   const { t } = useTranslation();
@@ -88,6 +95,7 @@ export default function ChainToolbar({
             {t('chain.subtitle')}
           </Text>
         </div>
+        {inSlot}
       </div>
 
       {/* Middle: Reorder Hint (only shown when 2+ plugins exist) */}
@@ -111,7 +119,8 @@ export default function ChainToolbar({
       )}
 
       {/* Action Buttons */}
-      <Space size={8} wrap>
+      <Space size={8} wrap align="center">
+        {outSlot}
         <Tooltip title={isChainInitializing ? t('chain.preparing') : t('chain.addPlugin')}>
           <Button
             type="primary"

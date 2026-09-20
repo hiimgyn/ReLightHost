@@ -13,7 +13,10 @@ interface MetaChip {
   key: string;
   label: string;
   tooltip?: string;
-  icon: ReactNode;
+  /** Only the format chip carries one — category/version stay icon-free so
+   * their limited width goes entirely to the text instead of being split
+   * with a mostly-decorative glyph. */
+  icon?: ReactNode;
 }
 
 function getFormatPalette(format: PluginInstanceInfo['format']) {
@@ -68,14 +71,15 @@ export default function PluginMetaChips({ plugin }: PluginMetaChipsProps) {
   const metaChipStyleFor = (chip: MetaChip): CSSProperties => {
     const isPrimary = chip.key === 'format';
     const isManufacturer = chip.key === 'manufacture';
+    const isVersion = chip.key === 'version';
 
     return {
       display: 'inline-flex',
       alignItems: 'center',
-      gap: 4,
+      gap: 3,
       minWidth: 0,
-      maxWidth: isPrimary ? 80 : 110,
-      padding: isPrimary ? '2px 8px' : '1px 6px',
+      maxWidth: isPrimary ? 72 : isVersion ? 56 : 50,
+      padding: isPrimary ? '2px 6px' : '1px 6px',
       margin: 0,
       borderRadius: 6,
       border: `1px solid ${isPrimary ? formatPalette.border : token.colorBorderSecondary}`,
@@ -103,19 +107,23 @@ export default function PluginMetaChips({ plugin }: PluginMetaChipsProps) {
   };
 
   const manufacturerLabel = normalizeManufacturerLabel(plugin.format, plugin.manufacture, t('common.system'));
+  // Manufacturer adds detail without adding a decision — keep it one hover
+  // away on the format chip's tooltip instead of its own chip.
 
-  const metaChips: MetaChip[] = [
-    { key: 'format', label: plugin.format === 'builtin' ? t('common.system') : plugin.format.toUpperCase(), icon: metaChipIconFor('format') },
-    manufacturerLabel
-      ? { key: 'manufacture', label: manufacturerLabel, tooltip: plugin.manufacture, icon: metaChipIconFor('manufacture') }
-      : null,
+  const metaChips = [
+    {
+      key: 'format',
+      label: plugin.format === 'builtin' ? t('common.system') : plugin.format.toUpperCase(),
+      tooltip: manufacturerLabel ?? undefined,
+      icon: metaChipIconFor('format'),
+    },
     plugin.category && plugin.category !== 'Unknown'
-      ? { key: 'category', label: plugin.category, tooltip: plugin.category, icon: metaChipIconFor('category') }
+      ? { key: 'category', label: plugin.category, tooltip: plugin.category }
       : null,
     plugin.version
-      ? { key: 'version', label: `v${plugin.version}`, tooltip: `v${plugin.version}`, icon: metaChipIconFor('version') }
+      ? { key: 'version', label: `v${plugin.version}`, tooltip: `v${plugin.version}` }
       : null,
-  ].filter((chip): chip is MetaChip => chip !== null);
+  ].filter(Boolean) as MetaChip[];
 
   return (
     <div
@@ -123,7 +131,7 @@ export default function PluginMetaChips({ plugin }: PluginMetaChipsProps) {
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 6,
+        gap: 4,
         flexWrap: 'nowrap',
         overflowX: 'auto',
         overflowY: 'hidden',
@@ -139,9 +147,11 @@ export default function PluginMetaChips({ plugin }: PluginMetaChipsProps) {
         <Tooltip title={chip.tooltip ?? chip.label} key={chip.key}>
           <Tag color="default" style={metaChipStyleFor(chip)}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0, overflow: 'hidden' }}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 9, opacity: 0.85, flexShrink: 0 }}>
-                {chip.icon}
-              </span>
+              {chip.icon && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 9, opacity: 0.85, flexShrink: 0 }}>
+                  {chip.icon}
+                </span>
+              )}
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {chip.label}
               </span>

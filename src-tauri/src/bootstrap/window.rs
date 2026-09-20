@@ -2,8 +2,11 @@ use tauri::Manager;
 
 pub fn setup_main_window(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
     const RATIO: f64 = 860.0 / 560.0;
-    const MIN_W: f64 = 800.0;
-    const MIN_H: f64 = 520.0;
+    // Matches the hard floor in tauri.conf.json (minWidth/minHeight) — kept
+    // in sync here too so this computation's own floor never disagrees with
+    // the OS-enforced one.
+    const MIN_W: f64 = 1430.0;
+    const MIN_H: f64 = 880.0;
 
     if let Some(window) = app.get_webview_window("main") {
         let app_handle = app.handle().clone();
@@ -43,6 +46,11 @@ pub fn setup_main_window(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> 
             win_h = win_h.max(MIN_H);
 
             let _ = window.set_size(tauri::LogicalSize::new(win_w, win_h));
+            // Re-center explicitly: resizing after creation keeps the
+            // window's top-left corner fixed on most platforms, so the
+            // `center: true` config alone (which only applies at the
+            // original size) would drift off-center once this runs.
+            let _ = window.center();
         }
 
         if start_hidden {

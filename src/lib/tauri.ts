@@ -45,6 +45,16 @@ export async function setVirtualOutputDevice(deviceId: string | null): Promise<v
   return invoke('set_virtual_output_device', { deviceId });
 }
 
+/** 0-based index of the first channel of the input stereo pair (e.g. 2 = channels 3-4). */
+export async function setInputChannelOffset(offset: number): Promise<void> {
+  return invoke('set_input_channel_offset', { offset });
+}
+
+/** 0-based index of the first channel of the output stereo pair. */
+export async function setOutputChannelOffset(offset: number): Promise<void> {
+  return invoke('set_output_channel_offset', { offset });
+}
+
 export async function setSampleRate(sampleRate: number): Promise<void> {
   return invoke('set_sample_rate', { rate: sampleRate });
 }
@@ -147,6 +157,21 @@ export async function getPluginCrashStatuses(): Promise<PluginCrashStatusItem[]>
 
 export async function resetPluginCrashProtection(instanceId: string): Promise<void> {
   return invoke('reset_plugin_crash_protection', { instanceId });
+}
+
+// VST3 sandbox (isolated-process hosting) commands — keyed by plugin file
+// path, since the sandbox registry persists across app restarts and outlives
+// any single instance. See vst3_sandbox::registry on the Rust side.
+export async function getVst3SandboxStatus(pluginPath: string): Promise<import('./types').Vst3SandboxStatus> {
+  return invoke('get_vst3_sandbox_status', { pluginPath });
+}
+
+export async function setVst3ForcedSandbox(pluginPath: string, forced: boolean): Promise<void> {
+  return invoke('set_vst3_forced_sandbox', { pluginPath, forced });
+}
+
+export async function resetVst3SandboxCrashCount(pluginPath: string): Promise<void> {
+  return invoke('reset_vst3_sandbox_crash_count', { pluginPath });
 }
 
 export async function getNoiseSuppressorVad(instanceId: string): Promise<number> {

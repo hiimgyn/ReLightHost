@@ -74,6 +74,28 @@ pub fn set_virtual_output_device(state: tauri::State<AppState>, device_id: Optio
 }
 
 #[tauri::command]
+pub fn set_input_channel_offset(state: tauri::State<AppState>, offset: usize) -> Result<(), String> {
+    state
+        .audio_manager
+        .read()
+        .set_input_channel_offset(offset)
+        .map_err(|e| format!("Failed to set input channel: {}", e))?;
+    crate::save_audio_session_to_disk(&state);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_output_channel_offset(state: tauri::State<AppState>, offset: usize) -> Result<(), String> {
+    state
+        .audio_manager
+        .read()
+        .set_output_channel_offset(offset)
+        .map_err(|e| format!("Failed to set output channel: {}", e))?;
+    crate::save_audio_session_to_disk(&state);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn set_sample_rate(state: tauri::State<AppState>, rate: u32) -> Result<(), String> {
     state
         .audio_manager

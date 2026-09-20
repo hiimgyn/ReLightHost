@@ -1,3 +1,4 @@
+use crate::plugins::processor::vst3_sandbox::registry as vst3_sandbox_registry;
 use crate::plugins::{PluginFormat, PluginInfo, PluginInstanceInfo};
 use crate::AppState;
 use crate::timing::GUI_CLOSE_TIMEOUT;
@@ -356,4 +357,30 @@ pub fn reset_plugin_crash_protection(state: tauri::State<AppState>, instance_id:
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
     }
+}
+
+/// Current VST3 sandbox status for a plugin, keyed by its file path (not
+/// instance id — the sandbox registry persists across app restarts and
+/// instance lifetimes, see `vst3_sandbox::registry`).
+#[tauri::command]
+pub fn get_vst3_sandbox_status(plugin_path: String) -> vst3_sandbox_registry::SandboxStatus {
+    vst3_sandbox_registry::status(&plugin_path)
+}
+
+/// Manually force (or un-force) isolated (sandboxed) hosting for a VST3
+/// plugin, bypassing the automatic crash-count threshold. Takes effect the
+/// next time the plugin is loaded into the chain — remove and re-add it (or
+/// reorder-preserving reload) for an already-running instance.
+#[tauri::command]
+pub fn set_vst3_forced_sandbox(plugin_path: String, forced: bool) {
+    vst3_sandbox_registry::set_forced_sandbox(&plugin_path, forced);
+}
+
+/// Clear the persisted crash count backing automatic sandbox promotion —
+/// e.g. after a plugin update that may have fixed the underlying crash.
+/// Does not affect a manually forced sandbox; use `set_vst3_forced_sandbox`
+/// to un-force that separately.
+#[tauri::command]
+pub fn reset_vst3_sandbox_crash_count(plugin_path: String) {
+    vst3_sandbox_registry::reset_crash_count(&plugin_path);
 }

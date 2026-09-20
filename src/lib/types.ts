@@ -15,6 +15,10 @@ export interface AudioConfig {
   output_device_id: string | null;
   input_device_id: string | null;
   virtual_output_device_id: string | null;
+  /** 0-based index of the first channel of the input stereo pair (e.g. 2 = channels 3-4). */
+  input_channel_offset: number;
+  /** 0-based index of the first channel of the output stereo pair. */
+  output_channel_offset: number;
 }
 
 export interface AudioDeviceInfo {
@@ -87,6 +91,13 @@ export type PluginStatus =
 export interface PluginCrashStatusItem {
   instance_id: string;
   status: PluginStatus;
+}
+
+/** VST3 isolated-process (sandbox) hosting status for a plugin, keyed by path. */
+export interface Vst3SandboxStatus {
+  sandboxed: boolean;
+  forced: boolean;
+  crash_count: number;
 }
 
 export interface PluginChainChangedEvent {

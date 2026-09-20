@@ -426,6 +426,15 @@ impl AudioManager {
         let rb = HeapRb::<f32>::new(buf_capacity);
         let (mut producer, mut consumer) = rb.split();
 
+        // Clamp the configured channel pair to what the device actually has —
+        // an offset saved for a different (wider) interface must not panic on
+        // out-of-bounds indexing here.
+        let in_offset = if input_channels >= 2 {
+            config.input_channel_offset.min(input_channels - 2)
+        } else {
+            0
+        };
+
         // -----------------------------------------------------------------
         // Input stream — de-interleave and push into ring buffer
         // -----------------------------------------------------------------
@@ -434,10 +443,11 @@ impl AudioManager {
                 in_cfg,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     for chunk in data.chunks(input_channels.max(1)) {
-                        // Always produce exactly 2 samples (L, R) per frame
-                        let l = chunk.first().copied().unwrap_or(0.0);
+                        // Always produce exactly 2 samples (L, R) per frame,
+                        // read from the selected channel pair.
+                        let l = chunk.get(in_offset).copied().unwrap_or(0.0);
                         let r = if input_channels >= 2 {
-                            chunk.get(1).copied().unwrap_or(0.0)
+                            chunk.get(in_offset + 1).copied().unwrap_or(0.0)
                         } else {
                             l  // mono → duplicate to both channels
                         };
@@ -512,6 +522,13 @@ impl AudioManager {
             (output_device_opt.as_ref(), out_cfg_opt.as_ref(), output_channels_opt)
         {
             let sample_rate_hz = out_cfg.sample_rate as f64;
+            // Clamp the same way as the input side — write only to the
+            // selected pair, everything else on the device stays silent.
+            let out_offset = if output_channels >= 2 {
+                config.output_channel_offset.min(output_channels - 2)
+            } else {
+                0
+            };
             let out_stream = out_dev.build_output_stream(
                 *out_cfg,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
@@ -584,13 +601,19 @@ impl AudioManager {
                     // gates monitor output. Resolve the gate once per block instead
                     // of re-testing output_is_asio/is_muted/is_loopback per sample.
                     let gate_open = if output_is_asio { !is_muted } else { is_loopback };
-                    // Write out processed frames; if the host requested more
+                    // Write out processed frames only to the selected channel
+                    // pair (out_offset, out_offset+1) — every other channel on
+                    // the device is left silent. If the host requested more
                     // frames than we processed, zero the remainder to avoid
                     // leaking uninitialized data.
                     for frame in 0..frames {
                         for ch in 0..output_channels {
+                            let is_selected_l = ch == out_offset;
+                            let is_selected_r = output_channels >= 2 && ch == out_offset + 1;
                             data[frame * output_channels + ch] = if frame < frames_to_process && gate_open {
-                                if ch % 2 == 0 { left_buf[frame] } else { right_buf[frame] }
+                                if is_selected_l { left_buf[frame] }
+                                else if is_selected_r { right_buf[frame] }
+                                else { 0.0 }
                             } else {
                                 0.0
                             };
@@ -798,6 +821,30 @@ impl AudioManager {
     pub fn set_input_device(&self, device_id: Option<String>) -> Result<()> {
         let _guard = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.config.write().input_device_id = device_id;
+        if self.status.read().is_monitoring {
+            self.toggle_monitoring(false)?;
+            self.toggle_monitoring(true)?;
+        }
+        Ok(())
+    }
+
+    /// Set the input channel pair (0-based index of the first channel).
+    /// Only meaningful for multi-channel devices; out-of-range values are
+    /// clamped against the device's actual channel count at stream build time.
+    pub fn set_input_channel_offset(&self, offset: usize) -> Result<()> {
+        let _guard = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.config.write().input_channel_offset = offset;
+        if self.status.read().is_monitoring {
+            self.toggle_monitoring(false)?;
+            self.toggle_monitoring(true)?;
+        }
+        Ok(())
+    }
+
+    /// Set the output channel pair (0-based index of the first channel).
+    pub fn set_output_channel_offset(&self, offset: usize) -> Result<()> {
+        let _guard = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.config.write().output_channel_offset = offset;
         if self.status.read().is_monitoring {
             self.toggle_monitoring(false)?;
             self.toggle_monitoring(true)?;

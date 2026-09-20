@@ -1,6 +1,6 @@
 {
   "productName": "ReLightHost",
-  "version": "2.4.2",
+  "version": "2.5.0",
   "identifier": "ReLightHost",
   "build": {
     "frontendDist": "../dist",
@@ -12,11 +12,13 @@
     "windows": [
       {
         "title": "ReLightHost",
-        "width": 1200,
-        "height": 850,
-        "minWidth": 1200,
-        "minHeight": 850,
+        "width": 1430,
+        "height": 880,
+        "minWidth": 1430,
+        "minHeight": 880,
         "resizable": true,
+        "maximizable": true,
+        "center": true,
         "fullscreen": false
       }
     ],

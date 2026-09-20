@@ -54,8 +54,8 @@ export interface TranslationSchema {
     output: string;
     inBadge: string;
     outBadge: string;
-    outputTooltipOutput: string;
-    outputTooltipVirtual: string;
+    monitorOutputTooltip: string;
+    changeDeviceTooltip: string;
     removeAllSuccess: string;
     removeAllFailed: string;
     launchFailed: string;
@@ -90,6 +90,19 @@ export interface TranslationSchema {
     removeFromChain: string;
     removeFailed: string;
     timeout: string;
+    sandboxTooltip: string;
+    sandboxTitle: string;
+    sandboxDescForced: string;
+    sandboxDescAuto: string;
+    sandboxDescOff: string;
+    sandboxCrashCount: string;
+    sandboxForceLabel: string;
+    sandboxResetCount: string;
+    sandboxForcedOn: string;
+    sandboxForcedOff: string;
+    sandboxCrashCountReset: string;
+    sandboxToggleFailed: string;
+    sandboxReloading: string;
   };
   meta: {
     format: string;
@@ -175,6 +188,8 @@ export interface TranslationSchema {
     asioAlertTitle: string;
     asioAlertDesc: string;
     asioDeviceLabel: string;
+    inputChannelLabel: string;
+    outputChannelLabel: string;
     asioMonitorLabel: string;
     standardInputLabel: string;
     standardOutputLabel: string;

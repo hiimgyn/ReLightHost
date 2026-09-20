@@ -40,9 +40,13 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
     selectedVirtualOutputDevice,
     sampleRate,
     bufferSize,
+    inputChannelOffset,
+    outputChannelOffset,
     setOutputDevice,
     setInputDevice,
     setVirtualOutputDevice,
+    setInputChannelOffset,
+    setOutputChannelOffset,
     setSampleRate,
     setBufferSize,
     toggleMonitoring,
@@ -103,6 +107,8 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       virtualOutputDevice: currentIsAsio
         ? monitorOutputToUse
         : (selectedVirtualOutputDevice || ""),
+      inputChannelOffset,
+      outputChannelOffset,
       sampleRate: String(sampleRate),
       bufferSize: String(bufferSize),
     });
@@ -137,6 +143,8 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       outputDevice: undefined,
       inputDevice: "",
       virtualOutputDevice: isAsioHost(ht) ? (defaultMonitorOutputId ?? undefined) : "",
+      inputChannelOffset: 0,
+      outputChannelOffset: 0,
     });
   };
 
@@ -155,6 +163,8 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
           await setInputDevice(values.asioDevice);
           await setOutputDevice(values.asioDevice);
           await setVirtualOutputDevice(monitorOutputId);
+          await setInputChannelOffset(values.inputChannelOffset ?? 0);
+          await setOutputChannelOffset(values.outputChannelOffset ?? 0);
         }
       } else {
         const outputToSet = values.outputDevice || null;
@@ -164,6 +174,9 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
         await setOutputDevice(outputToSet);
         await setInputDevice(values.inputDevice || null);
         await setVirtualOutputDevice(virtualToSet || null);
+        // WASAPI devices are stereo — no channel picker shown, always channel 1-2.
+        await setInputChannelOffset(0);
+        await setOutputChannelOffset(0);
       }
 
       await setSampleRate(parseInt(values.sampleRate));
@@ -242,7 +255,7 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ sampleRate: "48000", bufferSize: "1024" }}
+        initialValues={{ sampleRate: "48000", bufferSize: "1024", inputChannelOffset: 0, outputChannelOffset: 0 }}
       >
         {/* Audio API */}
         <Form.Item label={t('audioSettings.audioApi')}>

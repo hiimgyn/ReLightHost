@@ -41,6 +41,20 @@ struct RegistryFile {
     /// while that plugin was active.
     #[serde(default)]
     active_in_process: Vec<String>,
+    /// Plugin paths the user has manually forced into sandboxed hosting,
+    /// bypassing `SANDBOX_THRESHOLD` — for a plugin known to crash the whole
+    /// app instantly (e.g. on GUI attach) before it can ever accumulate 3
+    /// recorded crashes the automatic way.
+    #[serde(default)]
+    forced_sandbox: std::collections::HashSet<String>,
+}
+
+/// Sandbox status for one plugin, for display/control in the UI.
+#[derive(Serialize)]
+pub struct SandboxStatus {
+    pub sandboxed: bool,
+    pub forced: bool,
+    pub crash_count: u32,
 }
 
 struct Registry {
@@ -104,11 +118,54 @@ pub fn attribute_crashes_from_unclean_exit() {
     save_to_disk(&reg.path, &state);
 }
 
-/// Whether `plugin_path` has crashed enough times to load sandboxed.
+/// Pure status computation, kept separate from the global `registry()`
+/// singleton so it's testable against a hand-built `RegistryFile`.
+fn compute_status(state: &RegistryFile, plugin_path: &str) -> SandboxStatus {
+    let crash_count = state.crash_counts.get(plugin_path).copied().unwrap_or(0);
+    let forced = state.forced_sandbox.contains(plugin_path);
+    SandboxStatus { sandboxed: forced || crash_count >= SANDBOX_THRESHOLD, forced, crash_count }
+}
+
+/// Whether `plugin_path` should load sandboxed — either because the user
+/// forced it, or because it has crashed enough times.
 pub fn should_sandbox(plugin_path: &str) -> bool {
     let reg = registry();
     let state = reg.state.lock();
-    state.crash_counts.get(plugin_path).copied().unwrap_or(0) >= SANDBOX_THRESHOLD
+    compute_status(&state, plugin_path).sandboxed
+}
+
+/// Current sandbox status for `plugin_path`, for display/control in the UI.
+pub fn status(plugin_path: &str) -> SandboxStatus {
+    let reg = registry();
+    let state = reg.state.lock();
+    compute_status(&state, plugin_path)
+}
+
+/// Manually force (or un-force) sandboxed hosting for `plugin_path`,
+/// bypassing the crash-count threshold. Takes effect the next time the
+/// plugin is loaded into the chain (not for an already-running instance).
+pub fn set_forced_sandbox(plugin_path: &str, forced: bool) {
+    let reg = registry();
+    let mut state = reg.state.lock();
+    let changed = if forced {
+        state.forced_sandbox.insert(plugin_path.to_string())
+    } else {
+        state.forced_sandbox.remove(plugin_path)
+    };
+    if changed {
+        save_to_disk(&reg.path, &state);
+    }
+}
+
+/// Clear the accumulated crash count for `plugin_path` — e.g. after a
+/// plugin update that may have fixed the underlying crash. Does not affect
+/// `forced_sandbox`; un-force separately via `set_forced_sandbox`.
+pub fn reset_crash_count(plugin_path: &str) {
+    let reg = registry();
+    let mut state = reg.state.lock();
+    if state.crash_counts.remove(plugin_path).is_some() {
+        save_to_disk(&reg.path, &state);
+    }
 }
 
 /// Mark `plugin_path` as currently loaded in-process (in-process path only —
@@ -207,5 +264,40 @@ mod tests {
         state.active_in_process.retain(|p| p != "C:/x.vst3");
         save_to_disk(&scratch.0, &state);
         assert!(load_from_disk(&scratch.0).active_in_process.is_empty());
+    }
+
+    #[test]
+    fn forced_sandbox_overrides_crash_count() {
+        let mut state = RegistryFile::default();
+        state.forced_sandbox.insert("C:/Clear.vst3".into());
+        let status = compute_status(&state, "C:/Clear.vst3");
+        assert!(status.sandboxed);
+        assert!(status.forced);
+        assert_eq!(status.crash_count, 0);
+    }
+
+    #[test]
+    fn reset_crash_count_clears_threshold_but_not_forced() {
+        let mut state = RegistryFile::default();
+        state.crash_counts.insert("C:/fragile.vst3".into(), SANDBOX_THRESHOLD);
+        state.forced_sandbox.insert("C:/fragile.vst3".into());
+
+        // Same mutation reset_crash_count() performs on the locked state.
+        state.crash_counts.remove("C:/fragile.vst3");
+
+        let status = compute_status(&state, "C:/fragile.vst3");
+        assert_eq!(status.crash_count, 0);
+        // Still sandboxed — the forced flag is independent of the counter.
+        assert!(status.sandboxed);
+        assert!(status.forced);
+    }
+
+    #[test]
+    fn unforced_fresh_plugin_is_not_sandboxed() {
+        let state = RegistryFile::default();
+        let status = compute_status(&state, "C:/x.vst3");
+        assert!(!status.sandboxed);
+        assert!(!status.forced);
+        assert_eq!(status.crash_count, 0);
     }
 }

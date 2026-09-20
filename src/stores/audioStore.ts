@@ -11,9 +11,11 @@ interface AudioStore {
   selectedVirtualOutputDevice: string | null;
   sampleRate: number;
   bufferSize: number;
+  inputChannelOffset: number;
+  outputChannelOffset: number;
   isMuted: boolean;
   isLoopbackEnabled: boolean;
-  
+
   // Actions
   fetchStatus: () => Promise<void>;
   fetchDevices: () => Promise<void>;
@@ -27,6 +29,8 @@ interface AudioStore {
   setOutputDevice: (deviceId: string | null) => Promise<void>;
   setInputDevice: (deviceId: string | null) => Promise<void>;
   setVirtualOutputDevice: (deviceId: string | null) => Promise<void>;
+  setInputChannelOffset: (offset: number) => Promise<void>;
+  setOutputChannelOffset: (offset: number) => Promise<void>;
   setSampleRate: (rate: number) => Promise<void>;
   setBufferSize: (size: number) => Promise<void>;
   setMuted: (muted: boolean) => Promise<void>;
@@ -51,6 +55,8 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   selectedVirtualOutputDevice: null,
   sampleRate: 48000,
   bufferSize: 1024,
+  inputChannelOffset: 0,
+  outputChannelOffset: 0,
   isMuted: false,
   isLoopbackEnabled: false,
 
@@ -91,6 +97,8 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
         selectedVirtualOutputDevice: config.virtual_output_device_id ?? null,
         sampleRate:                  config.sample_rate,
         bufferSize:                  config.buffer_size,
+        inputChannelOffset:          config.input_channel_offset,
+        outputChannelOffset:         config.output_channel_offset,
       });
     } catch (error) {
       console.error('Failed to sync audio config from backend:', error);
@@ -105,6 +113,8 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       selectedVirtualOutputDevice,
       sampleRate,
       bufferSize,
+      inputChannelOffset,
+      outputChannelOffset,
     } = get();
 
     const wasMonitoring = status.is_monitoring;
@@ -125,6 +135,8 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       }
 
       await tauri.setVirtualOutputDevice(selectedVirtualOutputDevice);
+      await tauri.setInputChannelOffset(inputChannelOffset);
+      await tauri.setOutputChannelOffset(outputChannelOffset);
       await tauri.setSampleRate(sampleRate);
       await tauri.setBufferSize(bufferSize);
 
@@ -194,6 +206,26 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       await tauri.setVirtualOutputDevice(deviceId);
     } catch (error) {
       console.error('Failed to set virtual output device:', error);
+      throw error;
+    }
+  },
+
+  setInputChannelOffset: async (offset: number) => {
+    set({ inputChannelOffset: offset });
+    try {
+      await tauri.setInputChannelOffset(offset);
+    } catch (error) {
+      console.error('Failed to set input channel:', error);
+      throw error;
+    }
+  },
+
+  setOutputChannelOffset: async (offset: number) => {
+    set({ outputChannelOffset: offset });
+    try {
+      await tauri.setOutputChannelOffset(offset);
+    } catch (error) {
+      console.error('Failed to set output channel:', error);
       throw error;
     }
   },

@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { lazy, Suspense } from 'react';
-import { Button, Space, message, theme, Typography } from 'antd';
+import { Button, Space, Tag, Tooltip, message, theme, Typography } from 'antd';
 import { listen } from '@tauri-apps/api/event';
-import { AudioWaveform, GripVertical, Plus } from 'lucide-react';
+import { AudioWaveform, GripVertical, Mic, Plus, Volume2 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { usePluginStore } from '../../stores/pluginStore';
 import { useAudioStore } from '../../stores/audioStore';
 import CurvedArrow from './CurvedArrow';
 import PluginCard from './PluginCard';
-import ChainEndpointCard from './ChainEndpointCard';
 import ChainToolbar from './ChainToolbar';
 import { usePluginDragDrop } from './usePluginDragDrop';
+import { useRowBreaks } from './useRowBreaks';
+import { isAsioId } from '../audio/audioDeviceDisplay';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 const { Text } = Typography;
 const PluginLibrary = lazy(() => import('../plugin/PluginLibrary'));
@@ -18,6 +19,92 @@ import * as tauri from '../../lib/tauri';
 import type { PluginChainChangedEvent } from '../../lib/types';
 import { useVisibleInterval } from '../../lib/useVisibleInterval';
 import { useTranslation } from '../../i18n';
+
+/** Fixed IN/OUT indicator pinned in the toolbar — not a row item, so it
+ * never competes with plugin cards for space and stays put regardless of
+ * how many plugins there are or whether the chain wraps. */
+function EndpointPill({
+  variant,
+  deviceName,
+  channelLabel,
+  secondaryLabel,
+  active,
+  onClick,
+}: {
+  variant: 'in' | 'out';
+  deviceName: string;
+  channelLabel?: string;
+  /** Monitor/virtual output device — 'out' only, shown in the tooltip. */
+  secondaryLabel?: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const { token } = theme.useToken();
+  const { t } = useTranslation();
+  const isIn = variant === 'in';
+  const Icon = isIn ? Mic : Volume2;
+  const accent = isIn ? token.colorSuccess : token.colorPrimary;
+  const tooltipTitle = secondaryLabel
+    ? <span>{t('chain.changeDeviceTooltip')} <br />{t('chain.monitorOutputTooltip', { name: secondaryLabel })}</span>
+    : t('chain.changeDeviceTooltip');
+
+  return (
+    <Tooltip title={tooltipTitle}>
+      <button
+        type="button"
+        onClick={onClick}
+        style={{
+          all: 'unset',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 10px',
+          borderRadius: 999,
+          cursor: 'pointer',
+          maxWidth: 220,
+          background: active ? `${accent}14` : token.colorFillQuaternary,
+          border: `1px solid ${active ? `${accent}40` : token.colorBorderSecondary}`,
+        }}
+      >
+        <Icon size={12} style={{ color: accent, flexShrink: 0 }} />
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, color: active ? accent : token.colorTextTertiary, flexShrink: 0 }}>
+          {isIn ? t('chain.inBadge') : t('chain.outBadge')}
+        </span>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 500,
+            color: token.colorTextSecondary,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            minWidth: 0,
+          }}
+        >
+          {deviceName}
+        </span>
+        {channelLabel && (
+          <Tag
+            style={{
+              margin: 0,
+              flexShrink: 0,
+              borderRadius: 999,
+              fontSize: 9,
+              fontWeight: 600,
+              padding: '0 6px',
+              lineHeight: '16px',
+              background: 'transparent',
+              border: `1px solid ${token.colorBorderSecondary}`,
+              color: token.colorTextTertiary,
+            }}
+          >
+            {channelLabel}
+          </Tag>
+        )}
+      </button>
+    </Tooltip>
+  );
+}
 
 export default function PluginChain() {
   const { token } = theme.useToken();
@@ -52,12 +139,16 @@ export default function PluginChain() {
     selectedDevice,
     selectedVirtualOutputDevice,
     isMonitoring,
+    inputChannelOffset,
+    outputChannelOffset,
   } = useAudioStore(useShallow((s) => ({
     devices: s.devices,
     selectedInputDevice: s.selectedInputDevice,
     selectedDevice: s.selectedDevice,
     selectedVirtualOutputDevice: s.selectedVirtualOutputDevice,
     isMonitoring: s.status.is_monitoring,
+    inputChannelOffset: s.inputChannelOffset,
+    outputChannelOffset: s.outputChannelOffset,
   })));
   const [showPluginLibrary, setShowPluginLibrary] = useState(false);
   const [isDeleteAllBusy, setIsDeleteAllBusy] = useState(false);
@@ -88,6 +179,19 @@ export default function PluginChain() {
   const inputDeviceName = getDeviceName(selectedInputDevice);
   const outputDeviceName = getDeviceName(selectedDevice);
   const virtualOutputDeviceName = getDeviceName(selectedVirtualOutputDevice);
+
+  // ASIO is full-duplex: the "in" and "out" endpoint nodes are really the
+  // same physical device, just its input side and its output side — unlike
+  // WASAPI where they're genuinely two separate devices.
+  const isAsioMode = isAsioId(selectedInputDevice) || isAsioId(selectedDevice);
+  const formatChannelLabel = (offset: number) => `CH ${offset + 1}-${offset + 2}`;
+  // Endpoint cards open the same Audio Settings modal as the header's gear
+  // icon, via a plain DOM event — no need to lift modal state up when a
+  // browser-native event bus already does the job.
+  const openAudioSettings = () => window.dispatchEvent(new CustomEvent('rh:open-audio-settings'));
+
+  const rowRef = useRef<HTMLDivElement>(null);
+  const wrapBreaks = useRowBreaks(rowRef, [pluginChain.map((p) => p.instance_id).join(','), isChainInitializing]);
 
   useEffect(() => {
     const unlistenPromise = listen<PluginChainChangedEvent>('plugin-chain-changed', (event) => {
@@ -178,6 +282,25 @@ export default function PluginChain() {
         pluginChainLength={pluginChain.length}
         onAddPlugin={() => setShowPluginLibrary(true)}
         onDeleteAll={handleDeleteAll}
+        inSlot={
+          <EndpointPill
+            variant="in"
+            deviceName={inputDeviceName}
+            channelLabel={isAsioMode ? formatChannelLabel(inputChannelOffset) : undefined}
+            active={isMonitoring}
+            onClick={openAudioSettings}
+          />
+        }
+        outSlot={
+          <EndpointPill
+            variant="out"
+            deviceName={outputDeviceName}
+            channelLabel={isAsioMode ? formatChannelLabel(outputChannelOffset) : undefined}
+            secondaryLabel={selectedVirtualOutputDevice ? virtualOutputDeviceName : undefined}
+            active={isMonitoring}
+            onClick={openAudioSettings}
+          />
+        }
       />
 
       {/* Signal Chain Rack Canvas */}
@@ -191,6 +314,7 @@ export default function PluginChain() {
         {pluginChain.length > 0 ? (
           <>
             <div
+              ref={rowRef}
               style={{
                 display: 'flex',
                 flexWrap: 'wrap',
@@ -198,38 +322,53 @@ export default function PluginChain() {
                 justifyContent: 'flex-start',
                 alignContent: 'flex-start',
                 columnGap: 0,
-                rowGap: 24,
-                minHeight: 192,
+                rowGap: 20,
+                minHeight: 158,
               }}
             >
-              <ChainEndpointCard variant="in" tooltipTitle={inputDeviceName} active={isMonitoring} />
-
-              {/* Plugin cards with drop zones between them */}
+              {/* Plugin cards with drop zones between them — no leading IN
+                  card/arrow: the first plugin implicitly receives from IN. */}
               {pluginChain.map((plugin, index) => {
                 const isSwapTarget = draggedIndex !== null && swapTargetIndex === index && draggedIndex !== index;
+                const isWrapBreak = wrapBreaks.has(index);
                 return (
-                  <div key={plugin.instance_id} style={{ display: 'flex', alignItems: 'center' }}>
-                    {/* Arrow separator (curved/dashed) */}
+                  <div
+                    key={plugin.instance_id}
+                    data-plugincombinedpos={index}
+                    style={{ display: 'flex', alignItems: 'center' }}
+                  >
+                    {/* Arrow separator — rotates into a down-turn connector
+                        when this plugin starts a new wrapped row, instead of
+                        reading as a stray horizontal arrow at the row edge.
+                        Before the first plugin the connecting line itself is
+                        hidden (nothing to connect from — IN is no longer a
+                        row item), but the drop-zone stays so a plugin can
+                        still be inserted at the very start by dragging here. */}
                     <div
                       data-plugin-arrow
                       data-plugin-arrow-pos={index}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
-                        margin: '0 6px',
+                        margin: isWrapBreak ? '0 6px 0 0' : '0 6px',
                         flexShrink: 0,
                         padding: '4px 6px',
                         borderRadius: 999,
+                        minWidth: index === 0 ? 20 : undefined,
                         transform: showInsertAt(index) ? 'translateY(-2px) scale(1.12)' : 'none',
                         background: showInsertAt(index) ? 'var(--rh-chain-insert-bg)' : 'transparent',
                         boxShadow: 'none',
                         transition: 'transform 140ms cubic-bezier(0.4, 0, 0.2, 1), background 140ms ease',
                       }}
                     >
-                      <CurvedArrow
-                        color={showInsertAt(index) ? token.colorPrimary : undefined}
-                        active={isMonitoring && !plugin.bypassed}
-                      />
+                      {index > 0 && (
+                        <span style={{ display: 'block', transform: isWrapBreak ? 'rotate(90deg)' : 'none' }}>
+                          <CurvedArrow
+                            color={showInsertAt(index) ? token.colorPrimary : undefined}
+                            active={isMonitoring && !plugin.bypassed}
+                          />
+                        </span>
+                      )}
                     </div>
 
                     {/* Card wrapper — drop target */}
@@ -237,8 +376,8 @@ export default function PluginChain() {
                       data-plugin-card-index={index}
                       style={{
                         position: 'relative',
-                        width: 268,
-                        height: 192,
+                        width: 216,
+                        height: 158,
                         display: 'flex',
                         flexDirection: 'column',
                         flexShrink: 0,
@@ -269,7 +408,9 @@ export default function PluginChain() {
                 );
               })}
 
-              {/* Arrow after last card */}
+              {/* Drop-zone after the last card — lets a plugin be appended
+                  at the end by dragging here. No visible connector: the last
+                  plugin implicitly sends to OUT, which is no longer a row item. */}
               <div
                 data-plugin-arrow
                 data-plugin-arrow-pos={pluginChain.length}
@@ -279,23 +420,13 @@ export default function PluginChain() {
                   margin: '0 6px',
                   flexShrink: 0,
                   padding: '4px 6px',
+                  minWidth: 20,
                   borderRadius: 999,
                   transform: showInsertAt(pluginChain.length) ? 'translateY(-2px) scale(1.12)' : 'none',
                   background: showInsertAt(pluginChain.length) ? 'var(--rh-chain-insert-bg)' : 'transparent',
                   boxShadow: 'none',
                   transition: 'transform 140ms cubic-bezier(0.4, 0, 0.2, 1), background 140ms ease',
                 }}
-              >
-                <CurvedArrow
-                  color={showInsertAt(pluginChain.length) ? token.colorPrimary : undefined}
-                  active={isMonitoring}
-                />
-              </div>
-
-              <ChainEndpointCard
-                variant="out"
-                tooltipTitle={<span>{t('chain.outputTooltipOutput', { name: outputDeviceName })} <br />{t('chain.outputTooltipVirtual', { name: virtualOutputDeviceName })}</span>}
-                active={isMonitoring}
               />
             </div>
 

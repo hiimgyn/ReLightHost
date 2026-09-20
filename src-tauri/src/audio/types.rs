@@ -56,6 +56,17 @@ pub struct AudioConfig {
     /// with the primary output — useful for routing to OBS / Discord while
     /// also monitoring through speakers.
     pub virtual_output_device_id: Option<String>,
+    /// 0-based index of the first channel of the stereo pair to capture from
+    /// the input device (e.g. 2 = channels 3-4). Only meaningful for
+    /// multi-channel (typically ASIO) devices; WASAPI devices are usually
+    /// stereo so this stays 0. `#[serde(default)]` so old saved sessions
+    /// without this field still load.
+    #[serde(default)]
+    pub input_channel_offset: usize,
+    /// 0-based index of the first channel of the stereo pair to send output
+    /// to on the output device. Same multi-channel caveat as above.
+    #[serde(default)]
+    pub output_channel_offset: usize,
 }
 
 impl Default for AudioConfig {
@@ -66,6 +77,8 @@ impl Default for AudioConfig {
             output_device_id: None,
             input_device_id: None,
             virtual_output_device_id: None,
+            input_channel_offset: 0,
+            output_channel_offset: 0,
         }
     }
 }

@@ -1,8 +1,7 @@
-import { Card, Button, Space, Tooltip, theme, message, Input } from 'antd';
+import { Card, Button, Space, Tooltip, theme, message, Input, Popover, Switch, Divider } from 'antd';
 import {
   X,
   Power,
-  ExternalLink,
   Loader2,
   CheckCircle2,
   AlertTriangle,
@@ -11,11 +10,15 @@ import {
   Pencil,
   Check,
   GripVertical,
+  ShieldCheck,
+  Shield,
+  Maximize2,
 } from 'lucide-react';
 import { memo, useState, useEffect, useRef } from 'react';
 import gsap from 'gsap';
-import type { PluginInstanceInfo, PluginStatus } from '../../lib/types';
+import type { PluginInstanceInfo, PluginStatus, Vst3SandboxStatus } from '../../lib/types';
 import * as tauri from '../../lib/tauri';
+import { usePluginStore } from '../../stores/pluginStore';
 import PluginMetaChips from './PluginMetaChips';
 import BuiltinPluginGuiSwitch from './BuiltinPluginGuiSwitch';
 import { usePluginRename } from './usePluginRename';
@@ -53,6 +56,9 @@ function PluginCard({
   const [showBuiltinGui, setShowBuiltinGui] = useState(false);
   const [isBypassBusy, setIsBypassBusy] = useState(false);
   const [isRemovingBusy, setIsRemovingBusy] = useState(false);
+  const reloadPlugin = usePluginStore((s) => s.reloadPlugin);
+  const [sandboxInfo, setSandboxInfo] = useState<Vst3SandboxStatus | null>(null);
+  const [sandboxBusy, setSandboxBusy] = useState(false);
 
   const { isLaunching, handleLaunch } = usePluginLaunch({
     instanceId: plugin.instance_id,
@@ -91,6 +97,55 @@ function PluginCard({
       messageApi.error(t('card.resetFailed', { error: String(err) }));
     } finally {
       setCheckingStatus(false);
+    }
+  };
+
+  const isVst3 = plugin.format === 'vst3';
+
+  const fetchSandboxInfo = async () => {
+    try {
+      setSandboxInfo(await tauri.getVst3SandboxStatus(plugin.path));
+    } catch (err) {
+      console.debug('PluginCard: getVst3SandboxStatus failed', err);
+    }
+  };
+
+  // Fetch once on mount so the shield icon reflects real status without
+  // requiring the user to open the popover first.
+  useEffect(() => {
+    if (isVst3) void fetchSandboxInfo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plugin.path]);
+
+  const handleSandboxPopoverOpenChange = async (open: boolean) => {
+    if (!open || !isVst3) return;
+    await fetchSandboxInfo();
+  };
+
+  const handleToggleForcedSandbox = async (forced: boolean) => {
+    setSandboxBusy(true);
+    try {
+      await tauri.setVst3ForcedSandbox(plugin.path, forced);
+      await reloadPlugin(plugin.instance_id);
+      await fetchSandboxInfo();
+      messageApi.success(forced ? t('card.sandboxForcedOn') : t('card.sandboxForcedOff'));
+    } catch (err) {
+      messageApi.error(t('card.sandboxToggleFailed', { error: String(err) }));
+    } finally {
+      setSandboxBusy(false);
+    }
+  };
+
+  const handleResetSandboxCrashCount = async () => {
+    setSandboxBusy(true);
+    try {
+      await tauri.resetVst3SandboxCrashCount(plugin.path);
+      await fetchSandboxInfo();
+      messageApi.success(t('card.sandboxCrashCountReset'));
+    } catch (err) {
+      messageApi.error(t('card.sandboxToggleFailed', { error: String(err) }));
+    } finally {
+      setSandboxBusy(false);
     }
   };
 
@@ -184,7 +239,7 @@ function PluginCard({
       };
     }
     return {
-      icon: <ExternalLink size={14} />,
+      icon: <Maximize2 size={14} />,
       label: t('card.launch'),
       tooltip: t('card.launchTooltip'),
       onClick: handleLaunch,
@@ -217,7 +272,7 @@ function PluginCard({
   return (
     <>
     {contextHolder}
-    <div ref={cardRef} style={{ width: '100%', height: '100%' }}>
+    <div ref={cardRef} style={{ width: '100%', height: '100%', position: 'relative' }}>
     <Card
       size="small"
       className="rh-plugin-card"
@@ -228,7 +283,7 @@ function PluginCard({
           : token.colorBgElevated,
         display: 'flex',
         flexDirection: 'column',
-        height: 192,
+        height: 158,
         border: isCrashed
           ? `1px solid rgba(244, 63, 94, 0.35)`
           : isActive
@@ -239,12 +294,12 @@ function PluginCard({
           : '0 4px 16px rgba(0, 0, 0, 0.25)',
         transition: 'border-color 180ms ease, box-shadow 180ms ease',
       }}
-      styles={{ body: { padding: '14px 16px', display: 'flex', flexDirection: 'column', height: '100%' } }}
+      styles={{ body: { padding: '12px 14px', display: 'flex', flexDirection: 'column', height: '100%' } }}
     >
-      <div style={{ width: '100%', display: 'flex', flexDirection: 'column', height: '100%', gap: 8 }}>
+      <div style={{ width: '100%', display: 'flex', flexDirection: 'column', height: '100%', gap: 6 }}>
 
         {/* ── Name row ────────────────────────────────────────────── */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, minHeight: 32 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, minHeight: 26 }}>
           {isRenaming ? (
             <Input
               ref={renameInputRef}
@@ -272,11 +327,34 @@ function PluginCard({
             />
           ) : (
             <>
+              {onDragHandlePointerDown && (
+                <Tooltip title={t('card.dragToReorder')}>
+                  <span
+                    onPointerDown={onDragHandlePointerDown}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 22,
+                      height: 22,
+                      borderRadius: 999,
+                      marginTop: 1,
+                      color: isDragging ? token.colorTextLightSolid : token.colorTextTertiary,
+                      background: isDragging ? token.colorPrimary : token.colorFillQuaternary,
+                      cursor: 'grab',
+                      flexShrink: 0,
+                      transition: 'all 160ms ease',
+                    }}
+                  >
+                    <GripVertical size={12} />
+                  </span>
+                </Tooltip>
+              )}
               <Tooltip title={plugin.name}>
                 <span style={{
                   fontWeight: 700,
-                  fontSize: 14.5,
-                  lineHeight: 1.25,
+                  fontSize: 13.5,
+                  lineHeight: 1.2,
                   color: token.colorText,
                   flex: 1,
                   minWidth: 0,
@@ -299,29 +377,13 @@ function PluginCard({
                     onClick={startRenaming}
                   />
                 </Tooltip>
-                {onDragHandlePointerDown && (
-                  <Tooltip title={t('card.dragToReorder')}>
-                    <span
-                      onPointerDown={onDragHandlePointerDown}
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        width: 22,
-                        height: 22,
-                        borderRadius: 999,
-                        marginLeft: 2,
-                        color: isDragging ? token.colorTextLightSolid : token.colorTextTertiary,
-                        background: isDragging ? token.colorPrimary : token.colorFillQuaternary,
-                        cursor: 'grab',
-                        flexShrink: 0,
-                        transition: 'all 160ms ease',
-                      }}
-                    >
-                      <GripVertical size={12} />
-                    </span>
-                  </Tooltip>
-                )}
+                <Tooltip title={t('card.removeFromChain')}>
+                  <X
+                    size={13}
+                    style={{ color: token.colorTextQuaternary, cursor: isControlLocked ? 'default' : 'pointer', flexShrink: 0, marginTop: 2, opacity: isControlLocked ? 0.5 : 1 }}
+                    onClick={() => { if (!isControlLocked) void handleRemoveClick(); }}
+                  />
+                </Tooltip>
               </Space>
             </>
           )}
@@ -355,7 +417,7 @@ function PluginCard({
         ) : null}
 
         {/* ── Bottom status + actions ────────────────────────────── */}
-        <div style={{ display: 'flex', gap: 8, width: '100%', alignItems: 'flex-start', marginTop: 'auto' }}>
+        <div style={{ display: 'flex', gap: 6, width: '100%', alignItems: 'center', marginTop: 'auto' }}>
           {isCrashed && (
             <Tooltip title={t('card.resetCrash')}>
               <Button
@@ -365,13 +427,14 @@ function PluginCard({
                 loading={checkingStatus}
                 disabled={interactionLocked}
                 className="btn-pill btn-reset"
-                style={{ flex: 1, height: 32 }}
+                style={{ flex: 1, height: 28 }}
               >
                 {t('common.reset')}
               </Button>
             </Tooltip>
           )}
 
+          {/* Left group: bypass toggle + live status. */}
           {!isCrashed && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, flexShrink: 0 }}>
               <Tooltip title={plugin.bypassed ? t('card.enablePlugin') : t('card.bypassPlugin')}>
@@ -385,9 +448,9 @@ function PluginCard({
                   disabled={isControlLocked}
                   aria-label={plugin.bypassed ? t('card.enablePlugin') : t('card.bypassPlugin')}
                   style={{
-                    minWidth: 36,
-                    width: 36,
-                    height: 32,
+                    minWidth: 32,
+                    width: 32,
+                    height: 28,
                     justifyContent: 'center',
                     paddingInline: 0,
                     color: plugin.bypassed ? token.colorTextSecondary : bypassButtonColor,
@@ -426,6 +489,9 @@ function PluginCard({
             </div>
           )}
 
+          {/* Right group: launch + isolated (sandbox) toggle — grouped
+              together since both are per-instance session controls. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: isCrashed ? 0 : 'auto' }}>
           {!isCrashed && (
             <Tooltip title={launchButtonProps.tooltip}>
               <Button
@@ -436,32 +502,101 @@ function PluginCard({
                 disabled={isControlLocked}
                 className="btn-pill btn-tonal"
                 style={{
-                  flex: 1,
-                  height: 32,
+                  width: 28,
+                  minWidth: 28,
+                  height: 28,
+                  paddingInline: 0,
                   color: (plugin.gui_open || showBuiltinGui) ? token.colorSuccess : undefined,
                   borderColor: (plugin.gui_open || showBuiltinGui) ? token.colorSuccessBorder : undefined,
                 }}
-              >
-                {launchButtonProps.label}
-              </Button>
+                aria-label={launchButtonProps.label}
+              />
             </Tooltip>
           )}
-
-          <Tooltip title={t('card.removeFromChain')}>
-            <Button
-              type="text"
-              size="small"
-              icon={<X size={15} strokeWidth={2} />}
-              onClick={() => { void handleRemoveClick(); }}
-              loading={isRemovingBusy}
-              disabled={isControlLocked}
-              className="btn-icon"
-              style={{ minWidth: 32, width: 32, height: 32 }}
-            />
-          </Tooltip>
+          {isVst3 && (
+            <Popover
+              trigger="click"
+              placement="topRight"
+              onOpenChange={(open) => { void handleSandboxPopoverOpenChange(open); }}
+              content={
+                <div style={{ width: 260, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <span style={{ fontSize: 12.5 }}>
+                    {sandboxInfo?.forced
+                      ? t('card.sandboxDescForced')
+                      : sandboxInfo?.sandboxed
+                      ? t('card.sandboxDescAuto', { count: sandboxInfo.crash_count })
+                      : t('card.sandboxDescOff')}
+                  </span>
+                  <span style={{ fontSize: 11, color: token.colorTextTertiary }}>
+                    {t('card.sandboxCrashCount', { count: sandboxInfo?.crash_count ?? 0 })}
+                  </span>
+                  <Divider style={{ margin: '4px 0' }} />
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 12.5 }}>{t('card.sandboxForceLabel')}</span>
+                    <Switch
+                      size="small"
+                      checked={sandboxInfo?.forced ?? false}
+                      loading={sandboxBusy}
+                      disabled={isControlLocked}
+                      onChange={(checked) => { void handleToggleForcedSandbox(checked); }}
+                    />
+                  </div>
+                  <Button
+                    size="small"
+                    onClick={() => { void handleResetSandboxCrashCount(); }}
+                    loading={sandboxBusy}
+                    disabled={isControlLocked || !sandboxInfo?.crash_count}
+                  >
+                    {t('card.sandboxResetCount')}
+                  </Button>
+                </div>
+              }
+              title={t('card.sandboxTitle')}
+            >
+              <Tooltip title={t('card.sandboxTooltip')}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={sandboxInfo?.sandboxed
+                    ? <ShieldCheck size={15} strokeWidth={2} style={{ color: token.colorSuccess }} />
+                    : <Shield size={15} strokeWidth={2} />}
+                  disabled={isControlLocked}
+                  className="btn-icon"
+                  style={{ minWidth: 28, width: 28, height: 28 }}
+                />
+              </Tooltip>
+            </Popover>
+          )}
+          </div>
         </div>
       </div>
     </Card>
+
+    {/* Reload overlay — covers the card while a sandbox toggle recreates the
+        plugin instance in place, so a multi-second VST3 reload reads as
+        "busy here" instead of an unexplained freeze. */}
+    {sandboxBusy && (
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          borderRadius: 12,
+          background: 'rgba(10, 12, 20, 0.72)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 6,
+          zIndex: 5,
+          animation: 'rh-fade-up 200ms ease-out',
+        }}
+      >
+        <Loader2 size={18} className="animate-spin" style={{ color: token.colorPrimary }} />
+        <span style={{ fontSize: 10, fontWeight: 600, color: token.colorTextSecondary, textAlign: 'center', padding: '0 10px' }}>
+          {t('card.sandboxReloading')}
+        </span>
+      </div>
+    )}
     </div>
 
     <BuiltinPluginGuiSwitch

@@ -34,6 +34,7 @@ interface PluginStore {
   scanPlugins: () => Promise<void>;
   addToChain: (plugin: PluginInfo) => Promise<void>;
   removeFromChain: (instanceId: string) => Promise<void>;
+  reloadPlugin: (instanceId: string) => Promise<void>;
   toggleBypass: (instanceId: string) => Promise<void>;
   reorderChain: (fromIndex: number, toIndex: number) => Promise<void>;
   swapChain: (firstIndex: number, secondIndex: number) => Promise<void>;
@@ -111,6 +112,55 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     } catch (error) {
       console.error('Failed to remove plugin from chain:', error);
       throw error;
+    } finally {
+      set((state) => {
+        const next = Math.max(0, state.mutationCount - 1);
+        return { mutationCount: next, isMutating: next > 0 };
+      });
+    }
+  },
+
+  // Remove + re-add a plugin at its original position so a change that only
+  // takes effect at load time (e.g. VST3 sandbox forcing) applies to an
+  // already-running instance, without a dedicated backend "reload" command.
+  //
+  // Deliberately bypasses removeFromChain/addToChain/reorderChain's own
+  // fetchChain() calls and does a single fetchChain() at the very end —
+  // each of those would otherwise commit its own intermediate pluginChain
+  // snapshot (card vanishes, reappears at the end of the list, then jumps
+  // back to its original position), which is what actually looked like a
+  // freeze-then-jump. The card in this slot stays mounted with its old data
+  // the whole time — the caller shows a busy state on it — and only swaps
+  // to the reloaded plugin once its final position is already correct.
+  reloadPlugin: async (instanceId: string) => {
+    const current = get().pluginChain;
+    const index = current.findIndex((p) => p.instance_id === instanceId);
+    const plugin = current[index];
+    if (!plugin) return;
+
+    const pluginInfo: PluginInfo = {
+      id: plugin.plugin_id,
+      name: plugin.name,
+      manufacture: plugin.manufacture,
+      version: plugin.version,
+      path: plugin.path,
+      format: plugin.format,
+      category: plugin.category,
+    };
+
+    set((state) => {
+      const next = state.mutationCount + 1;
+      return { mutationCount: next, isMutating: next > 0 };
+    });
+    try {
+      await tauri.removePlugin(instanceId);
+      await tauri.loadPlugin(pluginInfo);
+      const chainAfterAdd = await tauri.getPluginChain();
+      const newIndex = chainAfterAdd.length - 1;
+      if (newIndex > index) {
+        await tauri.reorderPluginChain(newIndex, index);
+      }
+      await get().fetchChain();
     } finally {
       set((state) => {
         const next = Math.max(0, state.mutationCount - 1);

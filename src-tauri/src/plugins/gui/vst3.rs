@@ -92,8 +92,17 @@ pub mod win {
         static TL_PENDING_VIEW: std::cell::RefCell<Option<ComPtr<IPlugView>>> =
             const { std::cell::RefCell::new(None) };
         /// JoinHandle for the background attach thread.
-        /// Joined before view.removed() to prevent data-race on the ComPtr.
+        /// Joined before view.removed() to prevent data-race on the ComPtr —
+        /// but only up to a bounded timeout (see TL_ATTACH_DONE): a plugin
+        /// whose removed() call itself hangs must not freeze gui_open forever.
         static TL_ATTACH_THREAD: std::cell::RefCell<Option<std::thread::JoinHandle<()>>> =
+            const { std::cell::RefCell::new(None) };
+        /// Set true by the attach thread right before it exits (after
+        /// setFrame(null)/removed() return). Polled with a deadline instead of
+        /// calling JoinHandle::join() unconditionally, which has no timeout —
+        /// a plugin whose removed() never returns would otherwise wedge
+        /// gui_open permanently, blocking reopen/remove for that instance.
+        static TL_ATTACH_DONE: std::cell::RefCell<Option<Arc<AtomicBool>>> =
             const { std::cell::RefCell::new(None) };
         /// Win32 thread ID of the attach thread (wrapped in Arc so WM_CLOSE can
         /// send it WM_QUIT before PluginInstance::drop calls view.removed()).
@@ -227,13 +236,30 @@ pub mod win {
                     flag: Arc<AtomicBool>,
                     hwnd: Arc<AtomicIsize>,
                     attachment_ready: Arc<std::sync::atomic::AtomicBool>,
+                    /// Set true when the GUI teardown thread never finished in
+                    /// time (see wait_for_attach_thread). Releasing these COM
+                    /// refs then would race that still-running thread, which
+                    /// may hold its own clone of the same objects — so we leak
+                    /// instead, same trade-off PluginInstance::drop makes for
+                    /// a stuck GUI thread at the whole-processor level.
+                    abandon_com_release: bool,
                 }
                 impl Drop for CleanupGuard {
                     fn drop(&mut self) {
-                        unsafe {
-                            // Release COM interfaces first — do NOT reorder.
-                            ManuallyDrop::drop(&mut self.controller);
-                            ManuallyDrop::drop(&mut self.component);
+                        if self.abandon_com_release {
+                            log::error!("GUI teardown abandoned — leaking controller/component COM references instead of releasing them");
+                            unsafe {
+                                let controller = ManuallyDrop::take(&mut self.controller);
+                                let component  = ManuallyDrop::take(&mut self.component);
+                                std::mem::forget(controller);
+                                std::mem::forget(component);
+                            }
+                        } else {
+                            unsafe {
+                                // Release COM interfaces first — do NOT reorder.
+                                ManuallyDrop::drop(&mut self.controller);
+                                ManuallyDrop::drop(&mut self.component);
+                            }
                         }
                         // Only THEN signal that it is safe to unload the DLL.
                         self.hwnd.store(0, Ordering::Release);
@@ -245,15 +271,16 @@ pub mod win {
                     }
                 }
 
-                let _cleanup = CleanupGuard {
+                let mut _cleanup = CleanupGuard {
                     controller: ManuallyDrop::new(controller_clone),
                     component:  ManuallyDrop::new(component_clone),
                     flag: gui_flag,
                     hwnd: Arc::clone(&gui_hwnd),
                     attachment_ready: Arc::clone(&attachment_ready),
+                    abandon_com_release: false,
                 };
 
-                if let Err(e) = run_gui_window_impl(
+                match run_gui_window_impl(
                     &_cleanup.controller,
                     &_cleanup.component,
                     &name_owned,
@@ -262,9 +289,11 @@ pub mod win {
                     sync_component_state,
                     restored_state_blob,
                 ) {
-                    log::error!("VST3 GUI error for '{}': {}", name_owned, e);
+                    Ok(attach_finished) => _cleanup.abandon_com_release = !attach_finished,
+                    Err(e) => log::error!("VST3 GUI error for '{}': {}", name_owned, e),
                 }
-                // _cleanup drops here: COM refs released, then gui_open cleared
+                // _cleanup drops here: COM refs released (or leaked, if
+                // teardown was abandoned), then gui_open cleared
             })
             .map_err(|e| anyhow!("Failed to spawn GUI thread: {}", e))?;
 
@@ -281,7 +310,7 @@ pub mod win {
         attachment_ready: &Arc<std::sync::atomic::AtomicBool>,
         sync_component_state: bool,
         restored_state_blob: Option<Vec<u8>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         use std::ffi::CString;
 
         // COM must be initialised on the same thread as the GUI (same as JUCE
@@ -488,11 +517,18 @@ pub mod win {
         run_message_loop();
 
         // 10. Cleanup — window destroyed by WM_CLOSE → DefWindowProc.
-        // Wait for the attach thread to finish. The attach thread performs
-        // view teardown (setFrame(nullptr) + removed()) on the same thread that
-        // called attached(), then exits.
-        if let Some(handle) = TL_ATTACH_THREAD.with(|c| c.borrow_mut().take()) {
-            let _ = handle.join();
+        // Wait for the attach thread to finish (it performs view teardown —
+        // setFrame(nullptr) + removed() — on the same thread that called
+        // attached()), but only up to GUI_TEARDOWN_TIMEOUT. A plugin whose
+        // removed() call itself hangs (observed with some fragile editors)
+        // must not wedge gui_open forever — that leaves the instance
+        // permanently un-reopenable and un-removable from the UI.
+        let attach_finished = wait_for_attach_thread(GUI_TEARDOWN_TIMEOUT);
+        if !attach_finished {
+            log::error!(
+                "'{}': GUI teardown thread did not finish within {:?} — abandoning it and leaking its COM references instead of releasing them, to avoid releasing interfaces the stuck thread may still be using",
+                plugin_name, GUI_TEARDOWN_TIMEOUT
+            );
         }
 
         // NOTE: Avoid disconnect() during teardown.
@@ -501,6 +537,7 @@ pub mod win {
         let _ = connected_icp;
         // Clear remaining thread-locals — releases ComPtr clones before view drops.
         TL_ATTACH_TID.with(|c| *c.borrow_mut() = None);
+        TL_ATTACH_DONE.with(|c| *c.borrow_mut() = None);
         TL_PENDING_VIEW.with(|c| *c.borrow_mut() = None);
         TL_ON_SIZE.with(|cell| *cell.borrow_mut() = None);
         TL_INITIAL_SIZE.with(|c| c.set((0, 0)));
@@ -508,8 +545,43 @@ pub mod win {
         TL_SEPARATE_CONTROLLER.with(|c| c.set(true));
         TL_HWND.set(0);
 
-        log::debug!("'{}' GUI cleanup complete", plugin_name);
-        Ok(())
+        if !attach_finished {
+            // The abandoned thread may still be executing inside removed()
+            // with its own clone of this same view — releasing ours here
+            // could Release() the last reference out from under it.
+            std::mem::forget(view);
+        }
+
+        log::debug!("'{}' GUI cleanup complete (teardown {})", plugin_name, if attach_finished { "clean" } else { "abandoned" });
+        Ok(attach_finished)
+    }
+
+    /// How long to wait for the attach thread's setFrame(null)/removed() call
+    /// to finish before giving up on it. Matches GUI_CLOSE_TIMEOUT used
+    /// elsewhere in the app for the same "how long to wait for a plugin
+    /// window to go away" question.
+    const GUI_TEARDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+    /// Poll TL_ATTACH_DONE instead of `JoinHandle::join()`, which has no
+    /// timeout. Joins the handle (near-instant, since the thread already
+    /// signalled done) on success so it doesn't leak as a zombie `Thread`
+    /// handle; on timeout, drops the handle without joining — safe in Rust,
+    /// it simply stops tracking an now-detached still-running OS thread.
+    fn wait_for_attach_thread(timeout: std::time::Duration) -> bool {
+        let done = TL_ATTACH_DONE.with(|c| c.borrow().as_ref().map(Arc::clone));
+        let Some(done) = done else { return true };
+
+        let deadline = std::time::Instant::now() + timeout;
+        while !done.load(Ordering::Acquire) {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if let Some(handle) = TL_ATTACH_THREAD.with(|c| c.borrow_mut().take()) {
+            let _ = handle.join();
+        }
+        true
     }
 
     // ── Win32 helpers ─────────────────────────────────────────────────────────
@@ -581,6 +653,11 @@ pub mod win {
                         let tid_arc   = Arc::new(AtomicU32::new(0));
                         let tid_clone = Arc::clone(&tid_arc);
                         TL_ATTACH_TID.with(|c| *c.borrow_mut() = Some(tid_arc));
+
+                        // Cleared to true once removed() returns — see TL_ATTACH_DONE.
+                        let done_arc   = Arc::new(AtomicBool::new(false));
+                        let done_clone = Arc::clone(&done_arc);
+                        TL_ATTACH_DONE.with(|c| *c.borrow_mut() = Some(done_arc));
 
                         // Retrieve attachment_ready from thread-local so we can move it into the spawn closure
                         let attachment_ready_opt = TL_ATTACHMENT_READY.with(|c| {
@@ -661,10 +738,16 @@ pub mod win {
                                 }
 
                                 // Teardown on the same thread as attached().
+                                // A plugin whose removed() hangs (fragile
+                                // editors that don't tear down cleanly) must
+                                // not wedge this signal — the waiting side
+                                // times out and abandons this thread rather
+                                // than blocking gui_open forever.
                                 unsafe {
                                     send_view.0.setFrame(ptr::null_mut());
                                     let _ = send_view.0.removed();
                                 }
+                                done_clone.store(true, Ordering::Release);
                             });
                         match spawn_res {
                             Ok(handle) => {

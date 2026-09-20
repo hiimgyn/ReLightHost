@@ -144,8 +144,13 @@ export default function Header() {
       listen("tray-open-audio-settings", () => setShowAudioSettings(true)),
       listen("tray-open-app-settings", () => setShowAppSettings(true)),
     ];
+    // Signal-chain IN/OUT cards open Audio Settings via this same-page event
+    // instead of lifting modal state up through PluginChain's props.
+    const openFromChain = () => setShowAudioSettings(true);
+    window.addEventListener("rh:open-audio-settings", openFromChain);
     return () => {
       unlistens.forEach((p) => p.then((fn) => fn()));
+      window.removeEventListener("rh:open-audio-settings", openFromChain);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

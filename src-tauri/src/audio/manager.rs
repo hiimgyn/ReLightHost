@@ -33,6 +33,71 @@ enum BridgedOutput {
     Wasapi(wasapi::WasapiRenderStream),
 }
 
+/// Wraps a freshly-started ASIO leg (from `start_duplex`/`start_input_only`/
+/// `start_output_only`) for the window between it succeeding and it being
+/// safely stored in the final `ActiveBackend` value — i.e. while
+/// `toggle_monitoring` may still run OTHER fallible/panicking setup (most
+/// notably `backend::wasapi::start_capture`/`start_render`'s
+/// `std::thread::spawn`, which panics rather than returning `Err` if the OS
+/// refuses to create the thread).
+///
+/// Without this, a panic unwinding through that later setup would drop an
+/// already-successful `AsioDuplexStream` implicitly via plain field-drop
+/// glue — WITHOUT `ASIO_LIFECYCLE_LOCK` held — reopening the exact
+/// use-after-free/race that lock exists to close (see `backend/asio.rs`'s
+/// doc comments). This is the "`Option<Driver>` + locking `Drop`" fallback
+/// form `AsioDuplexStream`'s own doc comment already names as the
+/// alternative to documentation-only discipline, applied at the point
+/// where panic-safety actually needs it instead of inside `AsioDuplexStream`
+/// itself (which would need the same treatment for every field).
+struct AsioGuard(Option<asio::AsioDuplexStream>);
+
+impl Drop for AsioGuard {
+    fn drop(&mut self) {
+        if let Some(stream) = self.0.take() {
+            asio::stop(stream);
+        }
+    }
+}
+
+impl AsioGuard {
+    /// Extracts the guarded stream once it's safe to hand to its final,
+    /// permanent home (an `ActiveBackend` about to be stored in
+    /// `MonitoringStreams`). Takes the value out of `self.0` FIRST, so the
+    /// implicit `Drop` that still runs on `self` at the end of this method
+    /// sees `None` and is a safe no-op — no `mem::forget` needed.
+    fn into_inner(mut self) -> asio::AsioDuplexStream {
+        self.0.take().expect("AsioGuard::into_inner called on an already-emptied guard")
+    }
+}
+
+/// Mirrors `BridgedInput`, but holds a marker instead of the guarded ASIO
+/// stream (which lives in `toggle_monitoring`'s `asio_guard` local until
+/// every other panicking setup step has finished — see `AsioGuard`'s doc
+/// comment). The WASAPI variant already holds its final, safe-to-drop
+/// stream directly since `WasapiCaptureStream` stops safely via its own
+/// `Drop` impl and needs no such protection.
+enum PendingBridgedInput {
+    Asio,
+    Wasapi(wasapi::WasapiCaptureStream),
+}
+
+/// Output counterpart of [`PendingBridgedInput`].
+enum PendingBridgedOutput {
+    Asio,
+    Wasapi(wasapi::WasapiRenderStream),
+}
+
+/// Mirrors `ActiveBackend` during the same panic-risk window described on
+/// [`AsioGuard`].
+enum PendingBackend {
+    AsioDuplex,
+    Bridged {
+        input: PendingBridgedInput,
+        output: Option<PendingBridgedOutput>,
+    },
+}
+
 /// Which backend combination is currently driving monitoring.
 ///
 /// `AsioDuplex` is the single-driver full-duplex case (same ASIO device for
@@ -356,7 +421,24 @@ impl AudioManager {
         let mut input_wasapi_result: Option<wasapi::ExclusiveModeResult> = None;
         let mut output_wasapi_result: Option<wasapi::ExclusiveModeResult> = None;
 
-        let backend: ActiveBackend = if same_asio_device {
+        // Enumerated once and reused for every channel-count lookup below —
+        // `list_asio_devices()` briefly loads every registered driver to
+        // query channels (see its doc comment), so caching it here avoids
+        // repeating that work up to 3× in a single `toggle_monitoring` call.
+        let asio_devices = if input_is_asio || output_is_asio {
+            asio::list_asio_devices()
+        } else {
+            Vec::new()
+        };
+
+        // Holds a freshly-started ASIO leg (at most one ever exists per
+        // call — enforced by the cross-driver rejection above plus the
+        // bridged branch's own "at most one side is ASIO" invariant) until
+        // every other fallible/panicking setup step below has finished —
+        // see `AsioGuard`'s doc comment for why.
+        let mut asio_guard: Option<AsioGuard> = None;
+
+        let pending: PendingBackend = if same_asio_device {
             // ---------------------------------------------------------
             // Full-duplex insert mode: one driver, one callback, both
             // directions. Failure anywhere here is fatal — there's no
@@ -368,8 +450,7 @@ impl AudioManager {
             let _ = AudioDevice::find_asio_device_pair(asio_name)
                 .ok_or_else(|| anyhow::anyhow!("ASIO device '{}' not found for insert mode", asio_name))?;
 
-            let (in_channels, out_channels) = asio::list_asio_devices()
-                .into_iter()
+            let (in_channels, out_channels) = asio_devices.iter()
                 .find(|d| d.name == asio_name)
                 .map(|d| (d.input_channels, d.output_channels))
                 .unwrap_or((2, 2));
@@ -388,7 +469,8 @@ impl AudioManager {
                 mixer_state,
                 virt_producer,
             ).map_err(|e| anyhow::anyhow!("Failed to start ASIO full-duplex stream: {e}"))?;
-            ActiveBackend::AsioDuplex(stream)
+            asio_guard = Some(AsioGuard(Some(stream)));
+            PendingBackend::AsioDuplex
         } else {
             // ---------------------------------------------------------
             // Bridged: at most one side is ASIO (guaranteed by the
@@ -398,8 +480,10 @@ impl AudioManager {
             // NOT fatal — matches the old cpal-based code's behavior of
             // continuing monitoring without hardware output. This also
             // means an ASIO leg is never left loaded-but-undiscarded on an
-            // error path here: once an ASIO leg succeeds, nothing after it
-            // in this branch can return `Err` from `toggle_monitoring`.
+            // `Err`-return path here: once an ASIO leg succeeds, nothing
+            // after it in this branch can return `Err` from
+            // `toggle_monitoring` — and `asio_guard` now covers the
+            // remaining panic-unwind case too (see its doc comment).
             // ---------------------------------------------------------
             let rb = HeapRb::<f32>::new(buf_capacity);
             let (producer, consumer) = rb.split();
@@ -410,18 +494,19 @@ impl AudioManager {
                 .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
 
             let input = if let Some(name) = input_id.strip_prefix("asio_") {
-                let in_channels = asio::list_asio_devices().into_iter()
+                let in_channels = asio_devices.iter()
                     .find(|d| d.name == name).map(|d| d.input_channels).unwrap_or(2);
                 let in_offset = if in_channels >= 2 { config.input_channel_offset.min(in_channels - 2) } else { 0 };
                 let stream = asio::start_input_only(name, in_offset, Some(config.buffer_size as i32), producer)
                     .map_err(|e| anyhow::anyhow!("Failed to start ASIO input '{name}': {e}"))?;
-                BridgedInput::Asio(stream)
+                asio_guard = Some(AsioGuard(Some(stream)));
+                PendingBridgedInput::Asio
             } else {
                 let raw = input_id.strip_prefix("in_").unwrap_or(&input_id);
                 let (stream, result) = wasapi::start_capture(raw, config.buffer_size, config.sample_rate, producer)
                     .map_err(|e| anyhow::anyhow!("Failed to start WASAPI input '{raw}': {e}"))?;
                 input_wasapi_result = Some(result);
-                BridgedInput::Wasapi(stream)
+                PendingBridgedInput::Wasapi(stream)
             };
 
             // If the user explicitly set output_device_id to None, do NOT
@@ -440,11 +525,14 @@ impl AudioManager {
             let output = match output_target {
                 Some(ref id) if id.starts_with("asio_") => {
                     let name = id.strip_prefix("asio_").unwrap_or(id.as_str());
-                    let out_channels = asio::list_asio_devices().into_iter()
+                    let out_channels = asio_devices.iter()
                         .find(|d| d.name == name).map(|d| d.output_channels).unwrap_or(2);
                     let out_offset = if out_channels >= 2 { config.output_channel_offset.min(out_channels - 2) } else { 0 };
                     match asio::start_output_only(name, out_offset, Some(config.buffer_size as i32), consumer, mixer_state, virt_producer) {
-                        Ok(stream) => Some(BridgedOutput::Asio(stream)),
+                        Ok(stream) => {
+                            asio_guard = Some(AsioGuard(Some(stream)));
+                            Some(PendingBridgedOutput::Asio)
+                        }
                         Err(e) => {
                             log::warn!("{} Failed to start ASIO output '{name}': {e}; continuing without hardware output", crate::core::threading::thread_prefix("audio/monitor"));
                             None
@@ -456,7 +544,7 @@ impl AudioManager {
                     match wasapi::start_render(raw, config.buffer_size, config.sample_rate, consumer, mixer_state, virt_producer) {
                         Ok((stream, result)) => {
                             output_wasapi_result = Some(result);
-                            Some(BridgedOutput::Wasapi(stream))
+                            Some(PendingBridgedOutput::Wasapi(stream))
                         }
                         Err(e) => {
                             log::warn!("{} Failed to start WASAPI output '{raw}': {e}; continuing without hardware output", crate::core::threading::thread_prefix("audio/monitor"));
@@ -467,7 +555,7 @@ impl AudioManager {
                 None => None,
             };
 
-            ActiveBackend::Bridged { input, output }
+            PendingBackend::Bridged { input, output }
         };
 
         // -----------------------------------------------------------------
@@ -504,6 +592,43 @@ impl AudioManager {
                 }
             }
             _ => None,
+        };
+
+        // -----------------------------------------------------------------
+        // Final extraction: every other fallible/panicking setup step (the
+        // output leg, the virtual-mirror leg) has now finished, so it's
+        // safe to move the guarded ASIO stream (if any) into its permanent
+        // home. `AsioGuard::into_inner` takes the stream out before its own
+        // `Drop` runs, so this never double-stops anything on this normal
+        // path — see `AsioGuard`'s doc comment.
+        // -----------------------------------------------------------------
+        let backend: ActiveBackend = match pending {
+            PendingBackend::AsioDuplex => {
+                let stream = asio_guard.take()
+                    .expect("PendingBackend::AsioDuplex without a guarded ASIO stream")
+                    .into_inner();
+                ActiveBackend::AsioDuplex(stream)
+            }
+            PendingBackend::Bridged { input, output } => {
+                let input = match input {
+                    PendingBridgedInput::Asio => BridgedInput::Asio(
+                        asio_guard.take()
+                            .expect("PendingBridgedInput::Asio without a guarded ASIO stream")
+                            .into_inner(),
+                    ),
+                    PendingBridgedInput::Wasapi(stream) => BridgedInput::Wasapi(stream),
+                };
+                let output = match output {
+                    Some(PendingBridgedOutput::Asio) => Some(BridgedOutput::Asio(
+                        asio_guard.take()
+                            .expect("PendingBridgedOutput::Asio without a guarded ASIO stream")
+                            .into_inner(),
+                    )),
+                    Some(PendingBridgedOutput::Wasapi(stream)) => Some(BridgedOutput::Wasapi(stream)),
+                    None => None,
+                };
+                ActiveBackend::Bridged { input, output }
+            }
         };
 
         let (resolved_exclusive, resolved_fallback_reason) = output_wasapi_result

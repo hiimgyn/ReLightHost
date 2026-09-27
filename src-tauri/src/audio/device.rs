@@ -58,6 +58,16 @@ impl AudioDevice {
     /// Returning the id (rather than a device handle, as the old cpal-based
     /// version did) is enough — `manager.rs` re-derives ASIO-vs-WASAPI from
     /// this resolved id's prefix and calls the matching backend directly.
+    ///
+    /// Matches against EITHER the WASAPI endpoint id OR the device's
+    /// friendly name: the old cpal-based code's ids were friendly names
+    /// (`"in_{name}"`), not endpoint ids, so an existing user's saved
+    /// session would otherwise silently fail to resolve on first launch
+    /// after this change and reset to system defaults. Always returns the
+    /// canonical id built from the matched device's real endpoint id (never
+    /// the friendly name that may have matched), since that's what
+    /// downstream code passes straight to `backend::wasapi::start_capture`/
+    /// `start_render` as the actual endpoint id to open.
     pub fn find_input_device(device_id: &str) -> Option<String> {
         if let Some(name) = device_id.strip_prefix("asio_") {
             return asio::list_asio_devices()
@@ -68,11 +78,12 @@ impl AudioDevice {
         let raw = device_id.strip_prefix("in_").unwrap_or(device_id);
         wasapi::list_wasapi_devices()
             .into_iter()
-            .any(|d| d.id == raw && d.input_channels > 0)
-            .then(|| format!("in_{raw}"))
+            .find(|d| (d.id == raw || d.name == raw) && d.input_channels > 0)
+            .map(|d| format!("in_{}", d.id))
     }
 
-    /// Output counterpart of [`find_input_device`].
+    /// Output counterpart of [`find_input_device`] — see its doc comment
+    /// for the friendly-name backward-compatibility match.
     pub fn find_output_device(device_id: &str) -> Option<String> {
         if let Some(name) = device_id.strip_prefix("asio_") {
             return asio::list_asio_devices()
@@ -83,8 +94,8 @@ impl AudioDevice {
         let raw = device_id.strip_prefix("out_").unwrap_or(device_id);
         wasapi::list_wasapi_devices()
             .into_iter()
-            .any(|d| d.id == raw && d.output_channels > 0)
-            .then(|| format!("out_{raw}"))
+            .find(|d| (d.id == raw || d.name == raw) && d.output_channels > 0)
+            .map(|d| format!("out_{}", d.id))
     }
 
     /// Validates that `device_name` names a real ASIO driver supporting both

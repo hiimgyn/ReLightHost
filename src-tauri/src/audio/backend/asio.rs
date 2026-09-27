@@ -153,10 +153,13 @@ pub struct AsioDuplexStream {
 /// today.
 ///
 /// Cross-driver bridging (two different ASIO drivers as input/output) is
-/// NOT handled here — that case is composed at the `manager.rs` level in
-/// Task 7 by running two independent single-direction registrations
-/// bridged through the existing `ringbuf::HeapRb`. This function only
-/// covers the single-driver full-duplex case.
+/// NOT handled here, and is not supported at all: the ASIO SDK only allows
+/// one loaded driver per process (see `ASIO_LIFECYCLE_LOCK`'s doc comment
+/// above), so `manager.rs` rejects that combination outright before calling
+/// into this module rather than attempting to bridge it. This function only
+/// covers the single-driver full-duplex case; `start_input_only`/
+/// `start_output_only` below cover the single-ASIO-side-paired-with-WASAPI
+/// case `manager.rs` actually uses instead.
 ///
 /// Sample-type note: this function REFUSES to start (returns `Err`) unless
 /// the driver's native format is `ASIOSTInt32LSB` (see

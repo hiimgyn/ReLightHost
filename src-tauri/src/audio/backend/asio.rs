@@ -1,9 +1,19 @@
 #![cfg(target_os = "windows")]
 
-use std::sync::Once;
-use asio_sys::{Asio, CallbackInfo, Driver};
+use std::sync::{LazyLock, Once};
+use asio_sys::{Asio, AsioSampleType, CallbackInfo, Driver};
 use ringbuf::{HeapProd, traits::Producer};
 use crate::audio::mixer::{MixerState, process_block, main_output_gate_open};
+
+/// The ASIO SDK only ever allows one loaded driver per process (loading a
+/// second driver tears down the first via `removeCurrentDriver()`, which
+/// would free a running callback's buffers out from under it). `asio-sys`'s
+/// `Asio` type tracks "is a driver currently loaded" per-instance, so a
+/// fresh `Asio::new()` per call (as `list_asio_devices` and `start_duplex`
+/// each used to do) has no memory of what another call already loaded —
+/// this process-wide singleton is what actually enforces the one-driver
+/// rule across every caller in this module.
+static ASIO: LazyLock<Asio> = LazyLock::new(Asio::new);
 
 pub struct AsioDeviceInfo {
     pub name: String,
@@ -16,10 +26,24 @@ pub struct AsioDeviceInfo {
 /// by the ASIO SDK (channel counts aren't in the registry) — this mirrors
 /// what cpal's own ASIO host does today.
 pub fn list_asio_devices() -> Vec<AsioDeviceInfo> {
-    let asio = Asio::new();
+    let asio = &*ASIO;
     let mut out = Vec::new();
     for name in asio.driver_names() {
-        let Ok(driver) = asio.load_driver(&name) else { continue };
+        // `load_driver` returns the already-loaded driver directly when its
+        // name matches (see asio-sys's own `load_driver`), so the only way
+        // this errors is a DIFFERENT driver currently being loaded (e.g. by
+        // a live `start_duplex` stream elsewhere in the process) — ASIO
+        // only ever allows one loaded driver, so that entry genuinely can't
+        // be queried right now. Fall back to `loaded_driver()` once, in
+        // case it's actually this same name (defensive; `load_driver`
+        // already handles the common case itself).
+        let driver = match asio.load_driver(&name) {
+            Ok(d) => d,
+            Err(_) => match asio.loaded_driver() {
+                Some(d) if d.name() == name => d,
+                _ => continue,
+            },
+        };
         let Ok(channels) = driver.channels() else { continue };
         out.push(AsioDeviceInfo {
             name,
@@ -55,6 +79,12 @@ fn f32_to_asio_i32(v: f32) -> i32 {
 
 /// Inverse of [`f32_to_asio_i32`]. See its doc comment for the sample-type
 /// assumption.
+///
+/// Unlike `f32_to_asio_i32`, this direction doesn't need the `f64`
+/// workaround: there's no clamp/saturation step, and dividing by the same
+/// (rounded) `i32::MAX as f32` value used for the boundary case cancels
+/// out exactly at `i32::MAX`/`i32::MIN`, so both ends of the range still
+/// round-trip to `1.0`/`-1.0` within float epsilon.
 fn asio_i32_to_f32(v: i32) -> f32 {
     v as f32 / i32::MAX as f32
 }
@@ -63,10 +93,14 @@ fn asio_i32_to_f32(v: i32) -> f32 {
 ///
 /// Opaque to callers: `stop` is the only supported way to tear this down
 /// (dropping it without calling `stop` still releases the driver via
-/// `Driver`'s own `Drop`, but leaves stream teardown ordering to that
-/// impl rather than doing it explicitly).
+/// `Driver`'s own `Drop` — which, per asio-sys's `destroy_inner`, clears
+/// every registered callback process-wide as a side effect of its own
+/// teardown, not just this stream's — but leaves stream-stop/buffer-dispose
+/// ordering to that impl rather than doing it explicitly via `Driver::stop`/
+/// `dispose_buffers`).
 pub struct AsioDuplexStream {
     driver: Driver,
+    callback_id: asio_sys::BufferCallbackId,
 }
 
 /// Starts a full-duplex ASIO stream on a single driver: reads the stereo
@@ -86,10 +120,14 @@ pub struct AsioDuplexStream {
 /// bridged through the existing `ringbuf::HeapRb`. This function only
 /// covers the single-driver full-duplex case.
 ///
-/// Sample-type note: assumes the driver's native format is
-/// `ASIOSTInt32LSB` (see `f32_to_asio_i32`/`asio_i32_to_f32`); Task 7
-/// checks `driver.input_data_type()`/`output_data_type()` and adds the
-/// `ASIOSTFloat32LSB` branch before wiring this into `manager.rs`.
+/// Sample-type note: this function REFUSES to start (returns `Err`) unless
+/// the driver's native format is `ASIOSTInt32LSB` (see
+/// `f32_to_asio_i32`/`asio_i32_to_f32`) — the fixed-width `i32` pointer
+/// arithmetic in the callback below would silently read/write out of
+/// bounds against a driver using a different sample width (e.g. 2-byte
+/// `ASIOSTInt16LSB` or 3-byte `ASIOSTInt24LSB`). Task 7 adds the
+/// `ASIOSTFloat32LSB` branch and relaxes this guard accordingly before
+/// wiring this into `manager.rs`.
 pub fn start_duplex(
     driver_name: &str,
     in_offset: usize,
@@ -98,8 +136,7 @@ pub fn start_duplex(
     mixer: MixerState,
     mut virt_producer: Option<HeapProd<f32>>,
 ) -> anyhow::Result<AsioDuplexStream> {
-    let asio = Asio::new();
-    let driver = asio
+    let driver = ASIO
         .load_driver(driver_name)
         .map_err(|e| anyhow::anyhow!("Failed to load ASIO driver '{driver_name}': {e}"))?;
 
@@ -133,6 +170,26 @@ pub fn start_duplex(
         .output
         .ok_or_else(|| anyhow::anyhow!("ASIO driver returned no output stream"))?;
 
+    // Refuse to start against a driver reporting a sample format other than
+    // the one this function's pointer arithmetic assumes: a narrower format
+    // (e.g. 2-byte ASIOSTInt16LSB) would make every `*const/*mut i32` access
+    // below read/write past the end of its real per-sample width.
+    let input_type = driver
+        .input_data_type()
+        .map_err(|e| anyhow::anyhow!("Failed to query ASIO input sample type: {e}"))?;
+    let output_type = driver
+        .output_data_type()
+        .map_err(|e| anyhow::anyhow!("Failed to query ASIO output sample type: {e}"))?;
+    if !matches!(input_type, AsioSampleType::ASIOSTInt32LSB)
+        || !matches!(output_type, AsioSampleType::ASIOSTInt32LSB)
+    {
+        return Err(anyhow::anyhow!(
+            "ASIO driver '{driver_name}' reports unsupported sample format \
+             (input: {input_type:?}, output: {output_type:?}); only \
+             ASIOSTInt32LSB is currently supported"
+        ));
+    }
+
     // Both streams were allocated together by the same `ASIOCreateBuffers`
     // call above, so they share one buffer size.
     let buffer_size = output_stream.buffer_size.max(0) as usize;
@@ -141,13 +198,49 @@ pub fn start_duplex(
     let out_l = out_offset;
     let out_r = out_offset + 1;
 
-    let sample_rate = driver.sample_rate().unwrap_or(48_000.0);
+    // Zero every output channel we did NOT select (everything below
+    // `out_offset`, requested only to land the real pair at the right
+    // index — see the offset comment above). ASIO buffers are not
+    // guaranteed to start zeroed, and the callback below only ever writes
+    // `buffer_infos[out_l]`/`[out_r]`, so an unselected channel could
+    // otherwise play back whatever memory ASIOCreateBuffers handed us.
+    // This runs once here at setup time, before `driver.start()` — doing a
+    // plain loop like this from inside the callback itself would not be
+    // fine (real-time thread), but here it's a one-time setup cost.
+    for (i, info) in output_stream.buffer_infos.iter().enumerate() {
+        if i == out_l || i == out_r {
+            continue;
+        }
+        // Copy the field out by value first: `AsioBufferInfo` is
+        // `#[repr(C, packed(4))]`, so `&info.buffers` (which `.iter()`
+        // would need) is an unaligned reference and rejected outright
+        // (E0793) — a plain value copy sidesteps that.
+        let buffers = info.buffers;
+        for half in buffers {
+            if half.is_null() {
+                continue;
+            }
+            // SAFETY: `half` was allocated by the `ASIOCreateBuffers` call
+            // above for exactly `buffer_size` ASIOSTInt32LSB (i32) samples
+            // (guarded by the format check above); this runs once during
+            // setup, before `driver.start()`, so there is no concurrent
+            // callback access to race with.
+            unsafe {
+                std::ptr::write_bytes(half as *mut i32, 0, buffer_size);
+            }
+        }
+    }
+
+    let sample_rate = driver.sample_rate().unwrap_or_else(|e| {
+        log::warn!("ASIO sample_rate() query failed for '{driver_name}', defaulting to 48kHz: {e}");
+        48_000.0
+    });
     let mmcss_once = Once::new();
     let mut left_buf = vec![0.0f32; buffer_size];
     let mut right_buf = vec![0.0f32; buffer_size];
     let output_is_asio = mixer.output_is_asio;
 
-    driver.add_callback(move |info: &CallbackInfo| {
+    let callback_id = driver.add_callback(move |info: &CallbackInfo| {
         // Force capture of the whole `AsioStream` (which asio-sys marks
         // `unsafe impl Send`), not just its `buffer_infos: Vec<AsioBufferInfo>`
         // field — Rust 2021's disjoint closure capture would otherwise
@@ -163,20 +256,26 @@ pub fn start_duplex(
 
         let idx = info.buffer_index as usize;
 
-        // SAFETY: `input_stream.buffer_infos[in_l/in_r].buffers[idx]` was
-        // allocated by ASIO's `ASIOCreateBuffers` above for exactly
-        // `buffer_size` ASIOSTInt32LSB (i32) samples per half of the
-        // double buffer; `idx` is the half ASIO just told us (via
-        // `CallbackInfo::buffer_index`) is ready to read, and `frame` is
-        // bounds-checked by iterating `left_buf`/`right_buf`, which were
-        // sized to `buffer_size`.
+        // Resolved once per channel per callback (not once per frame — the
+        // channel/half a frame belongs to doesn't change within one
+        // callback invocation).
+        let in_l_ptr = input_stream.buffer_infos[in_l].buffers[idx] as *const i32;
+        let in_r_ptr = input_stream.buffer_infos[in_r].buffers[idx] as *const i32;
+        let out_l_ptr = output_stream.buffer_infos[out_l].buffers[idx] as *mut i32;
+        let out_r_ptr = output_stream.buffer_infos[out_r].buffers[idx] as *mut i32;
+
+        // SAFETY: `in_l_ptr`/`in_r_ptr` point into buffers allocated by
+        // ASIO's `ASIOCreateBuffers` above for exactly `buffer_size`
+        // ASIOSTInt32LSB (i32) samples per half of the double buffer
+        // (guarded by the format check in `start_duplex`); `idx` is the
+        // half ASIO just told us (via `CallbackInfo::buffer_index`) is
+        // ready to read, and `frame` is bounds-checked by iterating
+        // `left_buf`/`right_buf`, which were sized to `buffer_size`.
         for (frame, sample) in left_buf.iter_mut().enumerate() {
-            let ptr = input_stream.buffer_infos[in_l].buffers[idx] as *const i32;
-            *sample = unsafe { asio_i32_to_f32(*ptr.add(frame)) };
+            *sample = unsafe { asio_i32_to_f32(*in_l_ptr.add(frame)) };
         }
         for (frame, sample) in right_buf.iter_mut().enumerate() {
-            let ptr = input_stream.buffer_infos[in_r].buffers[idx] as *const i32;
-            *sample = unsafe { asio_i32_to_f32(*ptr.add(frame)) };
+            *sample = unsafe { asio_i32_to_f32(*in_r_ptr.add(frame)) };
         }
 
         let result = process_block(&mut left_buf, &mut right_buf, &mixer, sample_rate);
@@ -195,17 +294,15 @@ pub fn start_duplex(
         // above, but writing; ASIO guarantees exclusive access to buffer
         // half `idx` for the duration of this callback.
         for (frame, sample) in left_buf.iter().enumerate() {
-            let ptr = output_stream.buffer_infos[out_l].buffers[idx] as *mut i32;
             let value = if gate_open { f32_to_asio_i32(*sample) } else { 0 };
             unsafe {
-                *ptr.add(frame) = value;
+                *out_l_ptr.add(frame) = value;
             }
         }
         for (frame, sample) in right_buf.iter().enumerate() {
-            let ptr = output_stream.buffer_infos[out_r].buffers[idx] as *mut i32;
             let value = if gate_open { f32_to_asio_i32(*sample) } else { 0 };
             unsafe {
-                *ptr.add(frame) = value;
+                *out_r_ptr.add(frame) = value;
             }
         }
     });
@@ -213,13 +310,14 @@ pub fn start_duplex(
     driver
         .start()
         .map_err(|e| anyhow::anyhow!("Failed to start ASIO driver: {e}"))?;
-    Ok(AsioDuplexStream { driver })
+    Ok(AsioDuplexStream { driver, callback_id })
 }
 
 /// Stops the stream and releases its ASIO buffers. Errors from the
 /// underlying ASIO calls are logged rather than propagated since there is
 /// nothing further the caller can do once teardown has already begun.
 pub fn stop(stream: AsioDuplexStream) {
+    stream.driver.remove_callback(stream.callback_id);
     if let Err(e) = stream.driver.stop() {
         log::warn!("ASIO stop() failed: {e}");
     }

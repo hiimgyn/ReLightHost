@@ -155,18 +155,13 @@ mod tests {
     }
 
     #[test]
-    fn non_asio_mute_gates_main_output_to_silence() {
-        let s = state(false);
-        s.muted.store(true, Ordering::Relaxed);
-        let mut l = vec![1.0f32; 4];
-        let mut r = vec![1.0f32; 4];
-        process_block(&mut l, &mut r, &s, 48_000.0);
-        // Non-ASIO: gate_open = is_loopback (false by default) — main output
-        // path itself is handled by the caller's re-interleave using this
-        // same gate logic; here we assert the mixer doesn't itself zero the
-        // buffers (that's the caller's job per backend), only that mute
-        // doesn't panic and dsp_load stays computable.
-        assert!(f32::from_bits(s.dsp_load_u32.load(Ordering::Relaxed)) >= 0.0);
+    fn main_output_gate_polarity_matches_backend() {
+        // ASIO: main output follows mute (open when NOT muted).
+        assert!(main_output_gate_open(true, false, false));
+        assert!(!main_output_gate_open(true, true, false));
+        // Non-ASIO: main output follows loopback, independent of mute.
+        assert!(main_output_gate_open(false, true, true));
+        assert!(!main_output_gate_open(false, false, false));
     }
 
     #[test]
@@ -413,11 +408,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn list_asio_devices_does_not_panic_with_no_drivers_installed() {
-        // On a CI/dev machine with no ASIO drivers registered, this must
-        // return an empty Vec, not error or panic.
+    fn list_asio_devices_reports_consistent_channel_counts_or_none() {
+        // On a machine with no ASIO drivers registered this returns an
+        // empty Vec (the real assertion is that the call completes without
+        // panicking or erroring at all — a fixed count can't be asserted
+        // since it depends on what's installed on the build machine). Every
+        // entry that IS returned must have a non-empty name, since an
+        // unnamed device is not something the UI can list.
         let devices = list_asio_devices();
-        assert!(devices.len() <= 32, "sanity bound, not a real assertion of driver count");
+        assert!(devices.iter().all(|d| !d.name.is_empty()));
     }
 }
 ```

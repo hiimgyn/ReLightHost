@@ -38,7 +38,6 @@ webbrowser = "1.0"
 # Set CPAL_ASIO_DIR=C:\path\to\asiosdk before building to enable VirtualASIO / Voicemeeter ASIO
 
 cpal = { version = "0.18", features = ["asio"] }
-asio-sys = "0.4"
 
 # Lock-free SPSC ring buffer for audio callbacks (avoids Mutex in realtime thread)
 ringbuf = "0.5"
@@ -78,3 +77,4 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Threading",   # AvSetMmThreadCharacteristicsW
 ] }
+asio-sys = "0.4"

@@ -1,3 +1,5 @@
+#![cfg(target_os = "windows")]
+
 use asio_sys::Asio;
 
 pub struct AsioDeviceInfo {

@@ -2,7 +2,7 @@
 
 use std::sync::{LazyLock, Once};
 use asio_sys::{Asio, AsioSampleType, CallbackInfo, Driver};
-use ringbuf::{HeapProd, traits::Producer};
+use ringbuf::{HeapProd, HeapCons, traits::{Producer, Consumer}};
 use crate::audio::mixer::{MixerState, process_block, main_output_gate_open};
 
 /// The ASIO SDK only ever allows one loaded driver per process (loading a
@@ -112,7 +112,13 @@ fn asio_i32_to_f32(v: i32) -> f32 {
     v as f32 / i32::MAX as f32
 }
 
-/// Owns a running ASIO driver and its registered duplex callback.
+/// Owns a running ASIO driver and its registered callback — full-duplex
+/// (`start_duplex`) or single-direction (`start_input_only`/
+/// `start_output_only`). The three constructors differ only in how many
+/// `AsioBufferInfo` entries they register and what the callback body reads/
+/// writes; the driver-lifecycle shape (one loaded driver, one callback, torn
+/// down via `stop()`) is identical regardless of direction, so all three
+/// share this one type instead of three near-duplicates.
 ///
 /// Callers MUST call `stop()` on this rather than letting it drop
 /// implicitly. `stop()` tears this down under `ASIO_LIFECYCLE_LOCK` (see
@@ -365,6 +371,221 @@ pub fn start_duplex(
         // Don't leave a stale callback registered on a failed start — it
         // would otherwise sit in asio-sys's global callback list holding
         // pointers into these buffers indefinitely.
+        driver.remove_callback(callback_id);
+        return Err(anyhow::anyhow!("Failed to start ASIO driver: {e}"));
+    }
+    Ok(AsioDuplexStream { driver, callback_id })
+}
+
+/// Starts ASIO input capture only (no output side registered) — used for
+/// the "bridged" case where the other direction is a WASAPI device. Pushes
+/// de-interleaved stereo `f32` samples straight into `producer`; no mixer
+/// stage runs on the input side, mirroring `backend::wasapi::start_capture`'s
+/// shape.
+///
+/// See `start_duplex`'s doc comment for the lifecycle/offset/sample-type
+/// notes, which apply identically here — this is the same setup collapsed
+/// to one direction (`prepare_input_stream` called alone, per the brief's
+/// note that `asio-sys`'s single-direction prepare calls already support
+/// this via `None` for the other side).
+pub fn start_input_only(
+    driver_name: &str,
+    offset: usize,
+    buffer_size_hint: Option<i32>,
+    mut producer: HeapProd<f32>,
+) -> anyhow::Result<AsioDuplexStream> {
+    // See `ASIO_LIFECYCLE_LOCK`'s doc comment — held for this whole setup path.
+    let _lifecycle_guard = ASIO_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if ASIO.loaded_driver().is_some() {
+        return Err(anyhow::anyhow!(
+            "an ASIO driver is already active; call stop() before starting a new stream"
+        ));
+    }
+
+    let driver = ASIO
+        .load_driver(driver_name)
+        .map_err(|e| anyhow::anyhow!("Failed to load ASIO driver '{driver_name}': {e}"))?;
+
+    // See `start_duplex`'s identical comment on why enough channels to
+    // cover `offset` are requested rather than just 2.
+    let channels = offset + 2;
+    let input_stream = driver
+        .prepare_input_stream(None, channels, buffer_size_hint)
+        .map_err(|e| anyhow::anyhow!("Failed to prepare ASIO input buffers: {e}"))?
+        .input
+        .ok_or_else(|| anyhow::anyhow!("ASIO driver returned no input stream"))?;
+
+    let input_type = driver
+        .input_data_type()
+        .map_err(|e| anyhow::anyhow!("Failed to query ASIO input sample type: {e}"))?;
+    if !matches!(input_type, AsioSampleType::ASIOSTInt32LSB) {
+        return Err(anyhow::anyhow!(
+            "ASIO driver '{driver_name}' reports unsupported input sample format \
+             ({input_type:?}); only ASIOSTInt32LSB is currently supported"
+        ));
+    }
+
+    let buffer_size = input_stream.buffer_size.max(0) as usize;
+    let in_l = offset;
+    let in_r = offset + 1;
+    let mmcss_once = Once::new();
+
+    let callback_id = driver.add_callback(move |info: &CallbackInfo| {
+        // Force whole-`AsioStream` capture — see `start_duplex`'s identical
+        // comment on why a bare `Vec<AsioBufferInfo>` field capture isn't `Send`.
+        let input_stream = &input_stream;
+
+        mmcss_once.call_once(|| {
+            crate::audio::mmcss::boost_current_thread_to_pro_audio();
+        });
+
+        let idx = info.buffer_index as usize;
+        let in_l_ptr = input_stream.buffer_infos[in_l].buffers[idx] as *const i32;
+        let in_r_ptr = input_stream.buffer_infos[in_r].buffers[idx] as *const i32;
+
+        // SAFETY: same buffer-ownership/index reasoning as `start_duplex`'s
+        // identical input-read loop.
+        for frame in 0..buffer_size {
+            let l = unsafe { asio_i32_to_f32(*in_l_ptr.add(frame)) };
+            let r = unsafe { asio_i32_to_f32(*in_r_ptr.add(frame)) };
+            // Non-blocking: drop the frame rather than blocking the
+            // real-time thread if the ring buffer is full.
+            let _ = producer.try_push(l);
+            let _ = producer.try_push(r);
+        }
+    });
+
+    if let Err(e) = driver.start() {
+        driver.remove_callback(callback_id);
+        return Err(anyhow::anyhow!("Failed to start ASIO driver: {e}"));
+    }
+    Ok(AsioDuplexStream { driver, callback_id })
+}
+
+/// Starts ASIO output only (no input side registered) — used for the
+/// "bridged" case where the other direction is a WASAPI device. Pulls from
+/// `consumer`, runs the shared mixer stage, and writes the result to the
+/// selected output pair; mirrors `backend::wasapi::start_render`'s shape,
+/// including the same optional virtual-mirror producer.
+///
+/// See `start_duplex`'s doc comment for the lifecycle/offset/sample-type
+/// notes, which apply identically here.
+pub fn start_output_only(
+    driver_name: &str,
+    offset: usize,
+    buffer_size_hint: Option<i32>,
+    mut consumer: HeapCons<f32>,
+    mixer: MixerState,
+    mut virt_producer: Option<HeapProd<f32>>,
+) -> anyhow::Result<AsioDuplexStream> {
+    // See `ASIO_LIFECYCLE_LOCK`'s doc comment — held for this whole setup path.
+    let _lifecycle_guard = ASIO_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if ASIO.loaded_driver().is_some() {
+        return Err(anyhow::anyhow!(
+            "an ASIO driver is already active; call stop() before starting a new stream"
+        ));
+    }
+
+    let driver = ASIO
+        .load_driver(driver_name)
+        .map_err(|e| anyhow::anyhow!("Failed to load ASIO driver '{driver_name}': {e}"))?;
+
+    let channels = offset + 2;
+    let output_stream = driver
+        .prepare_output_stream(None, channels, buffer_size_hint)
+        .map_err(|e| anyhow::anyhow!("Failed to prepare ASIO output buffers: {e}"))?
+        .output
+        .ok_or_else(|| anyhow::anyhow!("ASIO driver returned no output stream"))?;
+
+    let output_type = driver
+        .output_data_type()
+        .map_err(|e| anyhow::anyhow!("Failed to query ASIO output sample type: {e}"))?;
+    if !matches!(output_type, AsioSampleType::ASIOSTInt32LSB) {
+        return Err(anyhow::anyhow!(
+            "ASIO driver '{driver_name}' reports unsupported output sample format \
+             ({output_type:?}); only ASIOSTInt32LSB is currently supported"
+        ));
+    }
+
+    let buffer_size = output_stream.buffer_size.max(0) as usize;
+    let out_l = offset;
+    let out_r = offset + 1;
+
+    // Zero every output channel before starting — see `start_duplex`'s
+    // identical comment for why.
+    for info in output_stream.buffer_infos.iter() {
+        let buffers = info.buffers;
+        for half in buffers {
+            if half.is_null() {
+                continue;
+            }
+            // SAFETY: see `start_duplex`'s identical zeroing loop.
+            unsafe {
+                std::ptr::write_bytes(half as *mut i32, 0, buffer_size);
+            }
+        }
+    }
+
+    let sample_rate = driver.sample_rate().unwrap_or_else(|e| {
+        log::warn!("ASIO sample_rate() query failed for '{driver_name}', defaulting to 48kHz: {e}");
+        48_000.0
+    });
+    let mmcss_once = Once::new();
+    let mut left_buf = vec![0.0f32; buffer_size];
+    let mut right_buf = vec![0.0f32; buffer_size];
+    let output_is_asio = mixer.output_is_asio;
+
+    let callback_id = driver.add_callback(move |info: &CallbackInfo| {
+        let output_stream = &output_stream;
+
+        mmcss_once.call_once(|| {
+            crate::audio::mmcss::boost_current_thread_to_pro_audio();
+        });
+
+        let idx = info.buffer_index as usize;
+        let out_l_ptr = output_stream.buffer_infos[out_l].buffers[idx] as *mut i32;
+        let out_r_ptr = output_stream.buffer_infos[out_r].buffers[idx] as *mut i32;
+
+        for frame in 0..buffer_size {
+            left_buf[frame] = consumer.try_pop().unwrap_or(0.0);
+            right_buf[frame] = consumer.try_pop().unwrap_or(0.0);
+        }
+
+        let result = process_block(&mut left_buf, &mut right_buf, &mixer, sample_rate);
+        let gate_open = main_output_gate_open(output_is_asio, result.is_muted, result.is_loopback);
+
+        if result.mirror_to_virtual {
+            if let Some(ref mut vp) = virt_producer {
+                for frame in 0..left_buf.len() {
+                    let _ = vp.try_push(left_buf[frame]);
+                    let _ = vp.try_push(right_buf[frame]);
+                }
+            }
+        }
+
+        // SAFETY: same buffer-ownership/index reasoning as `start_duplex`'s
+        // identical output-write loop.
+        for (frame, sample) in left_buf.iter().enumerate() {
+            let value = if gate_open { f32_to_asio_i32(*sample) } else { 0 };
+            unsafe {
+                *out_l_ptr.add(frame) = value;
+            }
+        }
+        for (frame, sample) in right_buf.iter().enumerate() {
+            let value = if gate_open { f32_to_asio_i32(*sample) } else { 0 };
+            unsafe {
+                *out_r_ptr.add(frame) = value;
+            }
+        }
+    });
+
+    if let Err(e) = driver.start() {
         driver.remove_callback(callback_id);
         return Err(anyhow::anyhow!("Failed to start ASIO driver: {e}"));
     }

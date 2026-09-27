@@ -35,9 +35,9 @@ webbrowser = "1.0"
 
 # Audio Engine
 # ASIO support: requires ASIO SDK (https://www.steinberg.net/asiosdk) and env var CPAL_ASIO_DIR
-# Set CPAL_ASIO_DIR=C:\path\to\asiosdk before building to enable VirtualASIO / Voicemeeter ASIO
-
-cpal = { version = "0.18", features = ["asio"] }
+# Set CPAL_ASIO_DIR=C:\path\to\asiosdk before building — `asio-sys` (below,
+# under the Windows target dependencies) reads this same env var at build
+# time to locate and bind against the ASIO SDK headers.
 
 # Lock-free SPSC ring buffer for audio callbacks (avoids Mutex in realtime thread)
 ringbuf = "0.5"

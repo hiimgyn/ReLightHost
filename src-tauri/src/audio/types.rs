@@ -15,6 +15,14 @@ pub struct AudioStatus {
     /// True while VST3 plugins are in their post-start settling window.
     /// Parameter changes during this period are ignored by the VST3 processor.
     pub vst3_settling: bool,
+    /// True when the active WASAPI leg (input or output — output takes
+    /// priority when both are WASAPI) negotiated exclusive mode. Always
+    /// `false` when no WASAPI leg is active (e.g. full-duplex ASIO).
+    pub exclusive_mode_active: bool,
+    /// Set when a WASAPI leg fell back from exclusive to shared mode,
+    /// explaining why. `None` when exclusive mode was granted, or when no
+    /// WASAPI leg is active.
+    pub wasapi_fallback_reason: Option<String>,
 }
 
 impl Default for AudioStatus {
@@ -31,6 +39,8 @@ impl Default for AudioStatus {
             latency_ms: (buffer_size as f32 / sample_rate as f32) * 1000.0,
             underrun_count: 0,
             vst3_settling: false,
+            exclusive_mode_active: false,
+            wasapi_fallback_reason: None,
         }
     }
 }

@@ -4,24 +4,104 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 use std::sync::Mutex;
 use anyhow::Result;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{BufferSize, SampleFormat, StreamConfig};
-use ringbuf::{HeapRb, traits::{Producer, Consumer, Split}};
+use ringbuf::{HeapRb, traits::Split};
 
 use crate::audio::types::{AudioStatus, AudioConfig};
-use crate::audio::device::{AudioDevice, cpal_device_name};
+use crate::audio::device::AudioDevice;
 use crate::audio::vu_meter::VUMeter;
+use crate::audio::backend::{asio, wasapi};
+use crate::audio::mixer::MixerState;
 
-/// Holds live CPAL streams for input monitoring (kept alive while monitoring is on)
-struct MonitoringStreams {
-    _input: cpal::Stream,
-    _output: Option<cpal::Stream>,
-    /// Optional Hardware Out stream — feeds processed audio to speakers/headphones for monitoring.
-    /// Gated by `loopback_enabled`; only audible when the loopback button is ON.
-    _virtual_output: Option<cpal::Stream>,
+/// One side of a monitoring session's INPUT leg, in the "bridged" case
+/// (every case except full-duplex same-ASIO-device).
+enum BridgedInput {
+    Asio(asio::AsioDuplexStream),
+    // Held only for its `Drop` impl (stops the capture thread) — never read
+    // directly, hence the lint below.
+    #[allow(dead_code)]
+    Wasapi(wasapi::WasapiCaptureStream),
 }
-// SAFETY: cpal::Stream implements Send on all supported platforms
-unsafe impl Send for MonitoringStreams {}
+
+/// One side of a monitoring session's OUTPUT leg — either the primary
+/// hardware output (bridged case) or the secondary virtual/monitor mirror
+/// device.
+enum BridgedOutput {
+    Asio(asio::AsioDuplexStream),
+    // Held only for its `Drop` impl (stops the render thread) — never read
+    // directly, hence the lint below.
+    #[allow(dead_code)]
+    Wasapi(wasapi::WasapiRenderStream),
+}
+
+/// Which backend combination is currently driving monitoring.
+///
+/// `AsioDuplex` is the single-driver full-duplex case (same ASIO device for
+/// input and output) — one `bufferSwitch` callback serves both directions.
+/// `Bridged` is every other case (pure WASAPI, or one ASIO side paired with
+/// one WASAPI side) — input and output run as two independent registrations
+/// connected by a `ringbuf::HeapRb`. Two different ASIO drivers for
+/// input+output is rejected outright before either side is started (see
+/// `toggle_monitoring`) — the ASIO SDK only supports one loaded driver per
+/// process, so that combination can never reach this enum at all.
+///
+/// IMPORTANT: `asio::AsioDuplexStream` has no lock-safe `Drop` impl by
+/// design (see its doc comment in `backend/asio.rs`) — every path that
+/// replaces or discards a value holding one of these variants MUST call
+/// `backend::asio::stop()` on it explicitly first. `MonitoringStreams::teardown`
+/// is the only place that is allowed to consume this enum for exactly that
+/// reason — see its doc comment.
+enum ActiveBackend {
+    AsioDuplex(asio::AsioDuplexStream),
+    Bridged {
+        input: BridgedInput,
+        output: Option<BridgedOutput>,
+    },
+}
+
+/// Holds every live stream for the current monitoring session.
+struct MonitoringStreams {
+    backend: ActiveBackend,
+    /// Optional secondary mirror device (e.g. VB-Audio Virtual Cable),
+    /// mirroring the already-processed audio from whichever leg above runs
+    /// the mixer stage. WASAPI only: ASIO allows only one loaded driver per
+    /// process (see `backend/asio.rs`), so this can never itself be a second
+    /// ASIO driver while `backend` above is already using one — and
+    /// `toggle_monitoring` doesn't track a separate one-driver slot for the
+    /// case where `backend` is pure WASAPI either.
+    // Held only for its `Drop` impl (stops the render thread) — never read
+    // directly, hence the lint below.
+    #[allow(dead_code)]
+    virtual_output: Option<wasapi::WasapiRenderStream>,
+}
+
+impl MonitoringStreams {
+    /// Tears down every stream. Calls `backend::asio::stop()` explicitly on
+    /// any ASIO-backed leg rather than relying on `Drop` — required by
+    /// `AsioDuplexStream`'s documented contract (see `backend/asio.rs`):
+    /// letting it drop implicitly would run its teardown WITHOUT
+    /// `ASIO_LIFECYCLE_LOCK` held, reopening the exact SDK race that lock
+    /// exists to close. WASAPI streams stop safely via their own `Drop`
+    /// impl, so simply letting them (and `self.virtual_output`) drop at the
+    /// end of this function is correct for them.
+    fn teardown(self) {
+        let MonitoringStreams { backend, virtual_output: _ } = self;
+        match backend {
+            ActiveBackend::AsioDuplex(stream) => asio::stop(stream),
+            ActiveBackend::Bridged { input, output } => {
+                if let BridgedInput::Asio(stream) = input {
+                    asio::stop(stream);
+                }
+                if let Some(BridgedOutput::Asio(stream)) = output {
+                    asio::stop(stream);
+                }
+                // Any `Wasapi(_)` variant, and `output: None`, drop safely here.
+            }
+        }
+        // `virtual_output` (a `WasapiRenderStream`, or `None`) drops safely
+        // here too — bound above only to spell out that it's intentionally
+        // left untouched, not to keep it alive any longer.
+    }
+}
 
 /// Signature for the plugin-chain processing callback.
 /// Called per audio block with non-interleaved L/R buffers.
@@ -47,27 +127,19 @@ pub struct AudioManager {
     /// to prevent interleaved stop/start cycles from leaving monitoring undefined.
     config_lock: Mutex<()>,
     /// Cumulative ring-buffer underrun counter (resets on stream restart).
+    /// NOTE: neither backend currently reports per-block underruns (only
+    /// the old cpal-based output closure did), so this stays at 0 post-migration
+    /// — kept for API/status-shape compatibility, not actively incremented.
     underrun_count: Arc<AtomicU64>,
+    /// Whether the active WASAPI leg (see `get_status`) negotiated exclusive
+    /// mode. Updated only at `toggle_monitoring` time.
+    exclusive_mode_active: Arc<RwLock<bool>>,
+    /// Set when a WASAPI leg fell back from exclusive to shared mode.
+    /// Updated only at `toggle_monitoring` time.
+    wasapi_fallback_reason: Arc<RwLock<Option<String>>>,
 }
 
 impl AudioManager {
-    fn clamp_sample(value: f32) -> f32 {
-        value.max(-1.0).min(1.0)
-    }
-
-    fn f32_to_i16(value: f32) -> i16 {
-        (Self::clamp_sample(value) * i16::MAX as f32) as i16
-    }
-
-    fn f32_to_u16(value: f32) -> u16 {
-        let normalized = (Self::clamp_sample(value) * 0.5) + 0.5;
-        (normalized * u16::MAX as f32) as u16
-    }
-
-    fn f32_to_i32(value: f32) -> i32 {
-        (Self::clamp_sample(value) * i32::MAX as f32) as i32
-    }
-
     pub fn new() -> Self {
         Self {
             config:           Arc::new(RwLock::new(AudioConfig::default())),
@@ -81,6 +153,23 @@ impl AudioManager {
             dsp_load_u32:     Arc::new(AtomicU32::new(0)),
             config_lock:      Mutex::new(()),
             underrun_count:   Arc::new(AtomicU64::new(0)),
+            exclusive_mode_active: Arc::new(RwLock::new(false)),
+            wasapi_fallback_reason: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Builds a fresh `MixerState` sharing this manager's process/VU/mute/
+    /// loopback/DSP-load state — the same fields every backend's output leg
+    /// needs, differing only in `output_is_asio` (which flips the mute/
+    /// loopback gate polarity — see `mixer::main_output_gate_open`).
+    fn build_mixer_state(&self, output_is_asio: bool) -> MixerState {
+        MixerState {
+            process_fn: Arc::clone(&self.process_fn),
+            vu_meter: Arc::clone(&self.vu_meter),
+            muted: Arc::clone(&self.muted),
+            loopback_enabled: Arc::clone(&self.loopback_enabled),
+            dsp_load_u32: Arc::clone(&self.dsp_load_u32),
+            output_is_asio,
         }
     }
 
@@ -107,7 +196,7 @@ impl AudioManager {
     /// Start audio engine
     pub fn start(&self) -> Result<()> {
         let config = self.config.read().clone();
-        
+
         {
             let mut status = self.status.write();
             status.sample_rate = config.sample_rate;
@@ -127,7 +216,7 @@ impl AudioManager {
         let mut status = self.status.write();
         status.is_monitoring = false;
         status.cpu_usage = 0.0;
-        
+
         log::info!("{} Audio engine stopped", crate::core::threading::thread_prefix("audio/engine"));
         Ok(())
     }
@@ -136,31 +225,28 @@ impl AudioManager {
     ///
     /// # ASIO note
     /// ASIO is full-duplex: input and output are driven by a single driver
-    /// callback at the exact same buffer size.  We honour the configured
-    /// `buffer_size` and `sample_rate` in the StreamConfig instead of falling
-    /// back to `default_*_config()` so the driver doesn't refuse the request.
+    /// callback at the exact same buffer size. When the same ASIO device is
+    /// selected for both input and output, `backend::asio::start_duplex`
+    /// runs a single registration covering both directions. Two DIFFERENT
+    /// ASIO drivers for input+output is rejected outright — the ASIO SDK
+    /// only supports one loaded driver per process (see `backend/asio.rs`'s
+    /// `ASIO_LIFECYCLE_LOCK` doc comment); attempting it would tear down
+    /// whichever driver loaded first out from under its running callback.
+    /// Every other combination (WASAPI on both sides, or one ASIO side
+    /// paired with one WASAPI side) runs as two independent registrations
+    /// bridged through a `ringbuf::HeapRb`.
     ///
     /// The ring buffer capacity is set to 4× the configured buffer size
-    /// (stereo samples) — enough for two full blocks without adding noticeable
-    /// latency.
+    /// (stereo samples) for same-device ASIO, 8× otherwise — enough for a
+    /// couple of full blocks without adding noticeable latency.
     pub fn toggle_monitoring(&self, enabled: bool) -> Result<()> {
         if !enabled {
             let mut monitoring_guard = self.monitoring.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(streams) = monitoring_guard.take() {
-                if let Some(ref stream) = streams._virtual_output {
-                    if let Err(e) = stream.pause() {
-                        log::warn!("{} Failed to pause virtual output stream: {e}", crate::core::threading::thread_prefix("audio/monitor"));
-                    }
-                }
-                if let Some(ref stream) = streams._output {
-                    if let Err(e) = stream.pause() {
-                        log::warn!("{} Failed to pause output stream: {e}", crate::core::threading::thread_prefix("audio/monitor"));
-                    }
-                }
-                if let Err(e) = streams._input.pause() {
-                    log::warn!("{} Failed to pause input stream: {e}", crate::core::threading::thread_prefix("audio/monitor"));
-                }
+                streams.teardown();
             }
+            *self.exclusive_mode_active.write() = false;
+            *self.wasapi_fallback_reason.write() = None;
             self.status.write().is_monitoring = false;
             log::info!("{} Input monitoring stopped", crate::core::threading::thread_prefix("audio/monitor"));
             return Ok(());
@@ -179,15 +265,12 @@ impl AudioManager {
         let config = self.config.read().clone();
 
         // -----------------------------------------------------------------
-        // Resolve cpal devices
-        //
-        // Full-duplex ASIO insert (e.g. Voicemeeter insert): when the same
-        // ASIO device name is used for both input AND output we MUST obtain
-        // both Device objects from the SAME cpal::Host instance.  Using two
-        // separate host instances (as find_input_device / find_output_device
-        // each do) creates two independent ASIO driver singletons with
-        // separate bufferSwitch callbacks — input data never reaches the
-        // output ring buffer, producing silence.
+        // Same-ASIO-device (full-duplex insert, e.g. a Voicemeeter insert)
+        // detection, and the cross-driver rejection this task adds. Both
+        // operate on the RAW configured device ids (user intent) — NOT on
+        // whatever a later per-leg resolution/fallback below might actually
+        // resolve to, since that's a separate, per-leg concern (see the
+        // `else` branch).
         // -----------------------------------------------------------------
         let input_is_asio = config.input_device_id.as_deref()
             .map(|id| id.starts_with("asio_")).unwrap_or(false);
@@ -198,545 +281,241 @@ impl AudioManager {
         let out_asio_name = config.output_device_id.as_deref().and_then(|id| id.strip_prefix("asio_"));
         let same_asio_device = input_is_asio && output_is_asio && in_asio_name == out_asio_name;
 
-        let (input_device, output_device_opt) = if same_asio_device {
-            let asio_name = in_asio_name
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow::anyhow!("ASIO insert mode requires a device name after 'asio_' prefix"))?;
-            log::info!("{} ASIO full-duplex insert mode: using shared host for '{}'", crate::core::threading::thread_prefix("audio/monitor"), asio_name);
-            let (inp, out) = AudioDevice::find_asio_device_pair(asio_name)
-                .ok_or_else(|| anyhow::anyhow!("ASIO device '{}' not found for insert mode", asio_name))?;
-            (inp, Some(out))
-        } else {
-            let inp = config.input_device_id.as_deref()
-                .and_then(AudioDevice::find_input_device)
-                .or_else(|| cpal::default_host().default_input_device())
-                .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
-            // If the user explicitly set output_device_id to None, do NOT fall back
-            // to the system default — treat it as "no hardware out configured".
-            let out_opt = if config.output_device_id.is_some() {
-                config.output_device_id.as_deref()
-                    .and_then(AudioDevice::find_output_device)
-                    .or_else(|| cpal::default_host().default_output_device())
-            } else {
-                None
-            };
-            (inp, out_opt)
-        };
+        // Correction found during Task 5's review, binding on this task: the
+        // real ASIO SDK only supports ONE loaded driver per process — a
+        // second, different ASIO driver for the other direction would tear
+        // the first one's buffers out from under its running callback. This
+        // is a real use-after-free, not a rare inconvenience a ring buffer
+        // can bridge around, so it's rejected before starting anything.
+        if input_is_asio && output_is_asio && !same_asio_device {
+            return Err(anyhow::anyhow!(
+                "ASIO does not support using two different ASIO drivers at the same time for input and output. Select the same ASIO device for both, or pair an ASIO device with a WASAPI device."
+            ));
+        }
 
         // -----------------------------------------------------------------
-        // Build StreamConfigs.
-        //
-        // For ASIO: the driver owns the sample rate and buffer size — we MUST
-        // use whatever the driver reports via default_*_config(), otherwise
-        // build_input_stream / build_output_stream will return an
-        // "unsupported stream config" error (this is the case with VoiceMeeter
-        // Virtual ASIO which is typically locked at 44100 Hz in the driver).
-        //
-        // For WASAPI / other hosts: use the user-configured sample rate as a hint.
-        // -----------------------------------------------------------------
-        let build_config = |device: &cpal::Device, is_input: bool, is_asio: bool| -> Result<(StreamConfig, usize)> {
-            let default_cfg = if is_input {
-                device.default_input_config()
-            } else {
-                device.default_output_config()
-            }.map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
-
-            let channels = default_cfg.channels() as usize;
-            // ASIO: let the driver decide sample rate (it controls the HW clock).
-            // Non-ASIO: pass the user-configured rate as a preference.
-            let sample_rate = if is_asio {
-                let driver_rate = default_cfg.sample_rate();
-                if driver_rate != config.sample_rate {
-                    log::warn!(
-                        "ASIO driver sample rate {} Hz differs from configured {} Hz; \
-                         using driver rate. Change VoiceMeeter or ASIO panel to {} Hz \
-                         if you want them to match.",
-                        driver_rate, config.sample_rate, config.sample_rate
-                    );
-                }
-                driver_rate
-            } else {
-                config.sample_rate
-            };
-            let stream_cfg = StreamConfig {
-                channels: default_cfg.channels(),
-                sample_rate,
-                // BufferSize::Default lets the ASIO driver report its own block size;
-                // WASAPI treats it as a hint. The output callback handles variable
-                // frame counts via left_buf/right_buf dynamic resizing.
-                buffer_size: BufferSize::Default,
-            };
-            Ok((stream_cfg, channels))
-        };
-
-        let select_virtual_output_config = |device: &cpal::Device, is_asio: bool| -> Result<(StreamConfig, usize, SampleFormat)> {
-            let device_name = cpal_device_name(device).unwrap_or_else(|| "<unknown>".to_string());
-            let default_cfg = device.default_output_config()
-                .map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
-            log::info!(
-                "Virtual output default config for '{}': {}ch @ {}Hz ({:?})",
-                device_name,
-                default_cfg.channels(),
-                default_cfg.sample_rate(),
-                default_cfg.sample_format()
-            );
-            let default_stream_cfg = StreamConfig {
-                channels: default_cfg.channels(),
-                sample_rate: default_cfg.sample_rate(),
-                buffer_size: BufferSize::Default,
-            };
-            let mut candidates = vec![
-                (default_stream_cfg, default_cfg.channels() as usize, default_cfg.sample_format()),
-            ];
-
-            if !is_asio && default_cfg.channels() > 2 {
-                let stereo_cfg = StreamConfig {
-                    channels: 2,
-                    sample_rate: default_cfg.sample_rate(),
-                    buffer_size: BufferSize::Default,
-                };
-                candidates.push((stereo_cfg, 2, default_cfg.sample_format()));
-            }
-
-            if let Ok(ranges) = device.supported_output_configs() {
-                for range in ranges {
-                    log::info!(
-                        "Virtual output supported: {}ch @ {}-{}Hz ({:?})",
-                        range.channels(),
-                        range.min_sample_rate(),
-                        range.max_sample_rate(),
-                        range.sample_format()
-                    );
-                    let min_rate = range.min_sample_rate();
-                    let max_rate = range.max_sample_rate();
-                    let requested = config.sample_rate;
-                    let rate = if is_asio {
-                        max_rate
-                    } else if requested >= min_rate && requested <= max_rate {
-                        requested
-                    } else {
-                        max_rate
-                    };
-                    let stream_cfg = StreamConfig {
-                        channels: range.channels(),
-                        sample_rate: rate,
-                        buffer_size: BufferSize::Default,
-                    };
-                    candidates.push((stream_cfg, range.channels() as usize, range.sample_format()));
-                    if !is_asio && range.channels() > 2 {
-                        let stereo_cfg = StreamConfig {
-                            channels: 2,
-                            sample_rate: rate,
-                            buffer_size: BufferSize::Default,
-                        };
-                        candidates.push((stereo_cfg, 2, range.sample_format()));
-                    }
-                }
-            }
-
-            let try_build = |cfg: &StreamConfig, fmt: SampleFormat| -> Result<()> {
-                let result = match fmt {
-                    SampleFormat::F32 => device.build_output_stream(
-                        *cfg,
-                        |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                            for sample in data.iter_mut() {
-                                *sample = 0.0;
-                            }
-                        },
-                        |_| {},
-                        None,
-                    ),
-                    SampleFormat::I16 => device.build_output_stream(
-                        *cfg,
-                        |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                            for sample in data.iter_mut() {
-                                *sample = 0;
-                            }
-                        },
-                        |_| {},
-                        None,
-                    ),
-                    SampleFormat::U16 => device.build_output_stream(
-                        *cfg,
-                        |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
-                            for sample in data.iter_mut() {
-                                *sample = u16::MAX / 2;
-                            }
-                        },
-                        |_| {},
-                        None,
-                    ),
-                    SampleFormat::I32 => device.build_output_stream(
-                        *cfg,
-                        |data: &mut [i32], _: &cpal::OutputCallbackInfo| {
-                            for sample in data.iter_mut() {
-                                *sample = 0;
-                            }
-                        },
-                        |_| {},
-                        None,
-                    ),
-                    other => {
-                        return Err(anyhow::anyhow!("Unsupported probe format: {other:?}"));
-                    }
-                };
-                result.map(|_| ()).map_err(Into::into)
-            };
-
-            for (cfg, channels, fmt) in candidates {
-                match try_build(&cfg, fmt) {
-                    Ok(()) => return Ok((cfg, channels, fmt)),
-                    Err(e) => {
-                        log::warn!(
-                            "Virtual output config rejected: {}ch @ {}Hz ({:?}) -> {e}",
-                            cfg.channels,
-                            cfg.sample_rate,
-                            fmt
-                        );
-                    }
-                }
-            }
-
-            Err(anyhow::anyhow!("No supported virtual output config"))
-        };
-
-        let (in_cfg, input_channels)  = build_config(&input_device,  true,  input_is_asio)?;
-        let (out_cfg_opt, output_channels_opt) = if let Some(ref out_dev) = output_device_opt {
-            let (cfg, ch) = build_config(out_dev, false, output_is_asio)?;
-            (Some(cfg), Some(ch))
-        } else {
-            (None, None)
-        };
-
-        // -----------------------------------------------------------------
-        // Lock-free SPSC ring buffer — stereo, sized by mode:
+        // Lock-free SPSC ring buffer capacity — stereo, sized by mode:
         //  • Same-ASIO full-duplex: input fires synchronously before output
         //    within the same bufferSwitch → 2 stereo frames is enough.
         //    Keep a small margin (4×) to absorb any block-size discrepancy.
-        //  • Cross-device (WASAPI or different ASIO drivers): clocks can
-        //    drift; keep the existing 8× safety margin.
-        // Producer  → input callback  (audio thread, no alloc, no lock)
-        // Consumer  → output callback (audio thread, no alloc, no lock)
+        //  • Cross-device (WASAPI or ASIO+WASAPI): clocks can drift; keep
+        //    the existing 8× safety margin.
         // -----------------------------------------------------------------
         let buf_capacity = if same_asio_device {
             (config.buffer_size as usize).max(2048) * 4 * 2  // 4 frames × stereo
         } else {
             (config.buffer_size as usize).max(4096) * 8 * 2  // 8 frames × stereo
         };
-        let rb = HeapRb::<f32>::new(buf_capacity);
-        let (mut producer, mut consumer) = rb.split();
 
-        // Clamp the configured channel pair to what the device actually has —
-        // an offset saved for a different (wider) interface must not panic on
-        // out-of-bounds indexing here.
-        let in_offset = if input_channels >= 2 {
-            config.input_channel_offset.min(input_channels - 2)
-        } else {
-            0
-        };
-
-        // -----------------------------------------------------------------
-        // Input stream — de-interleave and push into ring buffer
-        // -----------------------------------------------------------------
-        let in_stream = input_device
-            .build_input_stream(
-                in_cfg,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    for chunk in data.chunks(input_channels.max(1)) {
-                        // Always produce exactly 2 samples (L, R) per frame,
-                        // read from the selected channel pair.
-                        let l = chunk.get(in_offset).copied().unwrap_or(0.0);
-                        let r = if input_channels >= 2 {
-                            chunk.get(in_offset + 1).copied().unwrap_or(0.0)
-                        } else {
-                            l  // mono → duplicate to both channels
-                        };
-                        // Non-blocking: if the ring buffer is full we drop the
-                        // frame rather than blocking the realtime thread.
-                        let _ = producer.try_push(l);
-                        let _ = producer.try_push(r);
-                    }
-                },
-                |err| log::error!("Input stream error: {err}"),
-                None,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to build input stream: {e}"))?;
-
-        // -----------------------------------------------------------------
-        // Virtual output device (e.g. VB-Audio Virtual Cable / VAIO)
-        //
-        // Resolved before the output stream closure is built so the
-        // producer half of the virtual ring buffer can be moved into it.
-        // Processed audio is mirrored to this device after the plugin chain
-        // runs when loopback is enabled and global mute is off.
-        // -----------------------------------------------------------------
-        let virt_output_device: Option<cpal::Device> =
-            config.virtual_output_device_id.as_deref().and_then(|id| {
-                let dev = AudioDevice::find_output_device(id);
-                if dev.is_none() {
-                    log::warn!("Virtual output device '{}' not found; skipping", id);
-                }
-                dev
-            });
-        let virtual_is_asio = config.virtual_output_device_id.as_deref()
-            .map(|id| id.starts_with("asio_"))
-            .unwrap_or(false);
-        let (mut virt_producer_opt, virt_consumer_data) =
-            if let Some(ref dev) = virt_output_device {
-                match select_virtual_output_config(dev, virtual_is_asio) {
-                    Ok((virt_cfg, virt_ch, virt_fmt)) => {
-                        let virt_rb = HeapRb::<f32>::new(buf_capacity);
-                        let (prod, cons) = virt_rb.split();
-                        (Some(prod), Some((virt_cfg, virt_ch, virt_fmt, cons)))
-                    }
-                    Err(e) => {
-                        log::warn!("Virtual output config error: {e}; skipping");
-                        (None, None)
-                    }
-                }
-            } else {
-                (None, None)
-            };
-
-        // -----------------------------------------------------------------
-        // Output stream — read ring buffer, process through plugin chain,
-        //                 write to output.
-        // Mirrors LightHost's AudioProcessorGraph:
-        //   INPUT node -> plugin chain -> OUTPUT node
-        // -----------------------------------------------------------------
-        let mixer_state = crate::audio::mixer::MixerState {
-            process_fn: Arc::clone(&self.process_fn),
-            vu_meter: Arc::clone(&self.vu_meter),
-            muted: Arc::clone(&self.muted),
-            loopback_enabled: Arc::clone(&self.loopback_enabled),
-            dsp_load_u32: Arc::clone(&self.dsp_load_u32),
-            output_is_asio,
-        };
-        let underrun_count = Arc::clone(&self.underrun_count);
-        // Reset underrun counter each time a new stream starts.
         self.underrun_count.store(0, Ordering::Relaxed);
-        // Preallocate bounce buffers to avoid reallocations in the realtime callback.
-        // Use buf_capacity (samples) / 2 to get a safe max number of frames (stereo pairs).
-        let max_frames = (buf_capacity / 2).max(config.buffer_size as usize);
-        let mut left_buf  = vec![0.0f32; max_frames];
-        let mut right_buf = vec![0.0f32; max_frames];
 
-        let out_stream_opt = if let (Some(out_dev), Some(out_cfg), Some(output_channels)) =
-            (output_device_opt.as_ref(), out_cfg_opt.as_ref(), output_channels_opt)
-        {
-            let sample_rate_hz = out_cfg.sample_rate as f64;
-            // Clamp the same way as the input side — write only to the
-            // selected pair, everything else on the device stays silent.
-            let out_offset = if output_channels >= 2 {
-                config.output_channel_offset.min(output_channels - 2)
-            } else {
-                0
-            };
-            let out_stream = out_dev.build_output_stream(
-                *out_cfg,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                        let frames = data.len() / output_channels.max(1);
-
-                        // Clamp frames to our preallocated buffer to avoid resizing.
-                        let frames_to_process = frames.min(left_buf.len());
-
-                    // Step 1: Drain ring buffer → L/R bounce buffers.
-                    // Ring buffer samples are already interleaved as [L, R] pairs.
-                    let mut block_underruns: u64 = 0;
-                    for frame in 0..frames_to_process {
-                        match consumer.try_pop() {
-                            Some(l) => left_buf[frame] = l,
-                            None    => { left_buf[frame] = 0.0; block_underruns += 1; }
-                        }
-                        match consumer.try_pop() {
-                            Some(r) => right_buf[frame] = r,
-                            None    => { right_buf[frame] = 0.0; block_underruns += 1; }
-                        }
-                    }
-                    if block_underruns > 0 {
-                        underrun_count.fetch_add(block_underruns, Ordering::Relaxed);
-                    }
-
-                    // Step 2: Run plugin chain, update VU meter/DSP load, and
-                    // resolve the virtual-mirror gate — shared with the future
-                    // ASIO/WASAPI backends via audio::mixer::process_block.
-                    let mixer_result = crate::audio::mixer::process_block(
-                        &mut left_buf[..frames_to_process],
-                        &mut right_buf[..frames_to_process],
-                        &mixer_state,
-                        sample_rate_hz,
-                    );
-
-                    // Mirror processed audio to the virtual output when configured.
-                    // ASIO: use loopback to drive the monitor output (virtual device).
-                    // Non-ASIO: block virtual output when muted.
-                    if mixer_result.mirror_to_virtual {
-                        if let Some(ref mut vp) = virt_producer_opt {
-                            for frame in 0..frames_to_process {
-                                let _ = vp.try_push(left_buf[frame]);
-                                let _ = vp.try_push(right_buf[frame]);
-                            }
-                        }
-                    }
-
-                    // Step 3: Re-interleave L/R → CPAL output buffer.
-                    // ASIO: main output follows mute state. Non-ASIO: loopback
-                    // gates monitor output. Reuse the exact is_muted/is_loopback
-                    // snapshot process_block already loaded above so the main
-                    // gate and the virtual-mirror gate can't disagree within a
-                    // single block (no second, independent atomic read here).
-                    let gate_open = crate::audio::mixer::main_output_gate_open(
-                        output_is_asio,
-                        mixer_result.is_muted,
-                        mixer_result.is_loopback,
-                    );
-                    // Write out processed frames only to the selected channel
-                    // pair (out_offset, out_offset+1) — every other channel on
-                    // the device is left silent. If the host requested more
-                    // frames than we processed, zero the remainder to avoid
-                    // leaking uninitialized data.
-                    for frame in 0..frames {
-                        for ch in 0..output_channels {
-                            let is_selected_l = ch == out_offset;
-                            let is_selected_r = output_channels >= 2 && ch == out_offset + 1;
-                            data[frame * output_channels + ch] = if frame < frames_to_process && gate_open {
-                                if is_selected_l { left_buf[frame] }
-                                else if is_selected_r { right_buf[frame] }
-                                else { 0.0 }
-                            } else {
-                                0.0
-                            };
-                        }
-                    }
-                },
-                |err| log::error!("Output stream error: {err}"),
-                None,
-            );
-            match out_stream {
-                Ok(stream) => Some(stream),
-                Err(e) => {
-                    log::warn!("Failed to build output stream: {e}; continuing without it");
+        // -----------------------------------------------------------------
+        // Virtual/monitor output mirror (e.g. VB-Audio Virtual Cable).
+        // Resolved up front so its ring-buffer producer half can be threaded
+        // into whichever leg below actually runs the mixer stage — the
+        // consumer half is only used AFTER that leg starts successfully.
+        //
+        // WASAPI only: ASIO allows only one loaded driver per process (see
+        // `backend/asio.rs`), so this can never itself be a second ASIO
+        // driver while the primary path below is already using one, and
+        // this function doesn't track a separate one-driver slot for the
+        // case where the primary path is pure WASAPI either.
+        // ponytail: WASAPI-only virtual mirror — add ASIO support here
+        // (sharing `start_output_only`'s one-driver bookkeeping) if ever needed.
+        // -----------------------------------------------------------------
+        let virt_wasapi_id: Option<String> = config.virtual_output_device_id.as_deref().and_then(|id| {
+            if id.starts_with("asio_") {
+                log::warn!(
+                    "{} Virtual output device '{}' is an ASIO device; ASIO virtual monitor mirrors are not supported (only one ASIO driver can be loaded per process). Skipping.",
+                    crate::core::threading::thread_prefix("audio/monitor"), id
+                );
+                return None;
+            }
+            match AudioDevice::find_output_device(id) {
+                Some(resolved) => Some(resolved.strip_prefix("out_").unwrap_or(&resolved).to_string()),
+                None => {
+                    log::warn!("{} Virtual output device '{}' not found; skipping", crate::core::threading::thread_prefix("audio/monitor"), id);
                     None
                 }
             }
-        } else {
-            // No hardware output configured — skip creating output stream.
-            None
-        };
-
-        // Start input stream first (some drivers require input started before output).
-        in_stream
-            .play()
-            .map_err(|e| anyhow::anyhow!("Failed to start input stream: {e}"))?;
-
-        // Now start output stream if present.
-        if let Some(ref stream) = out_stream_opt {
-            if let Err(e) = stream.play() {
-                log::warn!("Failed to start output stream: {e}");
-            }
-        }
-
-        // -----------------------------------------------------------------
-        // Virtual output stream — consumes from the virtual ring buffer that
-        // the main output callback fills after plugin-chain processing.
-        // -----------------------------------------------------------------
-        let virtual_out_stream = if let (Some(dev), Some((virt_cfg, virt_ch, virt_fmt, mut virt_cons))) =
-            (virt_output_device, virt_consumer_data)
-        {
-            let stream_result: anyhow::Result<cpal::Stream> = match virt_fmt {
-                SampleFormat::F32 => dev.build_output_stream(
-                    virt_cfg,
-                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                        let frames = data.len() / virt_ch.max(1);
-                        for frame in 0..frames {
-                            let l = virt_cons.try_pop().unwrap_or(0.0);
-                            let r = virt_cons.try_pop().unwrap_or(0.0);
-                            for ch in 0..virt_ch {
-                                data[frame * virt_ch + ch] = if ch % 2 == 0 { l } else { r };
-                            }
-                        }
-                    },
-                    |err| log::error!("Virtual output stream error: {err}"),
-                    None,
-                ).map_err(Into::into),
-                SampleFormat::I16 => dev.build_output_stream(
-                    virt_cfg,
-                    move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                        let frames = data.len() / virt_ch.max(1);
-                        for frame in 0..frames {
-                            let l = virt_cons.try_pop().unwrap_or(0.0);
-                            let r = virt_cons.try_pop().unwrap_or(0.0);
-                            for ch in 0..virt_ch {
-                                let sample = if ch % 2 == 0 { l } else { r };
-                                data[frame * virt_ch + ch] = Self::f32_to_i16(sample);
-                            }
-                        }
-                    },
-                    |err| log::error!("Virtual output stream error: {err}"),
-                    None,
-                ).map_err(Into::into),
-                SampleFormat::U16 => dev.build_output_stream(
-                    virt_cfg,
-                    move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
-                        let frames = data.len() / virt_ch.max(1);
-                        for frame in 0..frames {
-                            let l = virt_cons.try_pop().unwrap_or(0.0);
-                            let r = virt_cons.try_pop().unwrap_or(0.0);
-                            for ch in 0..virt_ch {
-                                let sample = if ch % 2 == 0 { l } else { r };
-                                data[frame * virt_ch + ch] = Self::f32_to_u16(sample);
-                            }
-                        }
-                    },
-                    |err| log::error!("Virtual output stream error: {err}"),
-                    None,
-                ).map_err(Into::into),
-                SampleFormat::I32 => dev.build_output_stream(
-                    virt_cfg,
-                    move |data: &mut [i32], _: &cpal::OutputCallbackInfo| {
-                        let frames = data.len() / virt_ch.max(1);
-                        for frame in 0..frames {
-                            let l = virt_cons.try_pop().unwrap_or(0.0);
-                            let r = virt_cons.try_pop().unwrap_or(0.0);
-                            for ch in 0..virt_ch {
-                                let sample = if ch % 2 == 0 { l } else { r };
-                                data[frame * virt_ch + ch] = Self::f32_to_i32(sample);
-                            }
-                        }
-                    },
-                    |err| log::error!("Virtual output stream error: {err}"),
-                    None,
-                ).map_err(Into::into),
-                other => {
-                    Err(anyhow::anyhow!("Unsupported virtual output sample format: {other:?}"))
-                }
-            };
-
-            match stream_result {
-                Ok(stream) => {
-                    if let Err(e) = stream.play() {
-                        log::warn!("Failed to start virtual output stream: {e}");
-                        None
-                    } else {
-                        log::info!("{} Virtual output stream started", crate::core::threading::thread_prefix("audio/monitor"));
-                        Some(stream)
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Failed to build virtual output stream: {e}; continuing without it");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let has_virt = virtual_out_stream.is_some();
-        *monitoring_guard = Some(MonitoringStreams {
-            _input: in_stream,
-            _output: out_stream_opt,
-            _virtual_output: virtual_out_stream,
         });
+
+        let (virt_producer, mut virt_consumer) = if virt_wasapi_id.is_some() {
+            let virt_rb = HeapRb::<f32>::new(buf_capacity);
+            let (p, c) = virt_rb.split();
+            (Some(p), Some(c))
+        } else {
+            (None, None)
+        };
+
+        // Populated by whichever WASAPI leg(s) actually start below, used to
+        // fill the two additive `AudioStatus` fields. Output takes priority
+        // over input when both happen to be WASAPI (exclusive mode matters
+        // most for the leg the user actually listens to). Left at `None`
+        // for the full-duplex ASIO branch (no WASAPI leg exists there).
+        let mut input_wasapi_result: Option<wasapi::ExclusiveModeResult> = None;
+        let mut output_wasapi_result: Option<wasapi::ExclusiveModeResult> = None;
+
+        let backend: ActiveBackend = if same_asio_device {
+            // ---------------------------------------------------------
+            // Full-duplex insert mode: one driver, one callback, both
+            // directions. Failure anywhere here is fatal — there's no
+            // partial/degraded mode for a single combined stream.
+            // ---------------------------------------------------------
+            let asio_name = in_asio_name
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("ASIO insert mode requires a device name after 'asio_' prefix"))?;
+            let _ = AudioDevice::find_asio_device_pair(asio_name)
+                .ok_or_else(|| anyhow::anyhow!("ASIO device '{}' not found for insert mode", asio_name))?;
+
+            let (in_channels, out_channels) = asio::list_asio_devices()
+                .into_iter()
+                .find(|d| d.name == asio_name)
+                .map(|d| (d.input_channels, d.output_channels))
+                .unwrap_or((2, 2));
+            // Clamp the configured channel pair to what the device actually
+            // has — an offset saved for a different (wider) interface must
+            // not be requested against a narrower one.
+            let in_offset  = if in_channels  >= 2 { config.input_channel_offset.min(in_channels - 2) } else { 0 };
+            let out_offset = if out_channels >= 2 { config.output_channel_offset.min(out_channels - 2) } else { 0 };
+
+            let mixer_state = self.build_mixer_state(true);
+            let stream = asio::start_duplex(
+                asio_name,
+                in_offset,
+                out_offset,
+                Some(config.buffer_size as i32),
+                mixer_state,
+                virt_producer,
+            ).map_err(|e| anyhow::anyhow!("Failed to start ASIO full-duplex stream: {e}"))?;
+            ActiveBackend::AsioDuplex(stream)
+        } else {
+            // ---------------------------------------------------------
+            // Bridged: at most one side is ASIO (guaranteed by the
+            // cross-driver rejection above — same name would have taken
+            // the `same_asio_device` branch instead). Input failing is
+            // fatal (monitoring needs an input); output failing is
+            // NOT fatal — matches the old cpal-based code's behavior of
+            // continuing monitoring without hardware output. This also
+            // means an ASIO leg is never left loaded-but-undiscarded on an
+            // error path here: once an ASIO leg succeeds, nothing after it
+            // in this branch can return `Err` from `toggle_monitoring`.
+            // ---------------------------------------------------------
+            let rb = HeapRb::<f32>::new(buf_capacity);
+            let (producer, consumer) = rb.split();
+
+            let input_id = config.input_device_id.as_deref()
+                .and_then(AudioDevice::find_input_device)
+                .or_else(AudioDevice::default_input_device_id)
+                .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
+
+            let input = if let Some(name) = input_id.strip_prefix("asio_") {
+                let in_channels = asio::list_asio_devices().into_iter()
+                    .find(|d| d.name == name).map(|d| d.input_channels).unwrap_or(2);
+                let in_offset = if in_channels >= 2 { config.input_channel_offset.min(in_channels - 2) } else { 0 };
+                let stream = asio::start_input_only(name, in_offset, Some(config.buffer_size as i32), producer)
+                    .map_err(|e| anyhow::anyhow!("Failed to start ASIO input '{name}': {e}"))?;
+                BridgedInput::Asio(stream)
+            } else {
+                let raw = input_id.strip_prefix("in_").unwrap_or(&input_id);
+                let (stream, result) = wasapi::start_capture(raw, config.buffer_size, config.sample_rate, producer)
+                    .map_err(|e| anyhow::anyhow!("Failed to start WASAPI input '{raw}': {e}"))?;
+                input_wasapi_result = Some(result);
+                BridgedInput::Wasapi(stream)
+            };
+
+            // If the user explicitly set output_device_id to None, do NOT
+            // fall back to the system default — treat it as "no hardware
+            // out configured" (unchanged from the old cpal-based behavior).
+            let output_target: Option<String> = if config.output_device_id.is_some() {
+                config.output_device_id.as_deref()
+                    .and_then(AudioDevice::find_output_device)
+                    .or_else(AudioDevice::default_output_device_id)
+            } else {
+                None
+            };
+            let output_leg_is_asio = output_target.as_deref().map(|id| id.starts_with("asio_")).unwrap_or(false);
+            let mixer_state = self.build_mixer_state(output_leg_is_asio);
+
+            let output = match output_target {
+                Some(ref id) if id.starts_with("asio_") => {
+                    let name = id.strip_prefix("asio_").unwrap_or(id.as_str());
+                    let out_channels = asio::list_asio_devices().into_iter()
+                        .find(|d| d.name == name).map(|d| d.output_channels).unwrap_or(2);
+                    let out_offset = if out_channels >= 2 { config.output_channel_offset.min(out_channels - 2) } else { 0 };
+                    match asio::start_output_only(name, out_offset, Some(config.buffer_size as i32), consumer, mixer_state, virt_producer) {
+                        Ok(stream) => Some(BridgedOutput::Asio(stream)),
+                        Err(e) => {
+                            log::warn!("{} Failed to start ASIO output '{name}': {e}; continuing without hardware output", crate::core::threading::thread_prefix("audio/monitor"));
+                            None
+                        }
+                    }
+                }
+                Some(ref id) => {
+                    let raw = id.strip_prefix("out_").unwrap_or(id.as_str());
+                    match wasapi::start_render(raw, config.buffer_size, config.sample_rate, consumer, mixer_state, virt_producer) {
+                        Ok((stream, result)) => {
+                            output_wasapi_result = Some(result);
+                            Some(BridgedOutput::Wasapi(stream))
+                        }
+                        Err(e) => {
+                            log::warn!("{} Failed to start WASAPI output '{raw}': {e}; continuing without hardware output", crate::core::threading::thread_prefix("audio/monitor"));
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+
+            ActiveBackend::Bridged { input, output }
+        };
+
+        // -----------------------------------------------------------------
+        // Virtual/monitor output — starts AFTER the primary backend(s), and
+        // never fatal (matches the old cpal-based code's identical
+        // "warn and continue without it" treatment of this device).
+        // -----------------------------------------------------------------
+        let virtual_output = match (virt_wasapi_id, virt_consumer.take()) {
+            (Some(id), Some(consumer)) => {
+                // A pass-through `MixerState`: no plugin chain (`process_fn`
+                // stays `None`, so `process_block` only relays the
+                // already-processed samples this consumer receives), and a
+                // gate that's always open (`output_is_asio: false` +
+                // `loopback_enabled: true` constant → `main_output_gate_open`
+                // returns `true` unconditionally) — this device should
+                // simply play back whatever the primary leg's mixer stage
+                // already decided to mirror to it, with no further gating
+                // or re-processing. Uses its own throwaway VU meter/DSP-load
+                // counter so this second pass doesn't smear the real ones.
+                let passthrough_mixer = MixerState {
+                    process_fn: Arc::new(Mutex::new(None)),
+                    vu_meter: Arc::new(VUMeter::new()),
+                    muted: Arc::new(AtomicBool::new(false)),
+                    loopback_enabled: Arc::new(AtomicBool::new(true)),
+                    dsp_load_u32: Arc::new(AtomicU32::new(0)),
+                    output_is_asio: false,
+                };
+                match wasapi::start_render(&id, config.buffer_size, config.sample_rate, consumer, passthrough_mixer, None) {
+                    Ok((stream, _result)) => Some(stream),
+                    Err(e) => {
+                        log::warn!("{} Failed to start virtual output stream: {e}; continuing without it", crate::core::threading::thread_prefix("audio/monitor"));
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+
+        let (resolved_exclusive, resolved_fallback_reason) = output_wasapi_result
+            .as_ref()
+            .or(input_wasapi_result.as_ref())
+            .map(|r| (r.exclusive, r.fallback_reason.clone()))
+            .unwrap_or((false, None));
+        *self.exclusive_mode_active.write() = resolved_exclusive;
+        *self.wasapi_fallback_reason.write() = resolved_fallback_reason;
+
+        let has_virt = virtual_output.is_some();
+        *monitoring_guard = Some(MonitoringStreams { backend, virtual_output });
         self.status.write().is_monitoring = true;
         log::info!(
             "{} Input monitoring started ({}Hz, {} samples{})",
@@ -782,6 +561,8 @@ impl AudioManager {
         status.loopback_enabled = self.loopback_enabled.load(Ordering::Relaxed);
         status.underrun_count = self.underrun_count.load(Ordering::Relaxed);
         status.vst3_settling = crate::plugins::processor::vst3::is_vst3_settling();
+        status.exclusive_mode_active = *self.exclusive_mode_active.read();
+        status.wasapi_fallback_reason = self.wasapi_fallback_reason.read().clone();
         status
     }
 
@@ -789,7 +570,7 @@ impl AudioManager {
     pub fn get_config(&self) -> AudioConfig {
         self.config.read().clone()
     }
-    
+
     /// Get current VU meter data
     pub fn get_vu_data(&self) -> crate::audio::vu_meter::VUData {
         self.vu_meter.get_data()
@@ -818,8 +599,9 @@ impl AudioManager {
     }
 
     /// Set the input channel pair (0-based index of the first channel).
-    /// Only meaningful for multi-channel devices; out-of-range values are
-    /// clamped against the device's actual channel count at stream build time.
+    /// Only meaningful for multi-channel (ASIO) devices; WASAPI legs always
+    /// use channels 0/1 (or duplicate a mono channel to both), matching the
+    /// backend's own capture/render API.
     pub fn set_input_channel_offset(&self, offset: usize) -> Result<()> {
         let _guard = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.config.write().input_channel_offset = offset;
@@ -893,4 +675,3 @@ impl Default for AudioManager {
         Self::new()
     }
 }
-

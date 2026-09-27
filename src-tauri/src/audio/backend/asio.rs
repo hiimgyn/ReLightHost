@@ -219,11 +219,18 @@ fn hint_fits_buffer_size_range(
     }
 
     match range.preferred {
-        BufferPreference::Only(only) if hint as u32 != only => {
+        // Note: `asio-sys` maps Steinberg ASIO SDK's `granularity == -1` (the most common
+        // case: buffer sizes must increase by powers of 2 between min and max) to
+        // `BufferPreference::Only(preferred)`. Despite the misleading name in `asio-sys`,
+        // it does NOT mean the driver only supports a single fixed buffer size!
+        // When min != max, any power-of-2 buffer size within [min, max] is valid.
+        BufferPreference::Only(_)
+            if range.min != range.max && !is_valid_power_of_two_buffer_size(hint, range.min) =>
+        {
             log::warn!(
-                "ASIO driver '{driver_name}' only supports a fixed buffer size of \
-                 {only} frames (configured: {hint}); using the driver's own preferred \
-                 size instead"
+                "Configured ASIO buffer size {hint} is not a power of 2 as required \
+                 by driver '{driver_name}' (granularity -1); using the driver's own \
+                 preferred size instead",
             );
             None
         }
@@ -240,6 +247,24 @@ fn hint_fits_buffer_size_range(
         }
         _ => Some(hint),
     }
+}
+
+/// Helper checking if `hint` is a valid power-of-2 buffer size or a power-of-2
+/// multiple of `min` (for Steinberg `granularity == -1`).
+fn is_valid_power_of_two_buffer_size(hint: i32, min: i32) -> bool {
+    if hint <= 0 {
+        return false;
+    }
+    let h = hint as u32;
+    if h.is_power_of_two() {
+        return true;
+    }
+    // Rare non-power-of-two min base (e.g. min * 2^k)
+    if min > 0 && hint % min == 0 {
+        let factor = (hint / min) as u32;
+        return factor.is_power_of_two();
+    }
+    false
 }
 
 /// Owns a running ASIO driver and its registered callback — full-duplex
@@ -897,7 +922,19 @@ mod format_tests {
     }
 
     #[test]
-    fn hint_not_matching_fixed_only_size_falls_back_to_none() {
+    fn hint_power_of_two_in_only_preference_is_accepted() {
+        // `asio-sys` maps Steinberg granularity == -1 (powers of 2) to BufferPreference::Only.
+        let r = range(64, 2048, BufferPreference::Only(512));
+        // Configured size 256 is accepted even though preferred size is 512:
+        assert_eq!(hint_fits_buffer_size_range(256, r, "test"), Some(256));
+        assert_eq!(hint_fits_buffer_size_range(512, r, "test"), Some(512));
+        assert_eq!(hint_fits_buffer_size_range(1024, r, "test"), Some(1024));
+        // Non-power-of-two size is rejected and falls back to None:
+        assert_eq!(hint_fits_buffer_size_range(300, r, "test"), None);
+    }
+
+    #[test]
+    fn hint_fixed_size_driver_where_min_equals_max() {
         let r = range(256, 256, BufferPreference::Only(256));
         assert_eq!(hint_fits_buffer_size_range(512, r, "test"), None);
         assert_eq!(hint_fits_buffer_size_range(256, r, "test"), Some(256));

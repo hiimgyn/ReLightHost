@@ -1214,12 +1214,12 @@ Delete the `cpal = { version = "0.18", features = ["asio"] }` line and its prece
 
 - [ ] **Step 5: Full workspace build check**
 
-Run: `cargo build -p app_lib --release`
+Run: `cargo build -p ReLightHost --release`
 Expected: builds with no errors and no remaining references to `cpal::` anywhere (`grep -rn "cpal::" src-tauri/src` should return nothing once this task is done).
 
 - [ ] **Step 6: Run the full existing test suite**
 
-Run: `cargo test -p app_lib --lib`
+Run: `cargo test -p ReLightHost --lib`
 Expected: all tests from Tasks 1-7 still pass (mixer, mmcss, backend::asio, backend::wasapi).
 
 - [ ] **Step 7: Commit**

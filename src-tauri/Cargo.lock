@@ -29,6 +29,7 @@ dependencies = [
  "thiserror 2.0.20",
  "vst3",
  "webbrowser",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
 ]
 

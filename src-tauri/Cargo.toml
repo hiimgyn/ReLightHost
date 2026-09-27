@@ -71,3 +71,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_HiDpi",                 # GetDpiForWindow (DPI scale factor)
     "Win32_System_JobObjects",        # kill-sandboxed-child-on-host-exit job object
 ] }
+windows = { version = "0.62", features = [
+    "Win32_Media_Audio",
+    "Win32_Media_Multimedia",   # AvSetMmThreadCharacteristicsW
+    "Win32_System_Com",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }

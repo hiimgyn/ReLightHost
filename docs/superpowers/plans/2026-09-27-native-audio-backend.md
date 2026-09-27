@@ -280,7 +280,7 @@ git commit -m "refactor(audio): extract shared mixer stage from output callback"
 
 **Files:**
 - Create: `src-tauri/src/audio/mmcss.rs`
-- Modify: `src-tauri/src/audio/mod.rs` (add `pub mod mmcss;`)
+- Modify: `src-tauri/src/audio/mod.rs` (add `#[cfg(target_os = "windows")] pub mod mmcss;` — gated, matching the codebase's existing convention for Windows-only modules such as `main.rs`'s and `plugins/gui/vst3.rs`'s Windows-specific code, since the `windows` crate dependency itself is only declared under that same cfg in Cargo.toml)
 - Modify: `src-tauri/Cargo.toml` (add `windows` dependency)
 
 **Interfaces:**
@@ -293,10 +293,10 @@ In `src-tauri/Cargo.toml`, inside the existing `[target.'cfg(target_os = "window
 ```toml
 windows = { version = "0.62", features = [
     "Win32_Media_Audio",
-    "Win32_Media_Multimedia",   # AvSetMmThreadCharacteristicsW
+    "Win32_System_Threading",   # AvSetMmThreadCharacteristicsW, and later
+                                # WaitForSingleObject/CreateEventW (Task 7)
     "Win32_System_Com",
     "Win32_Foundation",
-    "Win32_System_Threading",
 ] }
 ```
 
@@ -329,8 +329,10 @@ Expected: FAIL with "unresolved module `mmcss`"
 - [ ] **Step 4: Implement**
 
 ```rust
+#![cfg(target_os = "windows")]
+
 use windows::core::PCWSTR;
-use windows::Win32::Media::Multimedia::AvSetMmThreadCharacteristicsW;
+use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 use windows::Win32::Foundation::HANDLE;
 
 /// Registers the calling thread with MMCSS under the "Pro Audio" task

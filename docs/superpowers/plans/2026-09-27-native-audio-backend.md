@@ -22,7 +22,7 @@
 
 - WASAPI exclusive-mode `Initialize` returns `AUDCLNT_E_BUFFERSIZE_NOT_ALIGNED`: must retry once with the driver-reported aligned size, not fail outright (Task 8).
 - WASAPI exclusive-mode `Initialize` fails entirely (device already claimed exclusively by another app): must fall back to shared-mode and still start monitoring, not error out (Task 8).
-- Two different ASIO drivers selected as input and output simultaneously (not the same physical interface): must still bridge audio through the ring buffer, not silently produce silence (Task 6).
+- Two different ASIO drivers selected as input and output simultaneously (not the same physical interface): **corrected after Task 5's review** — real ASIO only supports one loaded driver per process, so this combination must be rejected with a clear, immediate error (Task 8 Step 2), not attempted. An ASIO device paired with a WASAPI device on the other side remains fully supported via the ring-buffer bridge.
 - Mono input device (reports 1 channel): left sample must be duplicated to the right channel, matching today's behavior (Task 6, Task 8).
 - Device unplugged / invalidated while monitoring: must stop monitoring gracefully (logged, `is_monitoring` set false), never panic or crash the process (Task 6, Task 8).
 
@@ -531,7 +531,7 @@ git commit -m "feat(audio): add ASIO driver enumeration via asio-sys"
 
   pub fn stop(stream: AsioDuplexStream)
   ```
-- Cross-driver bridging (Review Focus item: two different ASIO drivers as input/output) is **not** handled by this function — that case is composed at the `manager.rs` level in Task 7 by running two independent `start_duplex`-like single-direction registrations bridged through the existing `ringbuf::HeapRb`, exactly mirroring today's non-`same_asio_device` cpal branch. This function only covers the single-driver full-duplex case.
+- Cross-driver bridging (Review Focus item: two different ASIO drivers as input/output) is **impossible with real ASIO** and must be rejected with a clear error rather than attempted — see the correction in Task 8 Step 2, added after Task 5's review found that `asio-sys`/the ASIO SDK only supports one loaded driver per process at a time; loading a second tears down the first's buffers out from under any live callback. An ASIO input paired with a WASAPI output (or vice versa) is still fully supported — that mixed case is composed at the `manager.rs` level in Task 8 by running one single-direction ASIO registration (`start_input_only`/`start_output_only`, added in Task 8) alongside one WASAPI capture/render stream, bridged through the existing `ringbuf::HeapRb`. This function (`start_duplex`) only covers the single-driver full-duplex case.
 
 - [ ] **Step 1: Write the test** (pure logic only — sample conversion — the live callback itself needs a real driver and is covered by the manual verification pass in Task 9)
 
@@ -1145,11 +1145,34 @@ Replace the cpal-based bodies of `list_devices`, `find_input_device`, `find_outp
 
 - [ ] **Step 2: Rewrite `manager.rs`'s `toggle_monitoring`**
 
-Keep the existing `same_asio_device` detection logic (manager.rs:192-224) unchanged — it already computes exactly the branch this task needs. Replace the stream-building section (manager.rs:226-648) with:
+**Correction found during Task 5's review, binding on this task:** the real ASIO
+SDK (and therefore `asio-sys`) only supports ONE loaded driver per process —
+loading a second driver while a first is active tears down the first
+driver's buffers out from under any callback still using them (verified
+against the pinned `asio-sys` source: `Asio` tracks the currently-loaded
+driver in a single `Weak` slot; loading a different name calls the ASIO
+SDK's `removeCurrentDriver()` on whatever was loaded before). This means
+**"ASIO input from driver A + ASIO output to driver B (two different
+physical ASIO drivers)" cannot be supported at all**, not just as a rare
+inconvenience — attempting it is a real use-after-free, not a design
+choice this plan can bridge around with a ring buffer. This corrects the
+plan's earlier assumption (see Task 5's file-level note and the Review
+Focus item, both updated alongside this).
+
+Keep the existing `same_asio_device` detection logic (manager.rs:192-224)
+unchanged — it already computes exactly the branch this task needs, plus
+add one new check immediately after it:
+- `input_is_asio && output_is_asio && !same_asio_device` (i.e. both sides
+  are ASIO but resolve to different driver names): return
+  `Err(anyhow::anyhow!("ASIO does not support using two different ASIO drivers at the same time for input and output. Select the same ASIO device for both, or pair an ASIO device with a WASAPI device."))`
+  from `toggle_monitoring` immediately — do not attempt to start any stream.
+  Surface this through the existing error path exactly like any other
+  `toggle_monitoring` failure (unchanged contract, the frontend already
+  displays errors from this function).
 - `same_asio_device == true`: build one `MixerState`, call `backend::asio::start_duplex(asio_name, in_offset, out_offset, Some(config.buffer_size as i32), mixer, virt_producer)`.
-- Otherwise: build a `ringbuf::HeapRb::<f32>::new(buf_capacity)` exactly as today (buf_capacity formula unchanged), split into producer/consumer. For each side (input, output) independently check whether its resolved device id has the `"asio_"` prefix or not, and call the matching single-direction starter:
-  - ASIO input only: reuse `backend::asio::start_duplex`'s internals is not applicable (that function is combined duplex) — instead add a second, smaller pair of functions in `backend/asio.rs` for this task, `start_input_only(driver_name, offset, buffer_size_hint, producer)` and `start_output_only(...)`, following the same pattern as `start_duplex` but registering only 2 `AsioBufferInfo` entries for one direction (via `driver.prepare_input_stream`/`prepare_output_stream` called alone, matching the SDK calls already shown in Task 5 minus the paired half).
-  - WASAPI side: `backend::wasapi::start_capture` / `start_render` as already implemented.
+- Otherwise (at most ONE side is ASIO — the other is WASAPI, or neither is ASIO): build a `ringbuf::HeapRb::<f32>::new(buf_capacity)` exactly as today (buf_capacity formula unchanged), split into producer/consumer. For each side (input, output) independently check whether its resolved device id has the `"asio_"` prefix or not, and call the matching single-direction starter:
+  - The ASIO side (at most one of input/output, never both — the check above already ruled out both): reuse `backend::asio::start_duplex`'s internals is not applicable (that function is combined duplex) — instead add a second, smaller pair of functions in `backend/asio.rs` for this task, `start_input_only(driver_name, offset, buffer_size_hint, producer)` and `start_output_only(...)`, following the same pattern as `start_duplex` but registering only 2 `AsioBufferInfo` entries for one direction (via `driver.prepare_input_stream`/`prepare_output_stream` called alone, matching the SDK calls already shown in Task 5 minus the paired half). Since at most one of these ever runs per session, the process-wide single-loaded-driver constraint is satisfied automatically — `start_duplex`/`start_input_only`/`start_output_only` must all share the SAME process-wide `Asio` singleton Task 5's fix round introduces (see Task 5), never construct their own `Asio::new()`.
+  - The WASAPI side: `backend::wasapi::start_capture` / `start_render` as already implemented.
 - Store the returned `ExclusiveModeResult` (WASAPI) or a default "not applicable" result (ASIO) into `self.status` for the two new fields added in Step 3.
 - `MonitoringStreams` (manager.rs:16-24) changes from holding `cpal::Stream` fields to holding an enum `enum ActiveBackend { AsioDuplex(backend::asio::AsioDuplexStream), Bridged { input: BridgedInput, output: BridgedOutput } }` where `BridgedInput`/`BridgedOutput` are small enums over `{ Asio(...), Wasapi(...) }` for the two single-direction cases — dropping any variant stops that stream (both new stream types stop in their `Drop` impl, from Tasks 5/7).
 
@@ -1213,9 +1236,9 @@ With a real ASIO interface or ASIO4ALL installed, select it as both input and ou
 
 Select a mono-capable input device (or a device forced to 1-channel mode if available) — confirm both left and right processed channels carry the same (duplicated) signal, matching pre-rewrite behavior (see Task 7's mono-device note).
 
-- [ ] **Step 6b: Two different ASIO drivers bridged (Review Focus item)**
+- [ ] **Step 6b: Two different ASIO drivers rejected gracefully (Review Focus item, corrected after Task 5's review)**
 
-If two distinct ASIO-capable devices are available (e.g. an audio interface plus VoiceMeeter Virtual ASIO), select one as input and the other as output (not the same-device insert case). Confirm audio is still routed through correctly via the ring-buffer bridge added in Task 8 Step 2, not silently dropped — this is the one Review Focus case that cannot be exercised by a unit test since it requires two real ASIO driver instances.
+If two distinct ASIO-capable devices are available (e.g. an audio interface plus VoiceMeeter Virtual ASIO), select one as input and the other as output (not the same-device insert case). Confirm `toggle_monitoring` returns the clear error added in Task 8 Step 2 ("ASIO does not support using two different ASIO drivers...") and that no stream is started and nothing crashes — this combination is fundamentally unsupported by real ASIO (only one loaded driver per process), not something to bridge around. This is the one Review Focus case that cannot be exercised by a unit test since it requires two real ASIO driver instances.
 
 - [ ] **Step 7: Device removal**
 

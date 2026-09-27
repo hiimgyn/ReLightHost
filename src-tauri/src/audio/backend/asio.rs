@@ -114,13 +114,22 @@ fn asio_i32_to_f32(v: i32) -> f32 {
 
 /// Owns a running ASIO driver and its registered duplex callback.
 ///
-/// Opaque to callers: `stop` is the only supported way to tear this down
-/// (dropping it without calling `stop` still releases the driver via
-/// `Driver`'s own `Drop` — which, per asio-sys's `destroy_inner`, clears
-/// every registered callback process-wide as a side effect of its own
-/// teardown, not just this stream's — but leaves stream-stop/buffer-dispose
-/// ordering to that impl rather than doing it explicitly via `Driver::stop`/
-/// `dispose_buffers`).
+/// Callers MUST call `stop()` on this rather than letting it drop
+/// implicitly. `stop()` tears this down under `ASIO_LIFECYCLE_LOCK` (see
+/// that static's doc comment) so its teardown can't race a concurrent
+/// `list_asio_devices`/`start_duplex` call at the ASIO SDK level; an
+/// implicit drop (e.g. this value going out of scope, or being dropped as
+/// part of a larger struct/`Vec`) runs the same underlying `Driver`
+/// teardown (`ASIOStop`/`ASIODisposeBuffers`/`ASIOExit` via `Driver`'s own
+/// `Drop`) but WITHOUT that lock held, reopening the exact race
+/// `ASIO_LIFECYCLE_LOCK` exists to close. There is intentionally no custom
+/// `Drop` impl here to guard against this automatically: doing so safely
+/// would need `driver`/`callback_id` wrapped in `Option` so `Drop::drop`
+/// (which only gets `&mut self`, not an owned `self`) could force the
+/// `Driver`'s own drop to run inside its own lock-guarded scope instead of
+/// via the compiler's field-drop glue afterward — adding that indirection
+/// throughout this file was judged a bigger source of risk on unsafe
+/// real-time FFI code than documenting the one correct call site.
 pub struct AsioDuplexStream {
     driver: Driver,
     callback_id: asio_sys::BufferCallbackId,
@@ -384,6 +393,18 @@ pub fn stop(stream: AsioDuplexStream) {
     if let Err(e) = stream.driver.dispose_buffers() {
         log::warn!("ASIO dispose_buffers() failed: {e}");
     }
+
+    // Explicit, load-bearing: Rust drops a function's body locals BEFORE
+    // its parameters, so without this, `stream` (a parameter) would drop
+    // — running `Driver`'s own teardown (`ASIOExit`/`removeCurrentDriver`)
+    // — AFTER `_lifecycle_guard` (a body local) has already released the
+    // lock above. That would reopen the exact race `ASIO_LIFECYCLE_LOCK`
+    // exists to close, just moved here instead of `list_asio_devices`.
+    // Consuming `stream` here, while `_lifecycle_guard` is still in scope,
+    // forces that teardown to happen before the lock is released. Do not
+    // remove this as "dead code" — it changes drop order, not behavior
+    // visible from reading the calls above.
+    drop(stream);
 }
 
 #[cfg(test)]

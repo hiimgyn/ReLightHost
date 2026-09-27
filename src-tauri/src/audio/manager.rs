@@ -504,11 +504,14 @@ impl AudioManager {
         // Mirrors LightHost's AudioProcessorGraph:
         //   INPUT node -> plugin chain -> OUTPUT node
         // -----------------------------------------------------------------
-        let process_fn = Arc::clone(&self.process_fn);
-        let vu_meter = Arc::clone(&self.vu_meter);
-        let muted = Arc::clone(&self.muted);
-        let loopback_flag = Arc::clone(&self.loopback_enabled);
-        let dsp_load_u32 = Arc::clone(&self.dsp_load_u32);
+        let mixer_state = crate::audio::mixer::MixerState {
+            process_fn: Arc::clone(&self.process_fn),
+            vu_meter: Arc::clone(&self.vu_meter),
+            muted: Arc::clone(&self.muted),
+            loopback_enabled: Arc::clone(&self.loopback_enabled),
+            dsp_load_u32: Arc::clone(&self.dsp_load_u32),
+            output_is_asio,
+        };
         let underrun_count = Arc::clone(&self.underrun_count);
         // Reset underrun counter each time a new stream starts.
         self.underrun_count.store(0, Ordering::Relaxed);
@@ -554,35 +557,15 @@ impl AudioManager {
                         underrun_count.fetch_add(block_underruns, Ordering::Relaxed);
                     }
 
-                    // Step 2: Run plugin chain (non-blocking try_lock).
-                    // If the lock is contended (parameter update from UI thread)
-                    // audio passes through unchanged — same as LightHost bypass.
-                    // t0 is captured once here and shared with the VU meter update
-                    // so both users pay only one Instant::now() syscall per block.
-                    let t0 = std::time::Instant::now();
-                        if let Ok(guard) = process_fn.try_lock() {
-                        if let Some(ref f) = *guard {
-                            f(&mut left_buf[..frames_to_process], &mut right_buf[..frames_to_process]);
-                            let dsp_ns = t0.elapsed().as_nanos() as f64;
-                            let block_ns = frames_to_process as f64 / sample_rate_hz * 1_000_000_000.0;
-                            let measured = ((dsp_ns / block_ns) * 100.0).clamp(0.0, 100.0) as f32;
-                            let old = f32::from_bits(dsp_load_u32.load(Ordering::Relaxed));
-                            let smoothed = old * 0.9 + measured * 0.1;
-                            dsp_load_u32.store(smoothed.to_bits(), Ordering::Relaxed);
-                        }
-                    }
-
-                    // Step 2.5: Update VU meter with processed audio.
-                    vu_meter.update(&left_buf[..frames_to_process], &right_buf[..frames_to_process], t0);
-
-                    // Read mute and loopback flags once so both output paths use the same state.
-                    let is_muted = muted.load(Ordering::Relaxed);
-                    let is_loopback = loopback_flag.load(Ordering::Relaxed);
-                    let monitor_virtual_enabled = if output_is_asio {
-                        is_loopback
-                    } else {
-                        !is_muted
-                    };
+                    // Step 2: Run plugin chain, update VU meter/DSP load, and
+                    // resolve the virtual-mirror gate — shared with the future
+                    // ASIO/WASAPI backends via audio::mixer::process_block.
+                    let monitor_virtual_enabled = crate::audio::mixer::process_block(
+                        &mut left_buf[..frames_to_process],
+                        &mut right_buf[..frames_to_process],
+                        &mixer_state,
+                        sample_rate_hz,
+                    );
 
                     // Mirror processed audio to the virtual output when configured.
                     // ASIO: use loopback to drive the monitor output (virtual device).
@@ -600,7 +583,11 @@ impl AudioManager {
                     // ASIO: main output follows mute state. Non-ASIO: loopback
                     // gates monitor output. Resolve the gate once per block instead
                     // of re-testing output_is_asio/is_muted/is_loopback per sample.
-                    let gate_open = if output_is_asio { !is_muted } else { is_loopback };
+                    let gate_open = crate::audio::mixer::main_output_gate_open(
+                        output_is_asio,
+                        mixer_state.muted.load(Ordering::Relaxed),
+                        mixer_state.loopback_enabled.load(Ordering::Relaxed),
+                    );
                     // Write out processed frames only to the selected channel
                     // pair (out_offset, out_offset+1) — every other channel on
                     // the device is left silent. If the host requested more

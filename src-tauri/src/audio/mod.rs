@@ -1,5 +1,6 @@
 pub mod manager;
 pub mod device;
+pub mod mixer;
 pub mod types;
 pub mod vu_meter;
 

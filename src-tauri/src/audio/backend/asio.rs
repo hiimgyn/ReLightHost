@@ -15,6 +15,21 @@ use crate::audio::mixer::{MixerState, process_block, main_output_gate_open};
 /// rule across every caller in this module.
 static ASIO: LazyLock<Asio> = LazyLock::new(Asio::new);
 
+/// Serializes the ASIO driver *lifecycle* (load → prepare buffers → start,
+/// and stop → dispose buffers) across every caller in this module —
+/// `list_asio_devices`, `start_duplex`, and `stop` all hold this for their
+/// entire setup/teardown body, not just the `ASIO` singleton's own
+/// bookkeeping mutex. This matters because `asio-sys`'s `Driver` drop path
+/// (`ASIOExit`/`removeCurrentDriver`) and `create_buffers`'s
+/// stop-and-recreate path run real ASIO SDK calls against process-wide C
+/// state *after* `asio-sys`'s own internal mutex has already been
+/// released, so two of these lifecycle calls interleaving from different
+/// threads is a real race in the underlying SDK state, not just a
+/// Rust-level one. Never acquired from, or held across, the real-time
+/// `bufferSwitch` callback itself — only around the ordinary-thread setup/
+/// teardown calls.
+static ASIO_LIFECYCLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct AsioDeviceInfo {
     pub name: String,
     pub input_channels: usize,
@@ -26,6 +41,14 @@ pub struct AsioDeviceInfo {
 /// by the ASIO SDK (channel counts aren't in the registry) — this mirrors
 /// what cpal's own ASIO host does today.
 pub fn list_asio_devices() -> Vec<AsioDeviceInfo> {
+    // Held for the whole enumeration loop (not per-iteration): each
+    // iteration's `Driver` handle drops at the end of that iteration,
+    // which can run real ASIO teardown calls (see `ASIO_LIFECYCLE_LOCK`'s
+    // doc comment) — a concurrent `start_duplex`/`stop` must not observe
+    // "nothing loaded" mid-teardown.
+    let _lifecycle_guard = ASIO_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let asio = &*ASIO;
     let mut out = Vec::new();
     for name in asio.driver_names() {
@@ -136,6 +159,29 @@ pub fn start_duplex(
     mixer: MixerState,
     mut virt_producer: Option<HeapProd<f32>>,
 ) -> anyhow::Result<AsioDuplexStream> {
+    // Held for this whole setup path (through `driver.start()` below, on
+    // every return path) — see `ASIO_LIFECYCLE_LOCK`'s doc comment. Not
+    // held for the lifetime of the running stream: once this function
+    // returns, the callback runs on ASIO's own thread without touching
+    // driver-lifecycle state, so nothing further needs serializing here
+    // until `stop()` is called.
+    let _lifecycle_guard = ASIO_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // `asio-sys` only ever supports one loaded driver per process. Loading
+    // (or re-preparing buffers on) a second one while a driver is already
+    // active would tear down the active driver's buffers via
+    // `ASIODisposeBuffers`/`create_buffers`'s stop-and-recreate path while
+    // its callback closure is still registered and holding pointers into
+    // them — a real use-after-free the moment ASIO calls both callbacks.
+    // Callers must `stop()` an existing stream before starting another.
+    if ASIO.loaded_driver().is_some() {
+        return Err(anyhow::anyhow!(
+            "an ASIO driver is already active; call stop() before starting a new stream"
+        ));
+    }
+
     let driver = ASIO
         .load_driver(driver_name)
         .map_err(|e| anyhow::anyhow!("Failed to load ASIO driver '{driver_name}': {e}"))?;
@@ -198,19 +244,18 @@ pub fn start_duplex(
     let out_l = out_offset;
     let out_r = out_offset + 1;
 
-    // Zero every output channel we did NOT select (everything below
-    // `out_offset`, requested only to land the real pair at the right
-    // index — see the offset comment above). ASIO buffers are not
-    // guaranteed to start zeroed, and the callback below only ever writes
-    // `buffer_infos[out_l]`/`[out_r]`, so an unselected channel could
-    // otherwise play back whatever memory ASIOCreateBuffers handed us.
-    // This runs once here at setup time, before `driver.start()` — doing a
-    // plain loop like this from inside the callback itself would not be
-    // fine (real-time thread), but here it's a one-time setup cost.
-    for (i, info) in output_stream.buffer_infos.iter().enumerate() {
-        if i == out_l || i == out_r {
-            continue;
-        }
+    // Zero every output channel — including the selected pair, not only
+    // the unused ones — before starting. ASIO buffers are not guaranteed
+    // to start zeroed, some drivers begin outputting before the first
+    // `bufferSwitch` callback has a chance to fill anything, and the
+    // callback below only ever writes `buffer_infos[out_l]`/`[out_r]`
+    // (leaving every other channel permanently unfilled). Either way,
+    // whatever memory `ASIOCreateBuffers` handed back could otherwise play
+    // out as full-scale noise. This runs once here at setup time, before
+    // `driver.start()` — doing a plain loop like this from inside the
+    // callback itself would not be fine (real-time thread), but here it's
+    // a one-time setup cost.
+    for info in output_stream.buffer_infos.iter() {
         // Copy the field out by value first: `AsioBufferInfo` is
         // `#[repr(C, packed(4))]`, so `&info.buffers` (which `.iter()`
         // would need) is an unaligned reference and rejected outright
@@ -307,9 +352,13 @@ pub fn start_duplex(
         }
     });
 
-    driver
-        .start()
-        .map_err(|e| anyhow::anyhow!("Failed to start ASIO driver: {e}"))?;
+    if let Err(e) = driver.start() {
+        // Don't leave a stale callback registered on a failed start — it
+        // would otherwise sit in asio-sys's global callback list holding
+        // pointers into these buffers indefinitely.
+        driver.remove_callback(callback_id);
+        return Err(anyhow::anyhow!("Failed to start ASIO driver: {e}"));
+    }
     Ok(AsioDuplexStream { driver, callback_id })
 }
 
@@ -317,10 +366,21 @@ pub fn start_duplex(
 /// underlying ASIO calls are logged rather than propagated since there is
 /// nothing further the caller can do once teardown has already begun.
 pub fn stop(stream: AsioDuplexStream) {
-    stream.driver.remove_callback(stream.callback_id);
+    // See `ASIO_LIFECYCLE_LOCK`'s doc comment — held for this whole
+    // teardown body.
+    let _lifecycle_guard = ASIO_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Stop the driver first, then unregister the callback, then dispose
+    // buffers: stopping before removing avoids a brief window where the
+    // driver keeps running with no callback filling its output (the
+    // reverse order it used to be in), and disposing buffers last means
+    // nothing can still be mid-callback against them.
     if let Err(e) = stream.driver.stop() {
         log::warn!("ASIO stop() failed: {e}");
     }
+    stream.driver.remove_callback(stream.callback_id);
     if let Err(e) = stream.driver.dispose_buffers() {
         log::warn!("ASIO dispose_buffers() failed: {e}");
     }

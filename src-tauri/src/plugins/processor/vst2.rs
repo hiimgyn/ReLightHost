@@ -195,6 +195,12 @@ pub struct Vst2Processor {
     in_r:  Vec<f32>,
     out_l: Vec<f32>,
     out_r: Vec<f32>,
+    /// Block size negotiated via `effSetBlockSize` at load(). The real-time
+    /// callback's actual block size can exceed this at runtime (see
+    /// audio::manager's `BufferSize::Default`), so `process_stereo` chunks
+    /// to this size instead of passing the raw block through — same fix
+    /// already applied to vst3.rs for the identical host-contract issue.
+    max_block: usize,
 }
 
 impl Vst2Processor {
@@ -257,11 +263,24 @@ impl Vst2Processor {
             in_r:  vec![0.0f32; cap],
             out_l: vec![0.0f32; cap],
             out_r: vec![0.0f32; cap],
+            max_block: block_size.max(1),
         })
     }
 
     /// Process one stereo block in-place through the VST2 plugin.
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let total = left.len().min(right.len());
+        if total == 0 { return; }
+
+        let mut offset = 0;
+        while offset < total {
+            let n = (total - offset).min(self.max_block);
+            self.process_chunk(&mut left[offset..offset + n], &mut right[offset..offset + n]);
+            offset += n;
+        }
+    }
+
+    fn process_chunk(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len());
         if n == 0 { return; }
 

@@ -261,6 +261,13 @@ pub struct ClapProcessor {
     state_ext : Option<*const ClapPluginState>,
     gui_ext   : Option<*const ClapPluginGui>,
     deinit_fn : Option<unsafe extern "C" fn()>,
+    /// `max_frames_count` negotiated with the plugin via `activate()`. The
+    /// CLAP host contract forbids calling `process()` with more frames than
+    /// this — the audio callback's actual block size can exceed it at
+    /// runtime (see audio::manager's `BufferSize::Default`), so
+    /// `process_stereo` must chunk to this size rather than pass the raw
+    /// block through (see the identical fix already applied to vst3.rs).
+    max_frames: u32,
     _host     : Box<HostBox>,     // must outlive `plugin`
     _lib      : libloading::Library, // unloaded LAST
 }
@@ -361,8 +368,9 @@ impl ClapProcessor {
                 }
             }
             let bs = block_size as u32;
+            let max_frames = bs.max(4096);
             if let Some(f) = (*plugin).activate {
-                if !f(plugin, sample_rate, 1, bs.max(4096)) {
+                if !f(plugin, sample_rate, 1, max_frames) {
                     log::warn!("CLAP activate() returned false for '{}'; continuing", name_str);
                 }
             }
@@ -389,6 +397,7 @@ impl ClapProcessor {
                 state_ext,
                 gui_ext,
                 deinit_fn,
+                max_frames,
                 _host     : host_box,
                 _lib      : lib,
             })
@@ -396,7 +405,25 @@ impl ClapProcessor {
     }
 
     /// Process a stereo buffer in-place through the CLAP plugin.
+    ///
+    /// Chunks to `max_frames` (the `max_frames_count` negotiated via
+    /// `activate()`) — the CLAP host contract forbids exceeding it per
+    /// call, and the real-time callback's block size can vary at runtime
+    /// and exceed what was negotiated at load time.
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let total = left.len().min(right.len());
+        if total == 0 { return; }
+        let max_frames = self.max_frames.max(1) as usize;
+
+        let mut offset = 0;
+        while offset < total {
+            let n = (total - offset).min(max_frames);
+            self.process_chunk(&mut left[offset..offset + n], &mut right[offset..offset + n]);
+            offset += n;
+        }
+    }
+
+    fn process_chunk(&mut self, left: &mut [f32], right: &mut [f32]) {
         unsafe {
             let process_fn = match (*self.plugin.0).process {
                 Some(f) => f,

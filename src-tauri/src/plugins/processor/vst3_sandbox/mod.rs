@@ -24,20 +24,13 @@ use std::time::Duration;
 
 use protocol::{ControlRequest, ControlResponse};
 
-/// How long a single audio block waits for the child's response before this
-/// block is left unprocessed (pass-through). Chosen to comfortably fit
-/// inside the smallest realistic block budget (256 samples @ 48kHz ≈ 5.3ms)
-/// while still being short enough that a hung child doesn't stall the audio
-/// thread for long.
-///
-/// ponytail: fixed value rather than derived from the configured buffer
-/// size — the real budget varies per device/session, but sandboxing only
-/// ever applies to plugins that have already proven unreliable, so the
-/// occasional extra glitch this causes at very small buffer sizes is an
-/// accepted trade for "never blocks the audio thread indefinitely". Revisit
-/// if sandboxed plugins turn out to be used at buffer sizes small enough
-/// that this dominates.
-const PROCESS_RESPONSE_TIMEOUT: Duration = Duration::from_millis(20);
+/// Sandbox round-trip budget: the block's own duration plus a fixed
+/// scheduling/IPC margin, instead of a fixed constant that either wastes
+/// time on small blocks or truncates large ones.
+fn response_timeout(block_size: u32, sample_rate: u32) -> std::time::Duration {
+    let block = std::time::Duration::from_secs_f64(block_size as f64 / sample_rate as f64);
+    block + std::time::Duration::from_millis(8)
+}
 
 /// Loading a VST3 plugin can legitimately take a long time (observed: ~60s
 /// for a plugin loading a bundled ML model) — the load handshake gets its
@@ -214,7 +207,7 @@ impl SandboxedVst3Processor {
             return;
         }
 
-        match link.process_rx.recv_timeout(PROCESS_RESPONSE_TIMEOUT) {
+        match link.process_rx.recv_timeout(response_timeout(self.block_size as u32, self.sample_rate as u32)) {
             Ok(payload) => {
                 if let Some((decoded_l, decoded_r)) = protocol::decode_process_block(&payload) {
                     let n = left.len().min(right.len()).min(decoded_l.len()).min(decoded_r.len());
@@ -407,6 +400,26 @@ mod win {
         use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
         let ok = unsafe { AllowSetForegroundWindow(child_pid) };
         log::debug!("AllowSetForegroundWindow({child_pid}) -> {ok} (0 = failed/refused)");
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::response_timeout;
+    use std::time::Duration;
+
+    #[test]
+    fn scales_with_block_size_and_sample_rate() {
+        // 128 samples @ 48kHz = 2.666ms block; timeout must exceed it but
+        // not be pinned to the old fixed 20ms regardless of input.
+        let t_small = response_timeout(128, 48_000);
+        assert!(t_small > Duration::from_micros(2_666));
+        assert!(t_small < Duration::from_millis(20));
+
+        // 2048 samples @ 48kHz = ~42.7ms block; timeout must scale up past
+        // the old fixed 20ms constant instead of truncating the plugin.
+        let t_large = response_timeout(2048, 48_000);
+        assert!(t_large > Duration::from_millis(20));
     }
 }
 

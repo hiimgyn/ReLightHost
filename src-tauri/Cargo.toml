@@ -76,5 +76,9 @@ windows = { version = "0.62", features = [
     "Win32_System_Com",
     "Win32_Foundation",
     "Win32_System_Threading",   # AvSetMmThreadCharacteristicsW
+    "Win32_Devices_Properties",           # DEVPKEY_Device_FriendlyName
+    "Win32_UI_Shell_PropertiesSystem",    # IMMDevice::OpenPropertyStore / IPropertyStore
+    "Win32_System_Com_StructuredStorage", # IPropertyStore::GetValue (PROPVARIANT)
+    "Win32_System_Variant",               # PropVariantToStringAlloc
 ] }
 asio-sys = "0.4"

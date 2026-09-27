@@ -1,5 +1,7 @@
+#![cfg(target_os = "windows")]
+
 use windows::core::PCWSTR;
-use windows::Win32::Media::Multimedia::AvSetMmThreadCharacteristicsW;
+use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 use windows::Win32::Foundation::HANDLE;
 
 /// Registers the calling thread with MMCSS under the "Pro Audio" task

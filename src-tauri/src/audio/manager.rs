@@ -560,7 +560,7 @@ impl AudioManager {
                     // Step 2: Run plugin chain, update VU meter/DSP load, and
                     // resolve the virtual-mirror gate — shared with the future
                     // ASIO/WASAPI backends via audio::mixer::process_block.
-                    let monitor_virtual_enabled = crate::audio::mixer::process_block(
+                    let mixer_result = crate::audio::mixer::process_block(
                         &mut left_buf[..frames_to_process],
                         &mut right_buf[..frames_to_process],
                         &mixer_state,
@@ -570,7 +570,7 @@ impl AudioManager {
                     // Mirror processed audio to the virtual output when configured.
                     // ASIO: use loopback to drive the monitor output (virtual device).
                     // Non-ASIO: block virtual output when muted.
-                    if monitor_virtual_enabled {
+                    if mixer_result.mirror_to_virtual {
                         if let Some(ref mut vp) = virt_producer_opt {
                             for frame in 0..frames_to_process {
                                 let _ = vp.try_push(left_buf[frame]);
@@ -581,12 +581,14 @@ impl AudioManager {
 
                     // Step 3: Re-interleave L/R → CPAL output buffer.
                     // ASIO: main output follows mute state. Non-ASIO: loopback
-                    // gates monitor output. Resolve the gate once per block instead
-                    // of re-testing output_is_asio/is_muted/is_loopback per sample.
+                    // gates monitor output. Reuse the exact is_muted/is_loopback
+                    // snapshot process_block already loaded above so the main
+                    // gate and the virtual-mirror gate can't disagree within a
+                    // single block (no second, independent atomic read here).
                     let gate_open = crate::audio::mixer::main_output_gate_open(
                         output_is_asio,
-                        mixer_state.muted.load(Ordering::Relaxed),
-                        mixer_state.loopback_enabled.load(Ordering::Relaxed),
+                        mixer_result.is_muted,
+                        mixer_result.is_loopback,
                     );
                     // Write out processed frames only to the selected channel
                     // pair (out_offset, out_offset+1) — every other channel on

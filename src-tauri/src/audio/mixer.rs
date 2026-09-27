@@ -11,15 +11,27 @@ pub struct MixerState {
     pub output_is_asio: bool,
 }
 
+/// Result of processing one audio block: whether to mirror it to the
+/// virtual-output producer, plus the exact `muted`/`loopback` snapshot
+/// used to decide that, so the caller can reuse the SAME snapshot for the
+/// main-output gate instead of re-reading the atomics (which could race
+/// against a UI-thread toggle and let the two gates disagree for a block).
+pub struct MixerBlockResult {
+    pub mirror_to_virtual: bool,
+    pub is_muted: bool,
+    pub is_loopback: bool,
+}
+
 /// Runs the plugin chain in place on `left`/`right`, updates the VU meter
 /// and DSP-load estimate, and resolves the mute/loopback gate. Returns
 /// whether the caller should mirror this block to the virtual-output
-/// producer (the caller owns that ring buffer, not this function).
+/// producer (the caller owns that ring buffer, not this function), plus
+/// the `is_muted`/`is_loopback` snapshot used to decide it.
 ///
 /// Extracted verbatim from the original `AudioManager::toggle_monitoring`
 /// output-stream closure so both the ASIO and WASAPI backends share one
 /// implementation instead of two hand-kept-in-sync copies.
-pub fn process_block(left: &mut [f32], right: &mut [f32], state: &MixerState, sample_rate_hz: f64) -> bool {
+pub fn process_block(left: &mut [f32], right: &mut [f32], state: &MixerState, sample_rate_hz: f64) -> MixerBlockResult {
     let t0 = std::time::Instant::now();
     if let Ok(guard) = state.process_fn.try_lock() {
         if let Some(ref f) = *guard {
@@ -35,6 +47,9 @@ pub fn process_block(left: &mut [f32], right: &mut [f32], state: &MixerState, sa
 
     state.vu_meter.update(left, right, t0);
 
+    // Read mute and loopback flags once so both output paths (this
+    // function's virtual-mirror decision, and the caller's main-output
+    // gate) use the exact same snapshot for this block.
     let is_muted = state.muted.load(Ordering::Relaxed);
     let is_loopback = state.loopback_enabled.load(Ordering::Relaxed);
 
@@ -42,7 +57,7 @@ pub fn process_block(left: &mut [f32], right: &mut [f32], state: &MixerState, sa
     // Non-ASIO: main output follows loopback, virtual mirror follows !mute.
     // (Matches the pre-existing manager.rs gate polarity exactly.)
     let mirror_to_virtual = if state.output_is_asio { is_loopback } else { !is_muted };
-    mirror_to_virtual
+    MixerBlockResult { mirror_to_virtual, is_muted, is_loopback }
 }
 
 /// Resolves whether the main hardware-output path should currently be
@@ -85,8 +100,10 @@ mod tests {
         s.loopback_enabled.store(true, Ordering::Relaxed);
         let mut l = vec![0.5f32; 4];
         let mut r = vec![0.5f32; 4];
-        let mirror = process_block(&mut l, &mut r, &s, 48_000.0);
-        assert!(mirror, "ASIO output: virtual mirror must follow loopback flag, not mute");
+        let result = process_block(&mut l, &mut r, &s, 48_000.0);
+        assert!(result.mirror_to_virtual, "ASIO output: virtual mirror must follow loopback flag, not mute");
+        assert!(result.is_muted);
+        assert!(result.is_loopback);
     }
 
     #[test]

@@ -49,8 +49,13 @@ vst3 = "0.3"                                              # vst3-rs: VST3 plugin
 # `vst` crate (vst-rs) is deprecated upstream and VST2 licensing has been
 # discontinued since 2018, but the ABI itself is small and frozen.
 
-# Built-in DSP — noise suppression via RNNoise (pure Rust)
+# Built-in DSP — noise suppression via RNNoise & DeepFilterNet (pure Rust)
 nnnoiseless = "0.5"
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", default-features = false, features = ["tract", "default-model-ll"] }
+tract-core = "=0.21.4"
+tract-onnx = "=0.21.4"
+tract-pulse = "=0.21.4"
+tract-hir = "=0.21.4"
 
 # Utilities
 anyhow = "1.0"

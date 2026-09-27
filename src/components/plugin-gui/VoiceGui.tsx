@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Modal, Slider, Typography, Space, Badge, Tooltip, theme } from 'antd';
-import { Mic, RotateCcw } from 'lucide-react';
+import { Modal } from 'antd';
+import { Mic, Flame } from 'lucide-react';
 import * as tauri from '../../lib/tauri';
 import type { PluginInstanceInfo } from '../../lib/types';
 import { useTranslation } from '../../i18n';
-
-const { Text } = Typography;
+import {
+  AudioKnob,
+  VisualStageContainer,
+  BodePlotCanvas,
+  PluginHeader,
+} from './common';
 
 interface Props {
   plugin: PluginInstanceInfo;
@@ -25,96 +29,9 @@ function paramValue(plugin: PluginInstanceInfo, id: number, fallback: number) {
   return plugin.parameters.find(p => p.id === id)?.value ?? fallback;
 }
 
-// ── Section header ───────────────────────────────────────────────────────────
-interface SectionProps { title: string; color: string; }
-function SectionHeader({ title, color }: SectionProps) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-      <span style={{ fontSize: 11, letterSpacing: 1.5, color, textTransform: 'uppercase', fontWeight: 700 }}>
-        {title}
-      </span>
-      <div
-        style={{
-          flex: 1,
-          height: 1,
-          background: `linear-gradient(90deg, ${color}88, transparent)`,
-          boxShadow: `0 0 8px ${color}66`,
-        }}
-      />
-    </div>
-  );
-}
-
-// ── Generic param row ────────────────────────────────────────────────────────
-interface ParamRowProps {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  format: (v: number) => string;
-  leftLabel: string;
-  rightLabel: string;
-  defaultValue: number;
-  color: string;
-  tertiaryColor: string;
-  resetTooltip?: string;
-  onChange: (v: number) => void;
-}
-
-function ParamRow({
-  label, value, min, max, step,
-  format, leftLabel, rightLabel,
-  defaultValue, color, tertiaryColor, resetTooltip = "Reset to default", onChange,
-}: ParamRowProps) {
-  return (
-    <div
-      style={{
-        padding: '10px 14px',
-        borderRadius: 10,
-        background: 'var(--rh-surface-card)',
-        border: '1px solid var(--rh-border-subtle)',
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-        <Text style={{ fontSize: 13 }}>{label}</Text>
-        <Space size={6} align="center">
-          {value !== defaultValue && (
-            <Tooltip title={resetTooltip}>
-              <RotateCcw
-                size={11}
-                style={{ cursor: 'pointer', color: tertiaryColor }}
-                onClick={() => onChange(defaultValue)}
-              />
-            </Tooltip>
-          )}
-          <Text type="secondary" style={{ fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>
-            {format(value)}
-          </Text>
-        </Space>
-      </div>
-      <Slider
-        min={min} max={max} step={step} value={value}
-        onChange={onChange}
-        tooltip={{ formatter: (v) => format(v ?? min) }}
-        trackStyle={{ background: color }}
-        handleStyle={{ borderColor: color }}
-      />
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
-        <Text type="secondary" style={{ fontSize: 11 }}>{leftLabel}</Text>
-        <Text type="secondary" style={{ fontSize: 11 }}>{rightLabel}</Text>
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
 export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
-  const { token } = theme.useToken();
   const { t } = useTranslation();
-  const tc = token.colorTextTertiary;
-  const modalWidth = typeof window === 'undefined' ? 540 : 'clamp(480px, 50vw, 580px)';
+  const modalWidth = typeof window === 'undefined' ? 560 : 'clamp(520px, 52vw, 580px)';
 
   const [low,     setLow]     = useState(() => paramValue(plugin, P_LOW,      0));
   const [mid,     setMid]     = useState(() => paramValue(plugin, P_MID,      0));
@@ -153,7 +70,6 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
     if (!isOpen) return;
     let isCancelled = false;
 
-    // Fetch authoritative parameter values from backend; fall back to props
     (async () => {
       try {
         const params = await tauri.getPluginParameters(plugin.instance_id);
@@ -181,100 +97,231 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
     return () => {
       isCancelled = true;
     };
-  }, [isOpen, plugin.instance_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isOpen, plugin.instance_id]);
 
-  const fmtDb  = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)} dB`;
-  const fmtPct = (v: number) => `${Math.round(v * 100)}%`;
-
-  // Section accent colors
-  const EQ_COLOR  = '#22aacc';
-  const SAT_COLOR = '#cc8822';
-  const DBL_COLOR = '#22cc77';
-  const LIM_COLOR = '#cc3355';
+  const handleResetAll = () => {
+    const defaults = [
+      { id: P_LOW,     val: 0, set: setLow },
+      { id: P_MID,     val: 0, set: setMid },
+      { id: P_HIGH,    val: 0, set: setHigh },
+      { id: P_DRIVE,   val: 0, set: setDrive },
+      { id: P_WIDTH,   val: 0, set: setWidth },
+      { id: P_CEILING, val: 0, set: setCeiling },
+    ];
+    defaults.forEach(({ id, val, set }) => {
+      set(val);
+      send(id, val);
+    });
+  };
 
   return (
     <Modal
-      title={
-        <Space>
-          <Mic size={16} style={{ color: token.colorPrimary }} />
-          <span>{t('voice.title')}</span>
-          <Badge color="cyan" text={t('common.builtin')} />
-        </Space>
-      }
       open={isOpen}
       onCancel={onClose}
       footer={null}
       width={modalWidth}
-      style={{ top: 24, maxWidth: 580 }}
-      styles={{ body: { maxHeight: 'calc(100vh - 140px)', overflowY: 'auto', overflowX: 'hidden', padding: '16px 20px 22px' } }}
+      centered
+      closable={false}
+      styles={{
+        body: {
+          background: 'linear-gradient(180deg, #131722 0%, #0b0d14 100%)',
+          border: '1px solid rgba(255, 255, 255, 0.12)',
+          boxShadow: '0 24px 60px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          borderRadius: 16,
+          padding: '20px 22px 24px',
+        },
+      }}
     >
-      <Space direction="vertical" size={14} style={{ width: '100%' }}>
+      <div className="flex flex-col gap-4 text-white">
+        {/* Header */}
+        <PluginHeader
+          title={t('voice.title') || 'Voice Designer Pro'}
+          subtitle="4-Stage Vocal Processing: 3-Band EQ • Tube Saturation • Stereo Doubler • Peak Limiter"
+          badgeText="VOCAL CHANNEL"
+          badgeColor="#6366f1"
+          onResetAll={handleResetAll}
+          icon={<Mic size={18} className="text-indigo-400" />}
+        />
 
-        {/* ── EQ ───────────────────────────────────────────── */}
-        <div>
-          <SectionHeader title={t('voice.eqSection')} color={EQ_COLOR} />
-          <Space direction="vertical" size={10} style={{ width: '100%' }}>
-            <ParamRow
-              label={t('voice.low')} value={low} defaultValue={0} min={-12} max={12} step={0.5}
-              format={fmtDb}
-              leftLabel={t('voice.lowLeft')} rightLabel={t('voice.lowRight')}
-              color={EQ_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
-              onChange={v => { setLow(v); send(P_LOW, v); }}
-            />
-            <ParamRow
-              label={t('voice.mid')} value={mid} defaultValue={0} min={-12} max={12} step={0.5}
-              format={fmtDb}
-              leftLabel={t('voice.midLeft')} rightLabel={t('voice.midRight')}
-              color={EQ_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
-              onChange={v => { setMid(v); send(P_MID, v); }}
-            />
-            <ParamRow
-              label={t('voice.high')} value={high} defaultValue={0} min={-12} max={12} step={0.5}
-              format={fmtDb}
-              leftLabel={t('voice.highLeft')} rightLabel={t('voice.highRight')}
-              color={EQ_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
-              onChange={v => { setHigh(v); send(P_HIGH, v); }}
-            />
-          </Space>
-        </div>
-
-        {/* ── Saturation ───────────────────────────────────── */}
-        <div>
-          <SectionHeader title={t('voice.saturationSection')} color={SAT_COLOR} />
-          <ParamRow
-            label={t('voice.drive')} value={drive} defaultValue={0} min={0} max={1} step={0.01}
-            format={fmtPct}
-            leftLabel={t('voice.driveLeft')} rightLabel={t('voice.driveRight')}
-            color={SAT_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
-            onChange={v => { setDrive(v); send(P_DRIVE, v); }}
+        {/* Visual Stage: Interactive 3-Band Bode Plot */}
+        <VisualStageContainer
+          height={185}
+          title="Frequency Response (20 Hz — 20 kHz)"
+          badge={
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
+                Low: {low >= 0 ? '+' : ''}{low.toFixed(1)}dB
+              </span>
+              <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                Mid: {mid >= 0 ? '+' : ''}{mid.toFixed(1)}dB
+              </span>
+              <span className="text-[10px] font-mono text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20">
+                Air: {high >= 0 ? '+' : ''}{high.toFixed(1)}dB
+              </span>
+            </div>
+          }
+        >
+          <BodePlotCanvas
+            lowGain={low}
+            midGain={mid}
+            highGain={high}
+            onLowGainChange={(v) => {
+              setLow(v);
+              send(P_LOW, v);
+            }}
+            onMidGainChange={(v) => {
+              setMid(v);
+              send(P_MID, v);
+            }}
+            onHighGainChange={(v) => {
+              setHigh(v);
+              send(P_HIGH, v);
+            }}
+            accentColor="#6366f1"
           />
+        </VisualStageContainer>
+
+        {/* Section 1: 3-Band EQ Tone Controls */}
+        <div className="bg-white/[0.03] border border-white/5 rounded-xl p-3">
+          <div className="flex items-center gap-1.5 mb-2.5 px-1">
+            <span className="text-[11px] font-bold tracking-wider text-indigo-400 uppercase">
+              Tonal Balance (Interactive EQ)
+            </span>
+          </div>
+          <div className="flex items-center justify-around">
+            <AudioKnob
+              label={t('voice.low') || 'Bass (200Hz)'}
+              value={low}
+              defaultValue={0}
+              min={-12}
+              max={12}
+              step={0.5}
+              bipolar
+              unit="dB"
+              size="md"
+              color="#38bdf8"
+              format={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
+              onChange={(v) => {
+                setLow(v);
+                send(P_LOW, v);
+              }}
+            />
+
+            <AudioKnob
+              label={t('voice.mid') || 'Presence (2kHz)'}
+              value={mid}
+              defaultValue={0}
+              min={-12}
+              max={12}
+              step={0.5}
+              bipolar
+              unit="dB"
+              size="md"
+              color="#f59e0b"
+              format={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
+              onChange={(v) => {
+                setMid(v);
+                send(P_MID, v);
+              }}
+            />
+
+            <AudioKnob
+              label={t('voice.high') || 'Air (8kHz)'}
+              value={high}
+              defaultValue={0}
+              min={-12}
+              max={12}
+              step={0.5}
+              bipolar
+              unit="dB"
+              size="md"
+              color="#a855f7"
+              format={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
+              onChange={(v) => {
+                setHigh(v);
+                send(P_HIGH, v);
+              }}
+            />
+          </div>
         </div>
 
-        {/* ── Doubler ──────────────────────────────────────── */}
-        <div>
-          <SectionHeader title={t('voice.doublerSection')} color={DBL_COLOR} />
-          <ParamRow
-            label={t('voice.width')} value={width} defaultValue={0} min={0} max={1} step={0.01}
-            format={fmtPct}
-            leftLabel={t('voice.widthLeft')} rightLabel={t('voice.widthRight')}
-            color={DBL_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
-            onChange={v => { setWidth(v); send(P_WIDTH, v); }}
-          />
+        {/* Section 2: Character, Space & Limiter */}
+        <div className="bg-white/[0.02] border border-white/5 rounded-xl p-3">
+          <div className="flex items-center justify-between mb-2.5 px-1">
+            <span className="text-[11px] font-bold tracking-wider text-white/60 uppercase">
+              Warmth, Width & Dynamics
+            </span>
+            {drive > 0.05 && (
+              <span className="flex items-center gap-1 text-[10px] text-amber-400 font-mono">
+                <Flame size={10} className="fill-amber-400 text-amber-400" />
+                Tube Saturation Active
+              </span>
+            )}
+          </div>
+          <div className="flex items-center justify-around">
+            <AudioKnob
+              label={t('voice.drive') || 'Warmth'}
+              value={drive}
+              defaultValue={0}
+              min={0}
+              max={1}
+              step={0.01}
+              unit="%"
+              size="md"
+              color="#ef4444"
+              format={(v) => Math.round(v * 100).toString()}
+              onChange={(v) => {
+                setDrive(v);
+                send(P_DRIVE, v);
+              }}
+            />
+
+            <AudioKnob
+              label={t('voice.width') || 'Stereo Width'}
+              value={width}
+              defaultValue={0}
+              min={0}
+              max={1}
+              step={0.01}
+              unit="%"
+              size="md"
+              color="#10b981"
+              format={(v) => Math.round(v * 100).toString()}
+              onChange={(v) => {
+                setWidth(v);
+                send(P_WIDTH, v);
+              }}
+            />
+
+            <AudioKnob
+              label={t('voice.ceiling') || 'Limiter Ceiling'}
+              value={ceiling}
+              defaultValue={0}
+              min={-12}
+              max={0}
+              step={0.5}
+              unit="dB"
+              size="md"
+              color="#f43f5e"
+              format={(v) => `${v >= 0 ? '' : ''}${v.toFixed(1)}`}
+              onChange={(v) => {
+                setCeiling(v);
+                send(P_CEILING, v);
+              }}
+            />
+          </div>
         </div>
 
-        {/* ── Limiter ──────────────────────────────────────── */}
-        <div>
-          <SectionHeader title={t('voice.limiterSection')} color={LIM_COLOR} />
-          <ParamRow
-            label={t('voice.ceiling')} value={ceiling} defaultValue={0} min={-12} max={0} step={0.5}
-            format={fmtDb}
-            leftLabel={t('voice.ceilingLeft')} rightLabel={t('voice.ceilingRight')}
-            color={LIM_COLOR} tertiaryColor={tc} resetTooltip={t('common.resetToDefault')}
-            onChange={v => { setCeiling(v); send(P_CEILING, v); }}
-          />
+        {/* Footer */}
+        <div className="flex justify-end pt-1">
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 text-xs font-semibold text-white/80 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg transition-colors cursor-pointer"
+          >
+            Close
+          </button>
         </div>
-
-      </Space>
+      </div>
     </Modal>
   );
 }

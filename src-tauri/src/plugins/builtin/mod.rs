@@ -3,10 +3,12 @@
 /// Each built-in implements `BuiltinProcessor` and is identified by a stable
 /// string ID stored as `PluginInfo::path` so it survives presets and sessions.
 pub mod noise_suppressor;
+pub mod deep_filter;
 pub mod compressor;
 pub mod voice;
 
 pub use noise_suppressor::NoiseSuppressor;
+pub use deep_filter::DeepFilterProcessor;
 pub use compressor::Compressor;
 pub use voice::Voice;
 
@@ -27,7 +29,7 @@ pub trait BuiltinProcessor: Send {
     fn set_parameter(&mut self, id: u32, value: f32);
 
     /// Voice-activity probability from the last processed frame (0.0 – 1.0).
-    /// Only meaningful for `NoiseSuppressor`; returns 0.0 for all others.
+    /// Only meaningful for `NoiseSuppressor` and `DeepFilterProcessor`; returns 0.0 for all others.
     fn get_vad(&self) -> f32 { 0.0 }
 }
 
@@ -38,6 +40,7 @@ pub trait BuiltinProcessor: Send {
 pub fn create_builtin(id: &str, sample_rate: f32) -> Option<Box<dyn BuiltinProcessor>> {
     match id {
         noise_suppressor::ID => NoiseSuppressor::new(sample_rate).map(|p| Box::new(p) as Box<dyn BuiltinProcessor>),
+        deep_filter::ID      => DeepFilterProcessor::new(sample_rate).map(|p| Box::new(p) as Box<dyn BuiltinProcessor>),
         compressor::ID       => Some(Box::new(Compressor::new(sample_rate))),
         voice::ID            => Some(Box::new(Voice::new(sample_rate))),
         _                    => None,
@@ -56,6 +59,12 @@ pub fn builtin_initial_params(id: &str) -> Vec<PluginParameter> {
             PluginParameter { id: 1, name: "VAD Gate Threshold".into(), value: 0.0,  min:   0.0, max:  1.0,  default: 0.0  },
             PluginParameter { id: 2, name: "Gate Attenuation".into(),   value: 0.0,  min:   0.0, max:  1.0,  default: 0.0  },
             PluginParameter { id: 3, name: "Output Gain".into(),        value: 0.0,  min: -24.0, max: 12.0,  default: 0.0  },
+        ],
+        deep_filter::ID => vec![
+            PluginParameter { id: 0, name: "Max Attenuation".into(),       value: 24.0, min:   0.0, max:  60.0, default: 24.0 },
+            PluginParameter { id: 1, name: "Post-filter Threshold".into(), value:  0.2, min:   0.0, max:   1.0, default:  0.2 },
+            PluginParameter { id: 2, name: "Mix".into(),                   value:  1.0, min:   0.0, max:   1.0, default:  1.0 },
+            PluginParameter { id: 3, name: "Output Gain".into(),           value:  0.0, min: -24.0, max:  12.0, default:  0.0 },
         ],
         compressor::ID => vec![
             PluginParameter { id: 0, name: "Threshold".into(),   value: -18.0, min: -60.0, max:    0.0, default: -18.0 },

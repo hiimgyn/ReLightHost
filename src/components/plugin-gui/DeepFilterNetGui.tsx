@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal, Alert } from 'antd';
-import { Mic, AlertTriangle } from 'lucide-react';
+import { Sparkles, AlertTriangle, Cpu, Zap } from 'lucide-react';
 import * as tauri from '../../lib/tauri';
 import { useAudioStore } from '../../stores/audioStore';
 import type { PluginInstanceInfo } from '../../lib/types';
@@ -23,17 +23,22 @@ function paramValue(plugin: PluginInstanceInfo, id: number, fallback: number) {
   return plugin.parameters.find(p => p.id === id)?.value ?? fallback;
 }
 
-export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
+export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
   const { t } = useTranslation();
   const sampleRate = useAudioStore(state => state.sampleRate);
   const isSampleRateMismatch = Math.abs(sampleRate - 48000) > 1;
-  const modalWidth = typeof window === 'undefined' ? 560 : 'clamp(520px, 52vw, 580px)';
+  const modalWidth = typeof window === 'undefined' ? 580 : 'clamp(540px, 54vw, 620px)';
 
-  const [mix,        setMix]        = useState(() => paramValue(plugin, 0, 1.0));
-  const [vadGate,    setVadGate]    = useState(() => paramValue(plugin, 1, 0.0));
-  const [gateAtten,  setGateAtten]  = useState(() => paramValue(plugin, 2, 0.0));
-  const [outputGain, setOutputGain] = useState(() => paramValue(plugin, 3, 0.0));
-  const [vad,        setVad]        = useState<number>(0);
+  // Parameters:
+  // 0: Max Attenuation (dB) [0..60] def: 24.0
+  // 1: Post-filter Threshold Beta [0..1] def: 0.2
+  // 2: Mix [0..1] def: 1.0
+  // 3: Output Gain (dB) [-24..+12] def: 0.0
+  const [attenLim,    setAttenLim]    = useState(() => paramValue(plugin, 0, 24.0));
+  const [postFilter,  setPostFilter]  = useState(() => paramValue(plugin, 1, 0.2));
+  const [mix,         setMix]         = useState(() => paramValue(plugin, 2, 1.0));
+  const [outputGain,  setOutputGain]  = useState(() => paramValue(plugin, 3, 0.0));
+  const [vad,         setVad]         = useState<number>(0);
 
   const rafRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
@@ -64,7 +69,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
     };
   }, []);
 
-  // Authoritative sync from backend when panel opens
+  // Sync parameter values from backend on open
   useEffect(() => {
     if (!isOpen) return;
     let isCancelled = false;
@@ -76,15 +81,15 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
         const find = (id: number, fallback: number) =>
           params.find(p => p.id === id)?.value ?? paramValue(plugin, id, fallback);
 
-        setMix(find(0, 1.0));
-        setVadGate(find(1, 0.0));
-        setGateAtten(find(2, 0.0));
+        setAttenLim(find(0, 24.0));
+        setPostFilter(find(1, 0.2));
+        setMix(find(2, 1.0));
         setOutputGain(find(3, 0.0));
       } catch {
         if (isCancelled) return;
-        setMix(paramValue(plugin, 0, 1.0));
-        setVadGate(paramValue(plugin, 1, 0.0));
-        setGateAtten(paramValue(plugin, 2, 0.0));
+        setAttenLim(paramValue(plugin, 0, 24.0));
+        setPostFilter(paramValue(plugin, 1, 0.2));
+        setMix(paramValue(plugin, 2, 1.0));
         setOutputGain(paramValue(plugin, 3, 0.0));
       }
     })();
@@ -108,7 +113,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
       .catch(() => {})
       .finally(() => {
         if (mountedRef.current) {
-          rafRef.current = window.setTimeout(pollVad, 100);
+          rafRef.current = window.setTimeout(pollVad, 80);
         }
       });
   }, [plugin.instance_id]);
@@ -135,10 +140,10 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
 
   const handleResetAll = () => {
     const defaults = [
-      { id: 0, val: 1.0, set: setMix },
-      { id: 1, val: 0.0, set: setVadGate },
-      { id: 2, val: 0.0, set: setGateAtten },
-      { id: 3, val: 0.0, set: setOutputGain },
+      { id: 0, val: 24.0, set: setAttenLim },
+      { id: 1, val: 0.2,  set: setPostFilter },
+      { id: 2, val: 1.0,  set: setMix },
+      { id: 3, val: 0.0,  set: setOutputGain },
     ];
     defaults.forEach(({ id, val, set }) => {
       set(val);
@@ -156,9 +161,9 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
       closable={false}
       styles={{
         body: {
-          background: 'linear-gradient(180deg, #111722 0%, #0a0d14 100%)',
-          border: '1px solid rgba(255, 255, 255, 0.12)',
-          boxShadow: '0 24px 60px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          background: 'linear-gradient(180deg, #130f24 0%, #090812 100%)',
+          border: '1px solid rgba(168, 85, 247, 0.25)',
+          boxShadow: '0 24px 60px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
           borderRadius: 16,
           padding: '20px 22px 24px',
         },
@@ -167,12 +172,12 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
       <div className="flex flex-col gap-4 text-white">
         {/* Header */}
         <PluginHeader
-          title={t('noise.title') || 'Noise Suppressor Pro'}
-          subtitle="Real-Time Speech Enhancement & Neural VAD Gate"
-          badgeText="NEURAL DSP"
-          badgeColor="#00f0ff"
+          title={t('deepFilter.title') || 'DeepFilterNet 3 Pro'}
+          subtitle={t('deepFilter.subtitle') || 'Deep Complex-Valued Spectrogram Filtering'}
+          badgeText={t('deepFilter.badgeText') || 'DEEP LEARNING SOTA'}
+          badgeColor="#a855f7"
           onResetAll={handleResetAll}
-          icon={<Mic size={18} className="text-cyan-400" />}
+          icon={<Sparkles size={18} className="text-purple-400" />}
         />
 
         {/* 48kHz Warning if mismatched */}
@@ -183,21 +188,26 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
             icon={<AlertTriangle size={15} />}
             message={
               <span className="text-xs">
-                {t('noise.sampleRateMismatch')} (48 kHz required, current: {sampleRate} Hz)
+                {t('deepFilter.sampleRateMismatch')} (48 kHz required, current: {sampleRate} Hz)
               </span>
             }
             className="py-1 px-3 border border-amber-500/30 bg-amber-500/10 rounded-lg text-amber-200"
           />
         )}
 
-        {/* Visual Stage: Dual Waveform Oscilloscope & AI Speech Orb */}
+        {/* Visual Stage: Neural Spectral Oscilloscope & AI Speech Orb */}
         <VisualStageContainer
           height={185}
-          title="Dual-Layer Oscilloscope (Dry Noise vs Clean Voice)"
+          title={t('deepFilter.oscilloscopeTitle') || 'Neural Dual Oscilloscope (Raw Noise vs Clean Voice)'}
           badge={
-            <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
-              VAD: {Math.round(vad * 100)}%
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="flex items-center gap-1 text-[10px] font-mono text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20">
+                <Cpu size={10} /> 10ms HOP
+              </span>
+              <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
+                VAD: {Math.round(vad * 100)}%
+              </span>
+            </div>
           }
         >
           <div className="relative w-full h-full flex">
@@ -205,82 +215,85 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
             <div className="flex-1 h-full">
               <WaveformDualCanvas
                 vad={vad}
-                reductionDb={mix * 30}
+                reductionDb={attenLim * mix}
                 active={mix > 0.05}
               />
             </div>
             {/* Neural VAD Orb takes right section */}
-            <div className="w-28 h-full flex items-center justify-center border-l border-white/5 bg-black/20">
-              <NeuralVADOrb vad={vad} size={74} label="VAD CONFIDENCE" />
+            <div className="w-28 h-full flex items-center justify-center border-l border-white/5 bg-black/25">
+              <NeuralVADOrb
+                vad={vad}
+                size={74}
+                label={t('deepFilter.vadConfidence') || 'SPEECH ENERGY'}
+              />
             </div>
           </div>
         </VisualStageContainer>
 
-        {/* Primary Controls Row: Precision Audio Knobs */}
-        <div className="flex items-center justify-around py-3 px-2 bg-white/[0.03] border border-white/5 rounded-xl">
+        {/* Primary Controls Row: Rotary Studio Knobs */}
+        <div className="flex items-center justify-around py-3 px-2 bg-white/[0.025] border border-white/5 rounded-xl">
           <AudioKnob
-            label={t('noise.mixTitle') || 'Wet / Dry Mix'}
+            label={t('deepFilter.maxAttenuation') || 'Max Attenuation'}
+            value={attenLim}
+            defaultValue={24.0}
+            min={0}
+            max={60}
+            step={0.5}
+            unit="dB"
+            size="lg"
+            color="#a855f7"
+            format={(v) => `-${Math.round(v)}`}
+            onChange={(v) => {
+              setAttenLim(v);
+              send(0, v);
+            }}
+          />
+
+          <AudioKnob
+            label={t('deepFilter.postFilterBeta') || 'Post-Filter Beta'}
+            value={postFilter}
+            defaultValue={0.2}
+            min={0}
+            max={1}
+            step={0.01}
+            unit="%"
+            size="md"
+            color="#06b6d4"
+            format={(v) => Math.round(v * 100).toString()}
+            onChange={(v) => {
+              setPostFilter(v);
+              send(1, v);
+            }}
+          />
+
+          <AudioKnob
+            label={t('deepFilter.mix') || 'Wet / Dry Mix'}
             value={mix}
             defaultValue={1.0}
             min={0}
             max={1}
             step={0.01}
             unit="%"
-            size="lg"
-            color="#00f0ff"
+            size="md"
+            color="#10b981"
             format={(v) => Math.round(v * 100).toString()}
             onChange={(v) => {
               setMix(v);
-              send(0, v);
-            }}
-          />
-
-          <AudioKnob
-            label={t('noise.vadGateThreshold') || 'VAD Gate'}
-            value={vadGate}
-            defaultValue={0.0}
-            min={0}
-            max={1}
-            step={0.01}
-            unit="%"
-            size="md"
-            color="#38bdf8"
-            format={(v) => Math.round(v * 100).toString()}
-            onChange={(v) => {
-              setVadGate(v);
-              send(1, v);
-            }}
-          />
-
-          <AudioKnob
-            label={t('noise.gateAtten') || 'Attenuation'}
-            value={gateAtten}
-            defaultValue={0.0}
-            min={0}
-            max={1}
-            step={0.01}
-            unit="%"
-            size="md"
-            color="#f59e0b"
-            format={(v) => Math.round(v * 100).toString()}
-            onChange={(v) => {
-              setGateAtten(v);
               send(2, v);
             }}
           />
 
           <AudioKnob
-            label={t('noise.outputGain') || 'Output Gain'}
+            label={t('deepFilter.outputGain') || 'Output Trim'}
             value={outputGain}
             defaultValue={0.0}
             min={-24}
             max={12}
-            step={0.5}
-            bipolar
+            step={0.1}
             unit="dB"
             size="md"
-            color="#10b981"
-            format={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
+            color="#f59e0b"
+            format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}`}
             onChange={(v) => {
               setOutputGain(v);
               send(3, v);
@@ -288,14 +301,15 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
           />
         </div>
 
-        {/* Footer */}
-        <div className="flex justify-end pt-1">
-          <button
-            onClick={onClose}
-            className="px-4 py-1.5 text-xs font-semibold text-white/80 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg transition-colors cursor-pointer"
-          >
-            Close
-          </button>
+        {/* Neural Info Pill Footer */}
+        <div className="flex items-center justify-between text-[11px] text-zinc-400/80 px-2">
+          <span className="flex items-center gap-1.5">
+            <Zap size={12} className="text-purple-400" />
+            <span>DeepFilterNet3 ONNX • Tract Runtime</span>
+          </span>
+          <span className="text-[10px] font-mono text-zinc-400/60">
+            Atten: -{attenLim.toFixed(0)} dB • Beta: {postFilter.toFixed(2)}
+          </span>
         </div>
       </div>
     </Modal>

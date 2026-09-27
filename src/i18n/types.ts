@@ -300,6 +300,20 @@ export interface TranslationSchema {
     attenNone: string;
     attenFull: string;
   };
+  deepFilter: {
+    title: string;
+    subtitle: string;
+    badgeText: string;
+    sampleRateMismatch: string;
+    maxAttenuation: string;
+    postFilterBeta: string;
+    mix: string;
+    outputGain: string;
+    attenuationDb: string;
+    oscilloscopeTitle: string;
+    vadConfidence: string;
+    footerDesc: string;
+  };
   footer: {
     cpuTooltip: string;
     ramTooltip: string;

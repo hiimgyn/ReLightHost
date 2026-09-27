@@ -1,9 +1,10 @@
 #![cfg(target_os = "windows")]
 
 use windows::Win32::Media::Audio::{
-    eCapture, eConsole, eRender, DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator,
+    eCapture, eConsole, eRender, DEVICE_STATE_ACTIVE, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
     AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioCaptureClient, IAudioClient, IAudioRenderClient,
+    AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+    AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, IAudioClient, IAudioRenderClient,
     WAVEFORMATEX,
 };
 use windows::Win32::System::Com::{
@@ -14,7 +15,7 @@ use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::core::PCWSTR;
 use ringbuf::{HeapProd, HeapCons, traits::{Producer, Consumer}};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once};
+use std::sync::{mpsc, Arc, Once};
 use crate::audio::mixer::{MixerState, process_block, main_output_gate_open};
 
 /// Decodes a COM-allocated wide string and frees the CoTaskMem allocation
@@ -146,39 +147,17 @@ fn align_frames_up(frames: u32, alignment: u32) -> u32 {
 
 /// Converts a frame count at `sample_rate` to 100ns `REFERENCE_TIME` units,
 /// the unit `IAudioClient::Initialize`'s buffer-duration parameters use.
+/// Rounds to the nearest unit (Microsoft's own documented formula adds half
+/// a sample-period before truncating) rather than truncating outright —
+/// truncating here can itself under-report the duration enough to trip
+/// exclusive mode's alignment check.
 fn frames_to_ref_time(frames: u32, sample_rate: u32) -> i64 {
-    (frames as i64 * 10_000_000) / sample_rate as i64
+    (frames as i64 * 10_000_000 + sample_rate as i64 / 2) / sample_rate as i64
 }
 
 pub struct ExclusiveModeResult {
     pub exclusive: bool,
     pub fallback_reason: Option<String>,
-}
-
-/// Wraps a COM interface so it can be moved into this module's dedicated
-/// real-time capture/render thread. `windows-core` does not implement
-/// `Send` for COM interface types in general (COM interfaces can require
-/// apartment marshaling), but `IAudioClient`/`IAudioCaptureClient`/
-/// `IAudioRenderClient` are documented by WASAPI as safe to call from any
-/// thread once obtained, provided that thread is itself part of a COM
-/// apartment — the real-time threads below call `ensure_com_initialized()`
-/// (`COINIT_MULTITHREADED`, the same call this module's setup path already
-/// uses) as their first action, so every thread that touches one of these
-/// objects is in the same process-wide multi-threaded apartment and no
-/// marshaling is required moving between them. This is the same shape of
-/// unsafe assertion this module already makes for the event `HANDLE`
-/// (moved across as a plain `isize`) — just applied to the COM objects
-/// themselves instead of a raw handle.
-struct SendComPtr<T>(T);
-// SAFETY: see the doc comment above — every thread that dereferences the
-// wrapped value has itself joined the same MTA before doing so.
-unsafe impl<T> Send for SendComPtr<T> {}
-
-impl<T> std::ops::Deref for SendComPtr<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
-    }
 }
 
 /// Builds a 32-bit float `WAVEFORMATEX` for the given channel count.
@@ -223,30 +202,51 @@ fn query_native_channels(client: &IAudioClient) -> u16 {
     }
 }
 
-fn open_audio_client(device_id: &str) -> anyhow::Result<IAudioClient> {
-    ensure_com_initialized();
+/// Resolves `device_id` to an `IMMDevice`. Kept separate from client
+/// activation because the exclusive-mode retry protocol below needs to
+/// `Activate` a FRESH `IAudioClient` from this same device more than once
+/// (see `initialize_client`'s doc comment).
+fn open_device(device_id: &str) -> anyhow::Result<IMMDevice> {
+    // SAFETY: standard `IMMDeviceEnumerator`/`GetDevice` usage, identical to
+    // `list_wasapi_devices`'s enumeration path elsewhere in this file.
     unsafe {
         let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
         let wide: Vec<u16> = device_id.encode_utf16().chain(std::iter::once(0)).collect();
-        let device = enumerator.GetDevice(PCWSTR(wide.as_ptr()))?;
-        Ok(device.Activate::<IAudioClient>(CLSCTX_ALL, None)?)
+        Ok(enumerator.GetDevice(PCWSTR(wide.as_ptr()))?)
     }
 }
 
-/// Initializes the client in exclusive mode, retrying once with the
+fn activate_audio_client(device: &IMMDevice) -> anyhow::Result<IAudioClient> {
+    // SAFETY: `device` is a valid `IMMDevice`; activating `IAudioClient` on
+    // it is the documented way to obtain one.
+    unsafe { Ok(device.Activate::<IAudioClient>(CLSCTX_ALL, None)?) }
+}
+
+/// Negotiates exclusive mode against `device`, retrying once with the
 /// driver-reported aligned buffer size on `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED`,
 /// and falling back to shared mode if exclusive is refused outright.
+///
+/// Per Microsoft's documented `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` recovery
+/// protocol, a client that has already had `Initialize` called on it once
+/// (successfully or not) cannot be `Initialize`d again — a second call
+/// returns `AUDCLNT_E_ALREADY_INITIALIZED` — so each attempt below
+/// (initial, aligned retry, shared-mode fallback) activates its own FRESH
+/// `IAudioClient` from `device` rather than reusing the one that just
+/// failed. The one exception is `GetBufferSize` on the alignment-failure
+/// path, which the same protocol documents as valid — and necessary — to
+/// call on the client that just failed, to learn the corrected size.
 fn initialize_client(
-    client: &IAudioClient,
+    device: &IMMDevice,
     requested_frames: u32,
     sample_rate: u32,
     channels: u16,
-) -> anyhow::Result<ExclusiveModeResult> {
+) -> anyhow::Result<(IAudioClient, ExclusiveModeResult)> {
     let format = wave_format_for_channels(sample_rate, channels);
     let period = frames_to_ref_time(requested_frames, sample_rate);
 
-    // SAFETY: `format` is a validly-constructed `WAVEFORMATEX`; `client`
-    // has not been initialized yet on this path.
+    let client = activate_audio_client(device)?;
+    // SAFETY: `format` is a validly-constructed `WAVEFORMATEX`; `client` is
+    // freshly activated and not yet initialized.
     let first = unsafe {
         client.Initialize(
             AUDCLNT_SHAREMODE_EXCLUSIVE,
@@ -259,19 +259,19 @@ fn initialize_client(
     };
 
     match first {
-        Ok(()) => Ok(ExclusiveModeResult { exclusive: true, fallback_reason: None }),
+        Ok(()) => Ok((client, ExclusiveModeResult { exclusive: true, fallback_reason: None })),
         Err(e) if e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED => {
-            // SAFETY: `client` is a valid, freshly-failed-`Initialize`d
-            // client; `GetBufferSize` is documented as valid to call after
-            // a buffer-alignment failure to learn the required size.
-            // `GetBufferSize` reports the driver's own already-aligned
-            // frame count in response to the alignment failure above (per
-            // WASAPI's documented retry protocol) — no further rounding via
-            // `align_frames_up` is needed against it.
+            // SAFETY: `client` is the client that just failed `Initialize`
+            // with this specific error; `GetBufferSize` is documented as
+            // valid to call on it in exactly this situation, to learn the
+            // driver's required (already-aligned) frame count.
             let aligned_frames = unsafe { client.GetBufferSize() }.unwrap_or(requested_frames);
             let aligned_period = frames_to_ref_time(aligned_frames, sample_rate);
+            // A fresh client for the retry — see this function's doc
+            // comment on why `client` itself can't be re-`Initialize`d.
+            let retry_client = activate_audio_client(device)?;
             let retry = unsafe {
-                client.Initialize(
+                retry_client.Initialize(
                     AUDCLNT_SHAREMODE_EXCLUSIVE,
                     AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                     aligned_period,
@@ -281,32 +281,52 @@ fn initialize_client(
                 )
             };
             match retry {
-                Ok(()) => Ok(ExclusiveModeResult { exclusive: true, fallback_reason: None }),
-                Err(e) => fall_back_to_shared(client, requested_frames, sample_rate, &format, e),
+                Ok(()) => Ok((retry_client, ExclusiveModeResult { exclusive: true, fallback_reason: None })),
+                Err(e) => fall_back_to_shared(device, requested_frames, sample_rate, &format, e),
             }
         }
-        Err(e) => fall_back_to_shared(client, requested_frames, sample_rate, &format, e),
+        Err(e) => fall_back_to_shared(device, requested_frames, sample_rate, &format, e),
     }
 }
 
 fn fall_back_to_shared(
-    client: &IAudioClient,
+    device: &IMMDevice,
     requested_frames: u32,
     sample_rate: u32,
     format: &WAVEFORMATEX,
     exclusive_err: windows::core::Error,
-) -> anyhow::Result<ExclusiveModeResult> {
+) -> anyhow::Result<(IAudioClient, ExclusiveModeResult)> {
     let period = frames_to_ref_time(requested_frames, sample_rate);
+    // A fresh client — whatever exclusive-mode attempt(s) led here already
+    // consumed their own client instance's one `Initialize` call.
+    let client = activate_audio_client(device)?;
     // SAFETY: `format` is a validly-constructed `WAVEFORMATEX`; shared mode
     // requires `hnsperiodicity` of 0 (the engine picks its own period).
+    // `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY`
+    // let the audio engine insert its own format-conversion APO — without
+    // them, shared-mode `Initialize` requires our format to exactly match
+    // the engine's current mix format (channel count and sample rate),
+    // which fails outright on any device whose mix format differs (a
+    // 5.1/7.1 mix format when we request stereo, or a different native
+    // sample rate) — not an edge case in practice.
     unsafe {
-        client.Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period, 0, format, None)
+        client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            period,
+            0,
+            format,
+            None,
+        )
     }
     .map_err(|e| anyhow::anyhow!("WASAPI shared-mode fallback also failed: {e}"))?;
-    Ok(ExclusiveModeResult {
-        exclusive: false,
-        fallback_reason: Some(format!("Exclusive mode unavailable ({exclusive_err}); using shared mode")),
-    })
+    Ok((
+        client,
+        ExclusiveModeResult {
+            exclusive: false,
+            fallback_reason: Some(format!("Exclusive mode unavailable ({exclusive_err}); using shared mode")),
+        },
+    ))
 }
 
 /// Owns a running WASAPI exclusive/shared-mode capture stream's real-time
@@ -326,61 +346,127 @@ impl Drop for WasapiCaptureStream {
     }
 }
 
+/// Everything a capture stream needs, produced by [`setup_capture`] — always
+/// on the real-time thread that will go on to use it (see that function's
+/// doc comment for why).
+struct CaptureSetup {
+    client: IAudioClient,
+    capture: IAudioCaptureClient,
+    event: HANDLE,
+    channels: u16,
+    result: ExclusiveModeResult,
+}
+
+/// Performs ALL COM setup for a capture stream: resolving the device,
+/// negotiating the format (including the mono-device `GetMixFormat` query),
+/// creating the event, obtaining `IAudioCaptureClient`, and starting the
+/// client.
+///
+/// MUST be called from the same thread that will go on to wait on the
+/// returned event and call methods on the returned `client`/`capture` — NOT
+/// from the thread that calls `start_capture`. `IAudioClient`/
+/// `IAudioCaptureClient` wrap a COM interface pointer that is not `Send`
+/// (COM interfaces can require apartment marshaling in general, and
+/// `windows-core` does not special-case WASAPI's specific interfaces), so
+/// moving one of these objects to a different thread after creating it —
+/// even a thread that has also joined a compatible apartment — is not
+/// something this module attempts. Calling this function ON the real-time
+/// thread instead (which joins the same `COINIT_MULTITHREADED` apartment
+/// via `ensure_com_initialized()` first) means every COM object it creates
+/// simply never leaves the thread it was created on.
+fn setup_capture(device_id: &str, buffer_size_frames: u32, sample_rate: u32) -> anyhow::Result<CaptureSetup> {
+    let device = open_device(device_id)?;
+    // A throwaway client, `Activate`d but never `Initialize`d, purely to
+    // query the device's native channel count before committing to a
+    // format — see `query_native_channels`'s doc comment for why a
+    // hardcoded stereo format isn't safe to assume.
+    let probe_client = activate_audio_client(&device)?;
+    let channels = query_native_channels(&probe_client);
+    drop(probe_client);
+
+    let (client, result) = initialize_client(&device, buffer_size_frames, sample_rate, channels)?;
+
+    // SAFETY: `CreateEventW` with all-`None`/`false` arguments creates an
+    // anonymous, auto-reset-off, initially-unsignaled event; a valid
+    // pattern for WASAPI's event-driven mode.
+    let event = unsafe { CreateEventW(None, false, false, None) }?;
+    let rest = (|| -> anyhow::Result<IAudioCaptureClient> {
+        // SAFETY: `event` was just created above and is a valid event
+        // handle; `client` has been `Initialize`d (exclusive or shared)
+        // above.
+        unsafe { client.SetEventHandle(event) }?;
+        // SAFETY: requesting `IAudioCaptureClient` from an initialized
+        // capture client is the documented way to obtain it.
+        let capture: IAudioCaptureClient = unsafe { client.GetService() }?;
+        // SAFETY: `client` is fully initialized and has a service + event
+        // handle registered.
+        unsafe { client.Start() }?;
+        Ok(capture)
+    })();
+
+    match rest {
+        Ok(capture) => Ok(CaptureSetup { client, capture, event, channels, result }),
+        Err(e) => {
+            // Close the event on every failure path past its creation, not
+            // just on success.
+            // SAFETY: `event` was created above by this function and has
+            // not been handed to anything else yet on this failure path.
+            unsafe {
+                let _ = CloseHandle(event);
+            }
+            Err(e)
+        }
+    }
+}
+
 /// Starts a dedicated real-time capture thread against `device_id`,
 /// pushing de-interleaved stereo `f32` samples into `producer`. Negotiates
 /// exclusive mode first (falling back to shared mode — see
 /// [`ExclusiveModeResult`]), and handles mono-only devices by duplicating
 /// the single decoded sample to both L/R, matching the old cpal-based
 /// `input_channels < 2` handling in `manager.rs`.
+///
+/// All COM setup (see [`setup_capture`]) runs ON the spawned real-time
+/// thread, not on the calling thread — the calling thread may be in a
+/// different (or no) COM apartment (e.g. Tauri's command dispatch thread,
+/// which `tao`'s windowing setup puts into a single-threaded apartment),
+/// and WASAPI's COM objects are not safe to create on one thread and use
+/// from another. The setup `Result` crosses back to the caller over a
+/// bounded channel instead.
 pub fn start_capture(
     device_id: &str,
     buffer_size_frames: u32,
     sample_rate: u32,
     mut producer: HeapProd<f32>,
 ) -> anyhow::Result<(WasapiCaptureStream, ExclusiveModeResult)> {
-    let client = open_audio_client(device_id)?;
-    let channels = query_native_channels(&client);
-    let result = initialize_client(&client, buffer_size_frames, sample_rate, channels)?;
-    // SAFETY: `CreateEventW` with all-`None`/`false` arguments creates an
-    // anonymous, auto-reset-off, initially-unsignaled event; a valid
-    // pattern for WASAPI's event-driven mode.
-    let event = unsafe { CreateEventW(None, false, false, None) }?;
-    // SAFETY: `event` was just created above and is a valid event handle;
-    // `client` has been `Initialize`d (exclusive or shared) above.
-    unsafe { client.SetEventHandle(event) }?;
-    // SAFETY: requesting `IAudioCaptureClient` from an initialized capture
-    // client is the documented way to obtain it.
-    let capture: IAudioCaptureClient = unsafe { client.GetService() }?;
-    // SAFETY: `client` is fully initialized and has a service + event
-    // handle registered.
-    unsafe { client.Start() }?;
-
+    let device_id = device_id.to_string();
     let stop_flag = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop_flag);
-    let event_raw = event.0 as isize;
-    // See `SendComPtr`'s doc comment: these COM objects are moved into the
-    // dedicated real-time thread below, which joins the same MTA via
-    // `ensure_com_initialized()` as its first action.
-    let client = SendComPtr(client);
-    let capture = SendComPtr(capture);
+    let (result_tx, result_rx) = mpsc::sync_channel::<anyhow::Result<ExclusiveModeResult>>(1);
 
     let thread = std::thread::spawn(move || {
         ensure_com_initialized();
-        // `client`/`capture` are used here only through `SendComPtr`'s
-        // `Deref` (never a direct `.0` projection), so Rust 2021's
-        // disjoint closure capture moves the whole wrapper into this
-        // closure rather than just its inner field (which would recreate
-        // the original `Send` error, since the field itself isn't `Send`)
-        // — the same pitfall `asio.rs`'s `add_callback` closure documents
-        // for its own buffer-info fields.
-        let client = client;
-        let capture = capture;
-        // `HANDLE` wraps a raw `*mut c_void`, which is not `Send`, so the
-        // handle crosses the thread boundary as a plain `isize` and is
-        // reconstructed here.
-        let event = HANDLE(event_raw as _);
+        let CaptureSetup { client, capture, event, channels, result } =
+            match setup_capture(&device_id, buffer_size_frames, sample_rate) {
+                Ok(setup) => setup,
+                Err(e) => {
+                    let _ = result_tx.send(Err(e));
+                    return;
+                }
+            };
+        if result_tx.send(Ok(result)).is_err() {
+            // Caller gave up waiting (e.g. panicked) before we could report
+            // success — nothing to serve, tear down and exit.
+            unsafe {
+                let _ = client.Stop();
+                let _ = CloseHandle(event);
+            }
+            return;
+        }
+
         let mmcss_once = Once::new();
-        while !thread_stop.load(Ordering::Relaxed) {
+        let mut device_error = false;
+        'outer: while !thread_stop.load(Ordering::Relaxed) {
             // SAFETY: `event` is a valid, still-open event handle for the
             // lifetime of this loop (closed only after the loop exits,
             // below).
@@ -392,47 +478,74 @@ pub fn start_capture(
                 crate::audio::mmcss::boost_current_thread_to_pro_audio();
             });
 
-            // SAFETY: `capture` is a valid, started `IAudioCaptureClient`.
-            let Ok(packet_frames) = (unsafe { capture.GetNextPacketSize() }) else {
-                break;
-            };
-            if packet_frames == 0 {
-                continue;
-            }
-            let mut data_ptr = std::ptr::null_mut();
-            let mut num_frames = 0u32;
-            let mut flags = 0u32;
-            // SAFETY: `capture` is valid and started; `data_ptr`/
-            // `num_frames`/`flags` are valid out-pointers for this call.
-            if unsafe { capture.GetBuffer(&mut data_ptr, &mut num_frames, &mut flags, None, None) }.is_err() {
-                break;
-            }
-            // SAFETY: `data_ptr` was just returned by `GetBuffer` above as
-            // pointing to exactly `num_frames * channels` valid `f32`
-            // samples (the device was initialized with a `channels`-wide
-            // `WAVEFORMATEX` of 32-bit float samples); the slice does not
-            // outlive this iteration, and `ReleaseBuffer` below is called
-            // before the next `GetBuffer`.
-            let samples = unsafe {
-                std::slice::from_raw_parts(data_ptr as *const f32, (num_frames * channels as u32) as usize)
-            };
-            if channels == 1 {
-                // Mono device: duplicate the single decoded sample to both
-                // L/R (matches the old cpal `input_channels < 2` handling).
-                for &s in samples.iter() {
-                    let _ = producer.try_push(s);
-                    let _ = producer.try_push(s);
+            // Drain every packet queued since the last wake, not just one —
+            // in shared mode especially, more than one packet can arrive
+            // between events.
+            loop {
+                // SAFETY: `capture` is a valid, started `IAudioCaptureClient`.
+                let packet_frames = match unsafe { capture.GetNextPacketSize() } {
+                    Ok(p) => p,
+                    Err(_) => {
+                        device_error = true;
+                        break;
+                    }
+                };
+                if packet_frames == 0 {
+                    break;
                 }
-            } else {
-                for pair in samples.chunks_exact(2) {
-                    let _ = producer.try_push(pair[0]);
-                    let _ = producer.try_push(pair[1]);
+                let mut data_ptr = std::ptr::null_mut();
+                let mut num_frames = 0u32;
+                let mut flags = 0u32;
+                // SAFETY: `capture` is valid and started; `data_ptr`/
+                // `num_frames`/`flags` are valid out-pointers for this call.
+                if unsafe { capture.GetBuffer(&mut data_ptr, &mut num_frames, &mut flags, None, None) }.is_err() {
+                    device_error = true;
+                    break;
+                }
+                // `GetBuffer` can report success with a null pointer and 0
+                // frames (`AUDCLNT_S_BUFFER_EMPTY`, e.g. a muted capture
+                // device) — nothing to read, but still must `ReleaseBuffer`
+                // the (empty) buffer it handed out before treating this as
+                // "drained" and going back to waiting.
+                if num_frames == 0 || data_ptr.is_null() {
+                    unsafe {
+                        let _ = capture.ReleaseBuffer(num_frames);
+                    }
+                    break;
+                }
+                // SAFETY: `data_ptr` was just returned by `GetBuffer` above
+                // as pointing to exactly `num_frames * channels` valid
+                // `f32` samples (the device was initialized with a
+                // `channels`-wide `WAVEFORMATEX` of 32-bit float samples);
+                // the slice does not outlive this iteration, and
+                // `ReleaseBuffer` below is called before the next
+                // `GetBuffer`.
+                let samples = unsafe {
+                    std::slice::from_raw_parts(data_ptr as *const f32, (num_frames * channels as u32) as usize)
+                };
+                if channels == 1 {
+                    // Mono device: duplicate the single decoded sample to
+                    // both L/R (matches the old cpal `input_channels < 2`
+                    // handling).
+                    for &s in samples.iter() {
+                        let _ = producer.try_push(s);
+                        let _ = producer.try_push(s);
+                    }
+                } else {
+                    for pair in samples.chunks_exact(2) {
+                        let _ = producer.try_push(pair[0]);
+                        let _ = producer.try_push(pair[1]);
+                    }
+                }
+                // SAFETY: releases exactly the `num_frames` `GetBuffer`
+                // handed out above, as required before the next
+                // `GetBuffer` call.
+                unsafe {
+                    let _ = capture.ReleaseBuffer(num_frames);
                 }
             }
-            // SAFETY: releases exactly the `num_frames` `GetBuffer` handed
-            // out above, as required before the next `GetBuffer` call.
-            unsafe {
-                let _ = capture.ReleaseBuffer(num_frames);
+            if device_error {
+                break 'outer;
             }
         }
         // SAFETY: `client` was successfully `Start()`ed above; stopping an
@@ -447,7 +560,17 @@ pub fn start_capture(
         }
     });
 
-    Ok((WasapiCaptureStream { stop_flag, thread: Some(thread) }, result))
+    match result_rx.recv() {
+        Ok(Ok(result)) => Ok((WasapiCaptureStream { stop_flag, thread: Some(thread) }, result)),
+        Ok(Err(e)) => {
+            let _ = thread.join();
+            Err(e)
+        }
+        Err(_) => {
+            let _ = thread.join();
+            Err(anyhow::anyhow!("WASAPI capture setup thread ended without reporting a result"))
+        }
+    }
 }
 
 /// Owns a running WASAPI exclusive/shared-mode render stream's real-time
@@ -467,6 +590,60 @@ impl Drop for WasapiRenderStream {
     }
 }
 
+/// Everything a render stream needs, produced by [`setup_render`] — see
+/// [`setup_capture`]'s doc comment for why this must run on the real-time
+/// thread that will go on to use it, not on the calling thread.
+struct RenderSetup {
+    client: IAudioClient,
+    render: IAudioRenderClient,
+    event: HANDLE,
+    channels: u16,
+    buffer_frames: u32,
+    result: ExclusiveModeResult,
+}
+
+/// Render's counterpart to [`setup_capture`] — same COM-setup shape, same
+/// same-thread requirement, plus reading `GetBufferSize()` once the client
+/// is initialized (the render loop needs its total buffer size, not just
+/// `IAudioRenderClient`).
+fn setup_render(device_id: &str, buffer_size_frames: u32, sample_rate: u32) -> anyhow::Result<RenderSetup> {
+    let device = open_device(device_id)?;
+    let probe_client = activate_audio_client(&device)?;
+    let channels = query_native_channels(&probe_client);
+    drop(probe_client);
+
+    let (client, result) = initialize_client(&device, buffer_size_frames, sample_rate, channels)?;
+
+    // SAFETY: see `setup_capture`'s identical `CreateEventW` call.
+    let event = unsafe { CreateEventW(None, false, false, None) }?;
+    let rest = (|| -> anyhow::Result<(IAudioRenderClient, u32)> {
+        // SAFETY: `event` was just created above; `client` has been
+        // `Initialize`d above.
+        unsafe { client.SetEventHandle(event) }?;
+        // SAFETY: requesting `IAudioRenderClient` from an initialized
+        // render client is the documented way to obtain it.
+        let render: IAudioRenderClient = unsafe { client.GetService() }?;
+        // SAFETY: `client` is fully initialized.
+        let buffer_frames = unsafe { client.GetBufferSize() }?;
+        // SAFETY: `client` is fully initialized and has a service + event
+        // handle registered.
+        unsafe { client.Start() }?;
+        Ok((render, buffer_frames))
+    })();
+
+    match rest {
+        Ok((render, buffer_frames)) => Ok(RenderSetup { client, render, event, channels, buffer_frames, result }),
+        Err(e) => {
+            // SAFETY: `event` was created above by this function and has
+            // not been handed to anything else yet on this failure path.
+            unsafe {
+                let _ = CloseHandle(event);
+            }
+            Err(e)
+        }
+    }
+}
+
 /// Starts a dedicated real-time render thread against `device_id`, pulling
 /// interleaved stereo `f32` samples from `consumer`, running them through
 /// the shared mixer stage, and writing the result to the device. Negotiates
@@ -476,6 +653,10 @@ impl Drop for WasapiRenderStream {
 /// cpal-based output-channel handling in `manager.rs`, which writes the
 /// selected left channel and leaves any channel beyond the device's count
 /// unwritten/silent).
+///
+/// See [`start_capture`]'s doc comment for why setup runs on the spawned
+/// thread and the result crosses back over a channel rather than being
+/// returned directly.
 pub fn start_render(
     device_id: &str,
     buffer_size_frames: u32,
@@ -484,40 +665,37 @@ pub fn start_render(
     mixer: MixerState,
     mut virt_producer: Option<HeapProd<f32>>,
 ) -> anyhow::Result<(WasapiRenderStream, ExclusiveModeResult)> {
-    let client = open_audio_client(device_id)?;
-    let channels = query_native_channels(&client);
-    let result = initialize_client(&client, buffer_size_frames, sample_rate, channels)?;
-    // SAFETY: see `start_capture`'s identical `CreateEventW` call.
-    let event = unsafe { CreateEventW(None, false, false, None) }?;
-    // SAFETY: `event` was just created above; `client` has been
-    // `Initialize`d above.
-    unsafe { client.SetEventHandle(event) }?;
-    // SAFETY: requesting `IAudioRenderClient` from an initialized render
-    // client is the documented way to obtain it.
-    let render: IAudioRenderClient = unsafe { client.GetService() }?;
-    // SAFETY: `client` is fully initialized.
-    let buffer_frames = unsafe { client.GetBufferSize() }?;
-    // SAFETY: `client` is fully initialized and has a service + event
-    // handle registered.
-    unsafe { client.Start() }?;
-
+    let device_id = device_id.to_string();
     let stop_flag = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop_flag);
-    let event_raw = event.0 as isize;
     let output_is_asio = mixer.output_is_asio;
-    let mut left_buf = vec![0.0f32; buffer_frames as usize];
-    let mut right_buf = vec![0.0f32; buffer_frames as usize];
-    // See `SendComPtr`'s doc comment.
-    let client = SendComPtr(client);
-    let render = SendComPtr(render);
+    let (result_tx, result_rx) = mpsc::sync_channel::<anyhow::Result<ExclusiveModeResult>>(1);
 
     let thread = std::thread::spawn(move || {
         ensure_com_initialized();
-        // See the identical note in `start_capture`'s thread body.
-        let client = client;
-        let render = render;
-        let event = HANDLE(event_raw as _);
+        let RenderSetup { client, render, event, channels, buffer_frames, result } =
+            match setup_render(&device_id, buffer_size_frames, sample_rate) {
+                Ok(setup) => setup,
+                Err(e) => {
+                    let _ = result_tx.send(Err(e));
+                    return;
+                }
+            };
+        if result_tx.send(Ok(result)).is_err() {
+            unsafe {
+                let _ = client.Stop();
+                let _ = CloseHandle(event);
+            }
+            return;
+        }
+
+        let mut left_buf = vec![0.0f32; buffer_frames as usize];
+        let mut right_buf = vec![0.0f32; buffer_frames as usize];
         let mmcss_once = Once::new();
+        // Logs a `GetCurrentPadding` failure once rather than silently
+        // treating every future call as "0 padding" forever — a device-lost
+        // condition should be visible somewhere.
+        let padding_err_once = Once::new();
         while !thread_stop.load(Ordering::Relaxed) {
             // SAFETY: `event` is a valid, still-open event handle for the
             // lifetime of this loop.
@@ -530,7 +708,15 @@ pub fn start_render(
             });
 
             // SAFETY: `client` is valid and started.
-            let padding = unsafe { client.GetCurrentPadding() }.unwrap_or(0);
+            let padding = match unsafe { client.GetCurrentPadding() } {
+                Ok(p) => p,
+                Err(e) => {
+                    padding_err_once.call_once(|| {
+                        log::warn!("WASAPI GetCurrentPadding failed (device may be lost): {e}");
+                    });
+                    0
+                }
+            };
             let frames_available = buffer_frames.saturating_sub(padding);
             if frames_available == 0 {
                 continue;
@@ -560,6 +746,15 @@ pub fn start_render(
             let Ok(data_ptr) = (unsafe { render.GetBuffer(frames_available) }) else {
                 continue;
             };
+            // `GetBuffer` can in principle report success with a null
+            // pointer — guard before building a slice from it, symmetric
+            // with the same check on the capture side.
+            if data_ptr.is_null() {
+                unsafe {
+                    let _ = render.ReleaseBuffer(frames_available, 0);
+                }
+                continue;
+            }
             // SAFETY: `data_ptr` was just returned by `GetBuffer` above as
             // pointing to exactly `frames_available * channels` valid
             // writable `f32` slots (the device was initialized with a
@@ -603,7 +798,17 @@ pub fn start_render(
         }
     });
 
-    Ok((WasapiRenderStream { stop_flag, thread: Some(thread) }, result))
+    match result_rx.recv() {
+        Ok(Ok(result)) => Ok((WasapiRenderStream { stop_flag, thread: Some(thread) }, result)),
+        Ok(Err(e)) => {
+            let _ = thread.join();
+            Err(e)
+        }
+        Err(_) => {
+            let _ = thread.join();
+            Err(anyhow::anyhow!("WASAPI render setup thread ended without reporting a result"))
+        }
+    }
 }
 
 #[cfg(test)]

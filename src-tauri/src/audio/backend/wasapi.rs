@@ -3,7 +3,19 @@
 use windows::Win32::Media::Audio::{
     eCapture, eConsole, eRender, DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator,
 };
-use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
+};
+
+/// Decodes a COM-allocated wide string and frees the CoTaskMem allocation
+/// the caller owns — `IMMDevice::GetId` and `PropVariantToStringAlloc` both
+/// hand back a `PWSTR` the caller must release, and `windows-rs`'s `PWSTR`
+/// has no `Drop` impl that does this automatically.
+fn decode_and_free_pwstr(p: windows::core::PWSTR) -> Option<String> {
+    let s = unsafe { p.to_string() }.ok();
+    unsafe { CoTaskMemFree(Some(p.0 as *const _)) };
+    s
+}
 
 pub struct WasapiDeviceInfo {
     pub id: String,
@@ -43,7 +55,7 @@ pub fn list_wasapi_devices() -> Vec<WasapiDeviceInfo> {
         let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(flow, eConsole) }
             .ok()
             .and_then(|d| unsafe { d.GetId() }.ok())
-            .and_then(|p| unsafe { p.to_string() }.ok());
+            .and_then(decode_and_free_pwstr);
 
         let count = unsafe { collection.GetCount() }.unwrap_or(0);
         for i in 0..count {
@@ -53,7 +65,7 @@ pub fn list_wasapi_devices() -> Vec<WasapiDeviceInfo> {
             let Ok(id_pwstr) = (unsafe { device.GetId() }) else {
                 continue;
             };
-            let Ok(id) = (unsafe { id_pwstr.to_string() }) else {
+            let Some(id) = decode_and_free_pwstr(id_pwstr) else {
                 continue;
             };
             let name = device_friendly_name(&device).unwrap_or_else(|| "<unknown>".to_string());
@@ -72,11 +84,20 @@ pub fn list_wasapi_devices() -> Vec<WasapiDeviceInfo> {
 
 fn device_friendly_name(device: &windows::Win32::Media::Audio::IMMDevice) -> Option<String> {
     use windows::Win32::Devices::Properties::DEVPKEY_Device_FriendlyName;
-    use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
+    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToStringAlloc};
     let store = unsafe { device.OpenPropertyStore(windows::Win32::System::Com::STGM_READ) }.ok()?;
-    let prop = unsafe { store.GetValue(&DEVPKEY_Device_FriendlyName as *const _ as *const _) }.ok()?;
-    let pwstr = unsafe { PropVariantToStringAlloc(&prop) }.ok()?;
-    unsafe { pwstr.to_string() }.ok()
+    // GetValue's PROPVARIANT owns COM-allocated memory (e.g. the string
+    // buffer behind its VT_LPWSTR variant) that must be released via
+    // PropVariantClear regardless of what happens below — done via the
+    // `mut` binding freed at the end of this function, not by any Drop impl.
+    let mut prop = unsafe { store.GetValue(&DEVPKEY_Device_FriendlyName as *const _ as *const _) }.ok()?;
+    let name = unsafe { PropVariantToStringAlloc(&prop) }
+        .ok()
+        .and_then(decode_and_free_pwstr);
+    unsafe {
+        let _ = PropVariantClear(&mut prop);
+    }
+    name
 }
 
 #[cfg(test)]

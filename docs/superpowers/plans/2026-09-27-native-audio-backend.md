@@ -393,7 +393,7 @@ git commit -m "feat(audio): add MMCSS Pro Audio thread-boost helper"
 - Create: `src-tauri/src/audio/backend/mod.rs`
 - Create: `src-tauri/src/audio/backend/asio.rs`
 - Modify: `src-tauri/Cargo.toml` (add `asio-sys` dependency)
-- Modify: `src-tauri/src/audio/mod.rs` (add `pub mod backend;`)
+- Modify: `src-tauri/src/audio/mod.rs` (add `#[cfg(target_os = "windows")] pub mod backend;` — gated, same reasoning as Task 3's `mmcss` gate)
 - Test: `src-tauri/src/audio/backend/asio.rs` (inline `#[cfg(test)]`, enumeration-only — no live driver required for the pure-logic parts)
 
 **Interfaces:**
@@ -406,15 +406,21 @@ git commit -m "feat(audio): add MMCSS Pro Audio thread-boost helper"
 
 - [ ] **Step 1: Add the `asio-sys` dependency**
 
-In `src-tauri/Cargo.toml`, replace the line:
+`asio-sys` requires the Windows-only ASIO SDK to even build (same as `cpal`'s
+`asio` feature already does) — it must go in the existing
+`[target.'cfg(target_os = "windows")'.dependencies]` block (the same one
+`windows-sys`/`windows` already live in), NOT the plain top-level
+`[dependencies]` block where `cpal` sits, otherwise a non-Windows build of
+this crate breaks (violates this project's own "builds on other platforms,
+plugin hosting stubbed out" invariant, stated in `README.md`). In
+`src-tauri/Cargo.toml`, inside the existing
+`[target.'cfg(target_os = "windows")'.dependencies]` block (the one added to
+in Task 3), add:
 ```toml
-cpal = { version = "0.18", features = ["asio"] }
-```
-with (keep cpal for now — it is only removed in Task 8 — add asio-sys alongside it):
-```toml
-cpal = { version = "0.18", features = ["asio"] }
 asio-sys = "0.4"
 ```
+Leave the top-level `cpal = { version = "0.18", features = ["asio"] }` line
+untouched — it stays until Task 8.
 
 - [ ] **Step 2: Write the test**
 
@@ -444,14 +450,21 @@ Expected: FAIL with "unresolved module `backend`"
 
 - [ ] **Step 4: Implement `backend/mod.rs`**
 
+Both submodules are Windows-only (ASIO and WASAPI don't exist elsewhere),
+matching the same `#[cfg(target_os = "windows")]` convention Task 3
+established for `mmcss.rs`:
 ```rust
+#[cfg(target_os = "windows")]
 pub mod asio;
+#[cfg(target_os = "windows")]
 pub mod wasapi;
 ```
 
 - [ ] **Step 5: Implement `backend/asio.rs` enumeration**
 
 ```rust
+#![cfg(target_os = "windows")]
+
 use asio_sys::Asio;
 
 pub struct AsioDeviceInfo {
@@ -684,8 +697,8 @@ git commit -m "feat(audio): add ASIO single-driver duplex callback backend"
 ## Task 6: WASAPI backend — device enumeration (`backend/wasapi.rs` part 1)
 
 **Files:**
-- Create: `src-tauri/src/audio/backend/wasapi.rs`
-- Modify: `src-tauri/src/audio/backend/mod.rs` (already declares `pub mod wasapi;` from Task 4 — no change needed)
+- Modify: `src-tauri/src/audio/backend/wasapi.rs` (Task 4 already created this file as an empty, doc-comment-only placeholder so `backend/mod.rs`'s `pub mod wasapi;` — already gated `#[cfg(target_os = "windows")]` since Task 4 — would resolve; this task replaces that placeholder content)
+- Modify: `src-tauri/src/audio/backend/mod.rs` (already declares `#[cfg(target_os = "windows")] pub mod wasapi;` from Task 4 — no change needed)
 
 **Interfaces:**
 - Produces:
@@ -721,6 +734,8 @@ Expected: FAIL with "cannot find function `list_wasapi_devices`"
 - [ ] **Step 3: Implement**
 
 ```rust
+#![cfg(target_os = "windows")]
+
 use windows::core::Interface;
 use windows::Win32::Media::Audio::{
     eAll, eCapture, eConsole, eRender, DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator,

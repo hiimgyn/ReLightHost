@@ -27,7 +27,16 @@ use protocol::{ControlRequest, ControlResponse};
 /// Sandbox round-trip budget: the block's own duration plus a fixed
 /// scheduling/IPC margin, instead of a fixed constant that either wastes
 /// time on small blocks or truncates large ones.
+///
+/// `sample_rate == 0` is guarded explicitly: `block_size as f64 / 0.0` is
+/// infinite (or NaN, if `block_size` is also 0), and `Duration::from_secs_f64`
+/// panics on a non-finite input — a real-time thread hitting a misconfigured
+/// or not-yet-known sample rate must not crash the process over a timeout
+/// calculation, so this falls back to the fixed IPC margin alone.
 fn response_timeout(block_size: u32, sample_rate: u32) -> std::time::Duration {
+    if sample_rate == 0 {
+        return std::time::Duration::from_millis(8);
+    }
     let block = std::time::Duration::from_secs_f64(block_size as f64 / sample_rate as f64);
     block + std::time::Duration::from_millis(8)
 }
@@ -207,7 +216,13 @@ impl SandboxedVst3Processor {
             return;
         }
 
-        match link.process_rx.recv_timeout(response_timeout(self.block_size as u32, self.sample_rate as u32)) {
+        // Use the ACTUAL runtime block length, not the configured
+        // `self.block_size` — the real-time callback's actual block size
+        // can differ from what was configured (same class of issue as the
+        // CLAP/VST2 max-block-size bug fixed elsewhere in this codebase),
+        // so the timeout must scale with what this block really is.
+        let actual_block_size = left.len().min(right.len()) as u32;
+        match link.process_rx.recv_timeout(response_timeout(actual_block_size, self.sample_rate as u32)) {
             Ok(payload) => {
                 if let Some((decoded_l, decoded_r)) = protocol::decode_process_block(&payload) {
                     let n = left.len().min(right.len()).min(decoded_l.len()).min(decoded_r.len());
@@ -420,6 +435,14 @@ mod timeout_tests {
         // the old fixed 20ms constant instead of truncating the plugin.
         let t_large = response_timeout(2048, 48_000);
         assert!(t_large > Duration::from_millis(20));
+    }
+
+    #[test]
+    fn zero_sample_rate_falls_back_instead_of_panicking() {
+        // `block_size as f64 / 0.0` is infinite/NaN — `Duration::from_secs_f64`
+        // would panic on that; must fall back to a safe fixed timeout instead.
+        assert_eq!(response_timeout(512, 0), Duration::from_millis(8));
+        assert_eq!(response_timeout(0, 0), Duration::from_millis(8));
     }
 }
 

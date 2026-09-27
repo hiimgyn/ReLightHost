@@ -1,3 +1,4 @@
+use crate::audio::backend::asio::AsioDeviceInfo;
 use crate::audio::backend::{asio, wasapi};
 use crate::audio::types::AudioDeviceInfo;
 use anyhow::Result;
@@ -68,10 +69,17 @@ impl AudioDevice {
     /// the friendly name that may have matched), since that's what
     /// downstream code passes straight to `backend::wasapi::start_capture`/
     /// `start_render` as the actual endpoint id to open.
-    pub fn find_input_device(device_id: &str) -> Option<String> {
+    ///
+    /// `asio_devices` is a caller-supplied, already-enumerated
+    /// `list_asio_devices()` result — used instead of re-enumerating here
+    /// when `device_id` turns out to be ASIO-prefixed. Callers that don't
+    /// have one handy (or are only ever resolving non-ASIO ids) can pass
+    /// `&[]`; enumeration only actually happens inside `list_asio_devices()`
+    /// itself, never implicitly in this function.
+    pub fn find_input_device(device_id: &str, asio_devices: &[AsioDeviceInfo]) -> Option<String> {
         if let Some(name) = device_id.strip_prefix("asio_") {
-            return asio::list_asio_devices()
-                .into_iter()
+            return asio_devices
+                .iter()
                 .any(|d| d.name == name && d.input_channels > 0)
                 .then(|| format!("asio_{name}"));
         }
@@ -83,11 +91,12 @@ impl AudioDevice {
     }
 
     /// Output counterpart of [`find_input_device`] — see its doc comment
-    /// for the friendly-name backward-compatibility match.
-    pub fn find_output_device(device_id: &str) -> Option<String> {
+    /// for the friendly-name backward-compatibility match and the
+    /// `asio_devices` cache parameter.
+    pub fn find_output_device(device_id: &str, asio_devices: &[AsioDeviceInfo]) -> Option<String> {
         if let Some(name) = device_id.strip_prefix("asio_") {
-            return asio::list_asio_devices()
-                .into_iter()
+            return asio_devices
+                .iter()
                 .any(|d| d.name == name && d.output_channels > 0)
                 .then(|| format!("asio_{name}"));
         }
@@ -104,10 +113,10 @@ impl AudioDevice {
     /// "handle" to return (a driver name, not a `cpal::Device` per
     /// direction), so both elements of the returned pair are the same
     /// canonical id; kept as a pair so callers don't need to change shape.
-    pub fn find_asio_device_pair(device_name: &str) -> Option<(String, String)> {
-        let dev = asio::list_asio_devices()
-            .into_iter()
-            .find(|d| d.name == device_name)?;
+    ///
+    /// `asio_devices` — see [`find_input_device`]'s doc comment.
+    pub fn find_asio_device_pair(device_name: &str, asio_devices: &[AsioDeviceInfo]) -> Option<(String, String)> {
+        let dev = asio_devices.iter().find(|d| d.name == device_name)?;
         if dev.input_channels > 0 && dev.output_channels > 0 {
             let id = format!("asio_{device_name}");
             Some((id.clone(), id))

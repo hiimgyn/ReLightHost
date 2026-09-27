@@ -1,7 +1,9 @@
 #![cfg(target_os = "windows")]
 
+use std::ffi::c_void;
+use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Once};
-use asio_sys::{Asio, AsioSampleType, CallbackInfo, Driver};
+use asio_sys::{Asio, AsioSampleType, BufferPreference, CallbackInfo, Driver};
 use ringbuf::{HeapProd, HeapCons, traits::{Producer, Consumer}};
 use crate::audio::mixer::{MixerState, process_block, main_output_gate_open};
 
@@ -80,13 +82,12 @@ pub fn list_asio_devices() -> Vec<AsioDeviceInfo> {
 /// Converts a mixer sample in `[-1.0, 1.0]` to a 32-bit signed integer
 /// sample in ASIO's `ASIOSTInt32LSB` format.
 ///
-/// NOTE (scope): this hardcodes the `ASIOSTInt32LSB` conversion, the most
-/// common native format for consumer/prosumer ASIO drivers. It does NOT
-/// handle other sample types (e.g. `ASIOSTFloat32LSB`) — checking
-/// `driver.input_data_type()`/`output_data_type()` and branching on the
-/// result is explicitly deferred to Task 7, which wires this function into
-/// `manager.rs`. Matches the existing `f32_to_i16` clamp pattern in
-/// `manager.rs`.
+/// NOTE (scope): this hardcodes the `ASIOSTInt32LSB` conversion. It is one
+/// of the two natively-supported formats — see [`AsioSampleFormat`] and
+/// [`resolve_asio_sample_format`] for the other (`ASIOSTFloat32LSB`, which
+/// needs no conversion at all). Broader format support (e.g. `Int16LSB`,
+/// `Int24LSB`) stays out of scope. Matches the existing `f32_to_i16` clamp
+/// pattern in `manager.rs`.
 fn f32_to_asio_i32(v: f32) -> i32 {
     // Scales in `f64`, not `f32`: `i32::MAX` (2147483647) is not exactly
     // representable in `f32` (24-bit mantissa vs. 31 bits needed), so it
@@ -110,6 +111,135 @@ fn f32_to_asio_i32(v: f32) -> i32 {
 /// round-trip to `1.0`/`-1.0` within float epsilon.
 fn asio_i32_to_f32(v: i32) -> f32 {
     v as f32 / i32::MAX as f32
+}
+
+/// The two ASIO sample formats this module knows how to read/write.
+/// Resolved once per stream at setup time (see [`resolve_asio_sample_format`])
+/// and stored for the lifetime of the callback — never re-queried from the
+/// driver on the real-time path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AsioSampleFormat {
+    /// `ASIOSTInt32LSB` — needs [`f32_to_asio_i32`]/[`asio_i32_to_f32`].
+    Int32Lsb,
+    /// `ASIOSTFloat32LSB` — the buffer already holds native-endian `f32`
+    /// values directly; no conversion needed.
+    Float32Lsb,
+}
+
+/// Maps a driver-reported ASIO sample type to one of the two currently
+/// supported formats, or `None` for anything else (e.g. `ASIOSTInt16LSB`/
+/// `ASIOSTInt24LSB`) — broader format support stays explicitly out of scope.
+fn resolve_asio_sample_format(sample_type: &AsioSampleType) -> Option<AsioSampleFormat> {
+    match sample_type {
+        AsioSampleType::ASIOSTInt32LSB => Some(AsioSampleFormat::Int32Lsb),
+        AsioSampleType::ASIOSTFloat32LSB => Some(AsioSampleFormat::Float32Lsb),
+        _ => None,
+    }
+}
+
+/// Reads one sample from a raw ASIO buffer pointer, decoding it according to
+/// `format` — resolved once at stream setup, not re-queried here.
+///
+/// # Safety
+/// `ptr` must point to a valid buffer of at least `frame + 1` samples of the
+/// width implied by `format` (4 bytes either way, for both currently
+/// supported formats).
+#[inline]
+unsafe fn read_asio_sample(ptr: *const c_void, frame: usize, format: AsioSampleFormat) -> f32 {
+    match format {
+        AsioSampleFormat::Int32Lsb => asio_i32_to_f32(unsafe { *(ptr as *const i32).add(frame) }),
+        AsioSampleFormat::Float32Lsb => unsafe { *(ptr as *const f32).add(frame) },
+    }
+}
+
+/// Inverse of [`read_asio_sample`]: encodes `value` into a raw ASIO buffer
+/// pointer according to `format`.
+///
+/// # Safety
+/// `ptr` must point to a valid, exclusively-owned buffer of at least
+/// `frame + 1` samples of the width implied by `format`.
+#[inline]
+unsafe fn write_asio_sample(ptr: *mut c_void, frame: usize, format: AsioSampleFormat, value: f32) {
+    match format {
+        AsioSampleFormat::Int32Lsb => unsafe {
+            *(ptr as *mut i32).add(frame) = f32_to_asio_i32(value);
+        },
+        AsioSampleFormat::Float32Lsb => unsafe {
+            *(ptr as *mut f32).add(frame) = value;
+        },
+    }
+}
+
+/// Validates a caller-supplied buffer-size hint against what `driver`
+/// actually supports. `asio-sys`'s `create_buffers` (which
+/// `prepare_input_stream`/`prepare_output_stream` call into) only checks the
+/// hint against the driver's max — it does not check the driver's minimum,
+/// its step size, or a driver that only supports one fixed size — so an
+/// out-of-range or misaligned hint would otherwise be passed straight
+/// through to `ASIOCreateBuffers`, which is fatal for it.
+///
+/// Returns `None` (matching the OLD cpal-based code's `BufferSize::Default`
+/// behavior — let the driver pick its own preferred size) when the hint
+/// doesn't fit what `buffersize_range()` reports, logging why.
+fn validate_buffer_size_hint(
+    driver: &Driver,
+    hint: Option<i32>,
+    driver_name: &str,
+) -> Option<i32> {
+    let hint = hint?;
+    match driver.buffersize_range() {
+        Ok(range) => hint_fits_buffer_size_range(hint, range, driver_name),
+        Err(e) => {
+            log::warn!(
+                "ASIO buffersize_range() query failed for '{driver_name}', ignoring \
+                 configured buffer size {hint} and using the driver's own preferred \
+                 size instead: {e}"
+            );
+            None
+        }
+    }
+}
+
+/// Pure decision core of [`validate_buffer_size_hint`], split out so the
+/// min/max/step-vs-fixed-size logic can be unit-tested without a real,
+/// loaded ASIO driver (see `format_tests` below).
+fn hint_fits_buffer_size_range(
+    hint: i32,
+    range: asio_sys::BufferSizeRange,
+    driver_name: &str,
+) -> Option<i32> {
+    if hint < range.min || hint > range.max {
+        log::warn!(
+            "Configured ASIO buffer size {hint} is outside driver '{driver_name}''s \
+             supported range ({}..={}); using the driver's own preferred size instead",
+            range.min,
+            range.max
+        );
+        return None;
+    }
+
+    match range.preferred {
+        BufferPreference::Only(only) if hint as u32 != only => {
+            log::warn!(
+                "ASIO driver '{driver_name}' only supports a fixed buffer size of \
+                 {only} frames (configured: {hint}); using the driver's own preferred \
+                 size instead"
+            );
+            None
+        }
+        BufferPreference::Stepped { step, .. }
+            if step > 0 && (hint - range.min) % step as i32 != 0 =>
+        {
+            log::warn!(
+                "Configured ASIO buffer size {hint} does not align with driver \
+                 '{driver_name}''s step size of {step} frames (starting at {}); using \
+                 the driver's own preferred size instead",
+                range.min
+            );
+            None
+        }
+        _ => Some(hint),
+    }
 }
 
 /// Owns a running ASIO driver and its registered callback — full-duplex
@@ -162,13 +292,13 @@ pub struct AsioDuplexStream {
 /// case `manager.rs` actually uses instead.
 ///
 /// Sample-type note: this function REFUSES to start (returns `Err`) unless
-/// the driver's native format is `ASIOSTInt32LSB` (see
-/// `f32_to_asio_i32`/`asio_i32_to_f32`) — the fixed-width `i32` pointer
-/// arithmetic in the callback below would silently read/write out of
-/// bounds against a driver using a different sample width (e.g. 2-byte
-/// `ASIOSTInt16LSB` or 3-byte `ASIOSTInt24LSB`). Task 7 adds the
-/// `ASIOSTFloat32LSB` branch and relaxes this guard accordingly before
-/// wiring this into `manager.rs`.
+/// the driver's native format is `ASIOSTInt32LSB` or `ASIOSTFloat32LSB` (see
+/// [`AsioSampleFormat`]/[`resolve_asio_sample_format`]) — the fixed-width
+/// pointer arithmetic in the callback below would silently read/write out
+/// of bounds against a driver using a different sample width (e.g. 2-byte
+/// `ASIOSTInt16LSB` or 3-byte `ASIOSTInt24LSB`). The format actually in use
+/// is resolved once here, at setup, and stored for the callback's lifetime
+/// — never re-queried from the driver per callback invocation.
 pub fn start_duplex(
     driver_name: &str,
     in_offset: usize,
@@ -204,6 +334,13 @@ pub fn start_duplex(
         .load_driver(driver_name)
         .map_err(|e| anyhow::anyhow!("Failed to load ASIO driver '{driver_name}': {e}"))?;
 
+    // Validate the hint once, up front — both `prepare_input_stream` and
+    // `prepare_output_stream` below feed into the same `ASIOCreateBuffers`
+    // call (see the two-step construction comment below), so they share one
+    // validated (or `None`-if-invalid) buffer size rather than each risking
+    // its own inconsistent fallback.
+    let buffer_size_hint = validate_buffer_size_hint(&driver, buffer_size_hint, driver_name);
+
     // asio-sys's `prepare_input_stream`/`prepare_output_stream` always
     // allocate buffers starting at channel 0 (its internal
     // `prepare_buffer_infos` helper is private and not offset-aware) —
@@ -235,24 +372,27 @@ pub fn start_duplex(
         .ok_or_else(|| anyhow::anyhow!("ASIO driver returned no output stream"))?;
 
     // Refuse to start against a driver reporting a sample format other than
-    // the one this function's pointer arithmetic assumes: a narrower format
-    // (e.g. 2-byte ASIOSTInt16LSB) would make every `*const/*mut i32` access
-    // below read/write past the end of its real per-sample width.
+    // the two this module knows how to read/write: a narrower format (e.g.
+    // 2-byte ASIOSTInt16LSB) would make every fixed-width pointer access
+    // below read/write past the end of its real per-sample width. Resolved
+    // ONCE here, at setup — the callback below branches on the stored
+    // `input_format`/`output_format` rather than re-querying the driver.
     let input_type = driver
         .input_data_type()
         .map_err(|e| anyhow::anyhow!("Failed to query ASIO input sample type: {e}"))?;
     let output_type = driver
         .output_data_type()
         .map_err(|e| anyhow::anyhow!("Failed to query ASIO output sample type: {e}"))?;
-    if !matches!(input_type, AsioSampleType::ASIOSTInt32LSB)
-        || !matches!(output_type, AsioSampleType::ASIOSTInt32LSB)
-    {
+    let (Some(input_format), Some(output_format)) = (
+        resolve_asio_sample_format(&input_type),
+        resolve_asio_sample_format(&output_type),
+    ) else {
         return Err(anyhow::anyhow!(
             "ASIO driver '{driver_name}' reports unsupported sample format \
              (input: {input_type:?}, output: {output_type:?}); only \
-             ASIOSTInt32LSB is currently supported"
+             ASIOSTInt32LSB and ASIOSTFloat32LSB are currently supported"
         ));
-    }
+    };
 
     // Both streams were allocated together by the same `ASIOCreateBuffers`
     // call above, so they share one buffer size.
@@ -284,10 +424,12 @@ pub fn start_duplex(
                 continue;
             }
             // SAFETY: `half` was allocated by the `ASIOCreateBuffers` call
-            // above for exactly `buffer_size` ASIOSTInt32LSB (i32) samples
-            // (guarded by the format check above); this runs once during
-            // setup, before `driver.start()`, so there is no concurrent
-            // callback access to race with.
+            // above for exactly `buffer_size` samples of either supported
+            // format (guarded by the format check above) — both are 4 bytes
+            // wide, and a zero bit pattern represents `0` in `i32` and `0.0`
+            // in `f32` identically, so this zeroing loop is format-agnostic.
+            // This runs once during setup, before `driver.start()`, so there
+            // is no concurrent callback access to race with.
             unsafe {
                 std::ptr::write_bytes(half as *mut i32, 0, buffer_size);
             }
@@ -321,24 +463,27 @@ pub fn start_duplex(
 
         // Resolved once per channel per callback (not once per frame — the
         // channel/half a frame belongs to doesn't change within one
-        // callback invocation).
-        let in_l_ptr = input_stream.buffer_infos[in_l].buffers[idx] as *const i32;
-        let in_r_ptr = input_stream.buffer_infos[in_r].buffers[idx] as *const i32;
-        let out_l_ptr = output_stream.buffer_infos[out_l].buffers[idx] as *mut i32;
-        let out_r_ptr = output_stream.buffer_infos[out_r].buffers[idx] as *mut i32;
+        // callback invocation). Kept as raw `*mut c_void` here — cast to the
+        // right pointer type inside `read_asio_sample`/`write_asio_sample`
+        // per `input_format`/`output_format`, which were resolved once at
+        // setup (above), not re-queried here.
+        let in_l_ptr = input_stream.buffer_infos[in_l].buffers[idx];
+        let in_r_ptr = input_stream.buffer_infos[in_r].buffers[idx];
+        let out_l_ptr = output_stream.buffer_infos[out_l].buffers[idx];
+        let out_r_ptr = output_stream.buffer_infos[out_r].buffers[idx];
 
         // SAFETY: `in_l_ptr`/`in_r_ptr` point into buffers allocated by
-        // ASIO's `ASIOCreateBuffers` above for exactly `buffer_size`
-        // ASIOSTInt32LSB (i32) samples per half of the double buffer
-        // (guarded by the format check in `start_duplex`); `idx` is the
-        // half ASIO just told us (via `CallbackInfo::buffer_index`) is
-        // ready to read, and `frame` is bounds-checked by iterating
-        // `left_buf`/`right_buf`, which were sized to `buffer_size`.
+        // ASIO's `ASIOCreateBuffers` above for exactly `buffer_size` samples
+        // of `input_format`'s width per half of the double buffer (guarded
+        // by the format check in `start_duplex`); `idx` is the half ASIO
+        // just told us (via `CallbackInfo::buffer_index`) is ready to read,
+        // and `frame` is bounds-checked by iterating `left_buf`/`right_buf`,
+        // which were sized to `buffer_size`.
         for (frame, sample) in left_buf.iter_mut().enumerate() {
-            *sample = unsafe { asio_i32_to_f32(*in_l_ptr.add(frame)) };
+            *sample = unsafe { read_asio_sample(in_l_ptr, frame, input_format) };
         }
         for (frame, sample) in right_buf.iter_mut().enumerate() {
-            *sample = unsafe { asio_i32_to_f32(*in_r_ptr.add(frame)) };
+            *sample = unsafe { read_asio_sample(in_r_ptr, frame, input_format) };
         }
 
         let result = process_block(&mut left_buf, &mut right_buf, &mixer, sample_rate);
@@ -357,15 +502,15 @@ pub fn start_duplex(
         // above, but writing; ASIO guarantees exclusive access to buffer
         // half `idx` for the duration of this callback.
         for (frame, sample) in left_buf.iter().enumerate() {
-            let value = if gate_open { f32_to_asio_i32(*sample) } else { 0 };
+            let value = if gate_open { *sample } else { 0.0 };
             unsafe {
-                *out_l_ptr.add(frame) = value;
+                write_asio_sample(out_l_ptr, frame, output_format, value);
             }
         }
         for (frame, sample) in right_buf.iter().enumerate() {
-            let value = if gate_open { f32_to_asio_i32(*sample) } else { 0 };
+            let value = if gate_open { *sample } else { 0.0 };
             unsafe {
-                *out_r_ptr.add(frame) = value;
+                write_asio_sample(out_r_ptr, frame, output_format, value);
             }
         }
     });
@@ -412,6 +557,10 @@ pub fn start_input_only(
         .load_driver(driver_name)
         .map_err(|e| anyhow::anyhow!("Failed to load ASIO driver '{driver_name}': {e}"))?;
 
+    // See `start_duplex`'s identical comment on why the hint is validated
+    // against the driver's actual range/step before use.
+    let buffer_size_hint = validate_buffer_size_hint(&driver, buffer_size_hint, driver_name);
+
     // See `start_duplex`'s identical comment on why enough channels to
     // cover `offset` are requested rather than just 2.
     let channels = offset + 2;
@@ -421,15 +570,18 @@ pub fn start_input_only(
         .input
         .ok_or_else(|| anyhow::anyhow!("ASIO driver returned no input stream"))?;
 
+    // See `start_duplex`'s identical comment — resolved once here, stored
+    // for the callback's lifetime, never re-queried per callback invocation.
     let input_type = driver
         .input_data_type()
         .map_err(|e| anyhow::anyhow!("Failed to query ASIO input sample type: {e}"))?;
-    if !matches!(input_type, AsioSampleType::ASIOSTInt32LSB) {
+    let Some(input_format) = resolve_asio_sample_format(&input_type) else {
         return Err(anyhow::anyhow!(
             "ASIO driver '{driver_name}' reports unsupported input sample format \
-             ({input_type:?}); only ASIOSTInt32LSB is currently supported"
+             ({input_type:?}); only ASIOSTInt32LSB and ASIOSTFloat32LSB are currently \
+             supported"
         ));
-    }
+    };
 
     let buffer_size = input_stream.buffer_size.max(0) as usize;
     let in_l = offset;
@@ -446,14 +598,14 @@ pub fn start_input_only(
         });
 
         let idx = info.buffer_index as usize;
-        let in_l_ptr = input_stream.buffer_infos[in_l].buffers[idx] as *const i32;
-        let in_r_ptr = input_stream.buffer_infos[in_r].buffers[idx] as *const i32;
+        let in_l_ptr = input_stream.buffer_infos[in_l].buffers[idx];
+        let in_r_ptr = input_stream.buffer_infos[in_r].buffers[idx];
 
         // SAFETY: same buffer-ownership/index reasoning as `start_duplex`'s
         // identical input-read loop.
         for frame in 0..buffer_size {
-            let l = unsafe { asio_i32_to_f32(*in_l_ptr.add(frame)) };
-            let r = unsafe { asio_i32_to_f32(*in_r_ptr.add(frame)) };
+            let l = unsafe { read_asio_sample(in_l_ptr, frame, input_format) };
+            let r = unsafe { read_asio_sample(in_r_ptr, frame, input_format) };
             // Non-blocking: drop the frame rather than blocking the
             // real-time thread if the ring buffer is full.
             let _ = producer.try_push(l);
@@ -499,6 +651,10 @@ pub fn start_output_only(
         .load_driver(driver_name)
         .map_err(|e| anyhow::anyhow!("Failed to load ASIO driver '{driver_name}': {e}"))?;
 
+    // See `start_duplex`'s identical comment on why the hint is validated
+    // against the driver's actual range/step before use.
+    let buffer_size_hint = validate_buffer_size_hint(&driver, buffer_size_hint, driver_name);
+
     let channels = offset + 2;
     let output_stream = driver
         .prepare_output_stream(None, channels, buffer_size_hint)
@@ -506,15 +662,18 @@ pub fn start_output_only(
         .output
         .ok_or_else(|| anyhow::anyhow!("ASIO driver returned no output stream"))?;
 
+    // See `start_duplex`'s identical comment — resolved once here, stored
+    // for the callback's lifetime, never re-queried per callback invocation.
     let output_type = driver
         .output_data_type()
         .map_err(|e| anyhow::anyhow!("Failed to query ASIO output sample type: {e}"))?;
-    if !matches!(output_type, AsioSampleType::ASIOSTInt32LSB) {
+    let Some(output_format) = resolve_asio_sample_format(&output_type) else {
         return Err(anyhow::anyhow!(
             "ASIO driver '{driver_name}' reports unsupported output sample format \
-             ({output_type:?}); only ASIOSTInt32LSB is currently supported"
+             ({output_type:?}); only ASIOSTInt32LSB and ASIOSTFloat32LSB are currently \
+             supported"
         ));
-    }
+    };
 
     let buffer_size = output_stream.buffer_size.max(0) as usize;
     let out_l = offset;
@@ -552,12 +711,21 @@ pub fn start_output_only(
         });
 
         let idx = info.buffer_index as usize;
-        let out_l_ptr = output_stream.buffer_infos[out_l].buffers[idx] as *mut i32;
-        let out_r_ptr = output_stream.buffer_infos[out_r].buffers[idx] as *mut i32;
+        let out_l_ptr = output_stream.buffer_infos[out_l].buffers[idx];
+        let out_r_ptr = output_stream.buffer_infos[out_r].buffers[idx];
 
+        // A `try_pop()` miss here means the upstream producer (WASAPI
+        // capture, or whatever feeds this ring buffer) hasn't kept up —
+        // count it as an underrun rather than silently playing 0.0.
         for frame in 0..buffer_size {
-            left_buf[frame] = consumer.try_pop().unwrap_or(0.0);
-            right_buf[frame] = consumer.try_pop().unwrap_or(0.0);
+            left_buf[frame] = consumer.try_pop().unwrap_or_else(|| {
+                mixer.underrun_count.fetch_add(1, Ordering::Relaxed);
+                0.0
+            });
+            right_buf[frame] = consumer.try_pop().unwrap_or_else(|| {
+                mixer.underrun_count.fetch_add(1, Ordering::Relaxed);
+                0.0
+            });
         }
 
         let result = process_block(&mut left_buf, &mut right_buf, &mixer, sample_rate);
@@ -575,15 +743,15 @@ pub fn start_output_only(
         // SAFETY: same buffer-ownership/index reasoning as `start_duplex`'s
         // identical output-write loop.
         for (frame, sample) in left_buf.iter().enumerate() {
-            let value = if gate_open { f32_to_asio_i32(*sample) } else { 0 };
+            let value = if gate_open { *sample } else { 0.0 };
             unsafe {
-                *out_l_ptr.add(frame) = value;
+                write_asio_sample(out_l_ptr, frame, output_format, value);
             }
         }
         for (frame, sample) in right_buf.iter().enumerate() {
-            let value = if gate_open { f32_to_asio_i32(*sample) } else { 0 };
+            let value = if gate_open { *sample } else { 0.0 };
             unsafe {
-                *out_r_ptr.add(frame) = value;
+                write_asio_sample(out_r_ptr, frame, output_format, value);
             }
         }
     });
@@ -663,5 +831,75 @@ mod duplex_tests {
     fn asio_int32_lsb_to_f32_round_trips_at_boundaries() {
         let back = asio_i32_to_f32(i32::MAX);
         assert!((back - 1.0).abs() < 0.0001);
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_only_int32_and_float32_lsb() {
+        assert_eq!(resolve_asio_sample_format(&AsioSampleType::ASIOSTInt32LSB), Some(AsioSampleFormat::Int32Lsb));
+        assert_eq!(resolve_asio_sample_format(&AsioSampleType::ASIOSTFloat32LSB), Some(AsioSampleFormat::Float32Lsb));
+        // Broader format support stays explicitly out of scope.
+        assert_eq!(resolve_asio_sample_format(&AsioSampleType::ASIOSTInt16LSB), None);
+        assert_eq!(resolve_asio_sample_format(&AsioSampleType::ASIOSTInt24LSB), None);
+    }
+
+    #[test]
+    fn float32lsb_read_write_is_a_direct_passthrough() {
+        let mut buf = [0.0f32; 4];
+        let ptr = buf.as_mut_ptr() as *mut c_void;
+        unsafe {
+            write_asio_sample(ptr, 2, AsioSampleFormat::Float32Lsb, 0.25);
+            assert_eq!(read_asio_sample(ptr as *const c_void, 2, AsioSampleFormat::Float32Lsb), 0.25);
+        }
+        // Confirms it's a direct f32 write (no int conversion happened).
+        assert_eq!(buf[2], 0.25);
+    }
+
+    #[test]
+    fn int32lsb_read_write_matches_existing_conversion_functions() {
+        let mut buf = [0i32; 4];
+        let ptr = buf.as_mut_ptr() as *mut c_void;
+        unsafe {
+            write_asio_sample(ptr, 1, AsioSampleFormat::Int32Lsb, 1.0);
+            assert_eq!(buf[1], i32::MAX);
+            assert_eq!(
+                read_asio_sample(ptr as *const c_void, 1, AsioSampleFormat::Int32Lsb),
+                asio_i32_to_f32(i32::MAX)
+            );
+        }
+    }
+
+    fn range(min: i32, max: i32, preferred: BufferPreference) -> asio_sys::BufferSizeRange {
+        asio_sys::BufferSizeRange { min, max, preferred }
+    }
+
+    #[test]
+    fn hint_within_stepped_range_and_aligned_is_accepted() {
+        let r = range(64, 2048, BufferPreference::Stepped { preferred: 512, step: 64 });
+        assert_eq!(hint_fits_buffer_size_range(512, r, "test"), Some(512));
+    }
+
+    #[test]
+    fn hint_outside_min_max_falls_back_to_none() {
+        let r = range(64, 2048, BufferPreference::Preferred(512));
+        assert_eq!(hint_fits_buffer_size_range(32, r, "test"), None);
+        assert_eq!(hint_fits_buffer_size_range(4096, r, "test"), None);
+    }
+
+    #[test]
+    fn hint_misaligned_to_step_falls_back_to_none() {
+        let r = range(64, 2048, BufferPreference::Stepped { preferred: 512, step: 64 });
+        assert_eq!(hint_fits_buffer_size_range(100, r, "test"), None);
+    }
+
+    #[test]
+    fn hint_not_matching_fixed_only_size_falls_back_to_none() {
+        let r = range(256, 256, BufferPreference::Only(256));
+        assert_eq!(hint_fits_buffer_size_range(512, r, "test"), None);
+        assert_eq!(hint_fits_buffer_size_range(256, r, "test"), Some(256));
     }
 }

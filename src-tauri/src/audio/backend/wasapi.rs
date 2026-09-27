@@ -465,7 +465,7 @@ pub fn start_capture(
         }
 
         let mmcss_once = Once::new();
-        let mut device_error = false;
+        let mut device_error: Option<windows::core::Error> = None;
         'outer: while !thread_stop.load(Ordering::Relaxed) {
             // SAFETY: `event` is a valid, still-open event handle for the
             // lifetime of this loop (closed only after the loop exits,
@@ -485,8 +485,8 @@ pub fn start_capture(
                 // SAFETY: `capture` is a valid, started `IAudioCaptureClient`.
                 let packet_frames = match unsafe { capture.GetNextPacketSize() } {
                     Ok(p) => p,
-                    Err(_) => {
-                        device_error = true;
+                    Err(e) => {
+                        device_error = Some(e);
                         break;
                     }
                 };
@@ -498,8 +498,8 @@ pub fn start_capture(
                 let mut flags = 0u32;
                 // SAFETY: `capture` is valid and started; `data_ptr`/
                 // `num_frames`/`flags` are valid out-pointers for this call.
-                if unsafe { capture.GetBuffer(&mut data_ptr, &mut num_frames, &mut flags, None, None) }.is_err() {
-                    device_error = true;
+                if let Err(e) = unsafe { capture.GetBuffer(&mut data_ptr, &mut num_frames, &mut flags, None, None) } {
+                    device_error = Some(e);
                     break;
                 }
                 // `GetBuffer` can report success with a null pointer and 0
@@ -544,7 +544,8 @@ pub fn start_capture(
                     let _ = capture.ReleaseBuffer(num_frames);
                 }
             }
-            if device_error {
+            if let Some(e) = device_error {
+                log::warn!("WASAPI capture device error (device may be lost), stopping capture thread: {e}");
                 break 'outer;
             }
         }
@@ -723,9 +724,18 @@ pub fn start_render(
             }
             let frames = (frames_available as usize).min(left_buf.len());
 
+            // A `try_pop()` miss here means the upstream producer hasn't
+            // kept up — count it as an underrun rather than silently
+            // playing 0.0.
             for i in 0..frames {
-                left_buf[i] = consumer.try_pop().unwrap_or(0.0);
-                right_buf[i] = consumer.try_pop().unwrap_or(0.0);
+                left_buf[i] = consumer.try_pop().unwrap_or_else(|| {
+                    mixer.underrun_count.fetch_add(1, Ordering::Relaxed);
+                    0.0
+                });
+                right_buf[i] = consumer.try_pop().unwrap_or_else(|| {
+                    mixer.underrun_count.fetch_add(1, Ordering::Relaxed);
+                    0.0
+                });
             }
 
             let mixer_result = process_block(&mut left_buf[..frames], &mut right_buf[..frames], &mixer, sample_rate as f64);

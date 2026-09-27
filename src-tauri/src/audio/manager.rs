@@ -191,10 +191,12 @@ pub struct AudioManager {
     /// Serializes concurrent config changes (device/sample-rate/buffer-size)
     /// to prevent interleaved stop/start cycles from leaving monitoring undefined.
     config_lock: Mutex<()>,
-    /// Cumulative ring-buffer underrun counter (resets on stream restart).
-    /// NOTE: neither backend currently reports per-block underruns (only
-    /// the old cpal-based output closure did), so this stays at 0 post-migration
-    /// — kept for API/status-shape compatibility, not actively incremented.
+    /// Cumulative ring-buffer underrun counter (resets on stream restart —
+    /// see `toggle_monitoring`). Shared via `build_mixer_state` into
+    /// `MixerState::underrun_count`, and incremented by the real-time
+    /// consumer loops that drain a ring buffer into the mixer's output
+    /// stage (`backend::asio::start_output_only`, `backend::wasapi::start_render`)
+    /// whenever `try_pop()` misses.
     underrun_count: Arc<AtomicU64>,
     /// Whether the active WASAPI leg (see `get_status`) negotiated exclusive
     /// mode. Updated only at `toggle_monitoring` time.
@@ -235,6 +237,7 @@ impl AudioManager {
             loopback_enabled: Arc::clone(&self.loopback_enabled),
             dsp_load_u32: Arc::clone(&self.dsp_load_u32),
             output_is_asio,
+            underrun_count: Arc::clone(&self.underrun_count),
         }
     }
 
@@ -358,6 +361,24 @@ impl AudioManager {
             ));
         }
 
+        // Enumerated once and reused for every channel-count/existence
+        // lookup below (including inside `AudioDevice::find_input_device`/
+        // `find_output_device`/`find_asio_device_pair`, which all take this
+        // cached list rather than re-enumerating themselves) —
+        // `list_asio_devices()` briefly loads every registered driver to
+        // query channels (see its doc comment), so caching it here avoids
+        // repeating that expensive work multiple times in a single
+        // `toggle_monitoring` call, and avoids the window (per Task 5's
+        // known limitation) where re-enumerating temporarily excludes
+        // whatever driver is currently streaming from the list. Computed up
+        // front, before the virtual-mirror resolution below, so that path
+        // can use it too.
+        let asio_devices = if input_is_asio || output_is_asio {
+            asio::list_asio_devices()
+        } else {
+            Vec::new()
+        };
+
         // -----------------------------------------------------------------
         // Lock-free SPSC ring buffer capacity — stereo, sized by mode:
         //  • Same-ASIO full-duplex: input fires synchronously before output
@@ -396,7 +417,7 @@ impl AudioManager {
                 );
                 return None;
             }
-            match AudioDevice::find_output_device(id) {
+            match AudioDevice::find_output_device(id, &asio_devices) {
                 Some(resolved) => Some(resolved.strip_prefix("out_").unwrap_or(&resolved).to_string()),
                 None => {
                     log::warn!("{} Virtual output device '{}' not found; skipping", crate::core::threading::thread_prefix("audio/monitor"), id);
@@ -421,16 +442,6 @@ impl AudioManager {
         let mut input_wasapi_result: Option<wasapi::ExclusiveModeResult> = None;
         let mut output_wasapi_result: Option<wasapi::ExclusiveModeResult> = None;
 
-        // Enumerated once and reused for every channel-count lookup below —
-        // `list_asio_devices()` briefly loads every registered driver to
-        // query channels (see its doc comment), so caching it here avoids
-        // repeating that work up to 3× in a single `toggle_monitoring` call.
-        let asio_devices = if input_is_asio || output_is_asio {
-            asio::list_asio_devices()
-        } else {
-            Vec::new()
-        };
-
         // Holds a freshly-started ASIO leg (at most one ever exists per
         // call — enforced by the cross-driver rejection above plus the
         // bridged branch's own "at most one side is ASIO" invariant) until
@@ -447,7 +458,7 @@ impl AudioManager {
             let asio_name = in_asio_name
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| anyhow::anyhow!("ASIO insert mode requires a device name after 'asio_' prefix"))?;
-            let _ = AudioDevice::find_asio_device_pair(asio_name)
+            let _ = AudioDevice::find_asio_device_pair(asio_name, &asio_devices)
                 .ok_or_else(|| anyhow::anyhow!("ASIO device '{}' not found for insert mode", asio_name))?;
 
             let (in_channels, out_channels) = asio_devices.iter()
@@ -489,7 +500,7 @@ impl AudioManager {
             let (producer, consumer) = rb.split();
 
             let input_id = config.input_device_id.as_deref()
-                .and_then(AudioDevice::find_input_device)
+                .and_then(|id| AudioDevice::find_input_device(id, &asio_devices))
                 .or_else(AudioDevice::default_input_device_id)
                 .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
 
@@ -514,7 +525,7 @@ impl AudioManager {
             // out configured" (unchanged from the old cpal-based behavior).
             let output_target: Option<String> = if config.output_device_id.is_some() {
                 config.output_device_id.as_deref()
-                    .and_then(AudioDevice::find_output_device)
+                    .and_then(|id| AudioDevice::find_output_device(id, &asio_devices))
                     .or_else(AudioDevice::default_output_device_id)
             } else {
                 None
@@ -582,6 +593,10 @@ impl AudioManager {
                     loopback_enabled: Arc::new(AtomicBool::new(true)),
                     dsp_load_u32: Arc::new(AtomicU32::new(0)),
                     output_is_asio: false,
+                    // Throwaway counter — see this literal's other throwaway
+                    // fields above; this second pass's underruns shouldn't
+                    // smear the real one's count.
+                    underrun_count: Arc::new(AtomicU64::new(0)),
                 };
                 match wasapi::start_render(&id, config.buffer_size, config.sample_rate, consumer, passthrough_mixer, None) {
                     Ok((stream, _result)) => Some(stream),

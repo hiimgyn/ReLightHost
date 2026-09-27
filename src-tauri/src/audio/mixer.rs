@@ -9,6 +9,11 @@ pub struct MixerState {
     pub loopback_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub dsp_load_u32: Arc<std::sync::atomic::AtomicU32>,
     pub output_is_asio: bool,
+    /// Cumulative count of ring-buffer drain misses (`try_pop()` returning
+    /// `None`) in the real-time consumer loops that feed this mixer stage's
+    /// output (see `backend::asio::start_output_only` and
+    /// `backend::wasapi::start_render`) — surfaced via `AudioStatus::underrun_count`.
+    pub underrun_count: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Result of processing one audio block: whether to mirror it to the
@@ -80,6 +85,7 @@ mod tests {
             loopback_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             dsp_load_u32: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             output_is_asio,
+            underrun_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 

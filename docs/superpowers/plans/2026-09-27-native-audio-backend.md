@@ -771,13 +771,18 @@ pub fn list_wasapi_devices() -> Vec<WasapiDeviceInfo> {
         let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(flow, eConsole) }
             .ok()
             .and_then(|d| unsafe { d.GetId() }.ok())
-            .map(|p| unsafe { p.to_string() }.unwrap_or_default());
+            .map(|p| {
+                let s = unsafe { p.to_string() }.unwrap_or_default();
+                unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as *const _)); }
+                s
+            });
 
         let count = unsafe { collection.GetCount() }.unwrap_or(0);
         for i in 0..count {
             let Ok(device) = (unsafe { collection.Item(i) }) else { continue };
             let Ok(id_pwstr) = (unsafe { device.GetId() }) else { continue };
             let id = unsafe { id_pwstr.to_string() }.unwrap_or_default();
+            unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(id_pwstr.0 as *const _)); }
             let name = device_friendly_name(&device).unwrap_or_else(|| "<unknown>".to_string());
             let is_default = default_id.as_deref() == Some(id.as_str());
             out.push(WasapiDeviceInfo {
@@ -794,12 +799,30 @@ pub fn list_wasapi_devices() -> Vec<WasapiDeviceInfo> {
 
 fn device_friendly_name(device: &windows::Win32::Media::Audio::IMMDevice) -> Option<String> {
     use windows::Win32::Devices::Properties::DEVPKEY_Device_FriendlyName;
-    use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
+    use windows::Win32::System::Com::StructuredStorage::{PropVariantToStringAlloc, PropVariantClear};
+    use windows::Win32::System::Com::CoTaskMemFree;
     let store = unsafe { device.OpenPropertyStore(windows::Win32::System::Com::STGM_READ) }.ok()?;
-    let prop = unsafe { store.GetValue(&DEVPKEY_Device_FriendlyName as *const _ as *const _) }.ok()?;
-    let pwstr = unsafe { PropVariantToStringAlloc(&prop) }.ok()?;
-    unsafe { pwstr.to_string() }.ok()
+    let mut prop = unsafe { store.GetValue(&DEVPKEY_Device_FriendlyName as *const _ as *const _) }.ok()?;
+    let pwstr = unsafe { PropVariantToStringAlloc(&prop) }.ok();
+    unsafe { let _ = PropVariantClear(&mut prop); }
+    let pwstr = pwstr?;
+    let name = unsafe { pwstr.to_string() }.ok();
+    unsafe { CoTaskMemFree(Some(pwstr.0 as *const _)); }
+    name
 }
+```
+
+**Note (found during Task 6's review): every `PWSTR`/`PROPVARIANT` this
+code obtains from COM is caller-owned and must be explicitly freed** — this
+was missing from an earlier draft of this reference code and caused a real,
+accumulating memory leak on every `list_wasapi_devices()` call (2 endpoint
+`PWSTR`s from `GetId()`, one `PROPVARIANT` from `GetValue`, one `PWSTR`
+from `PropVariantToStringAlloc`). The snippet above already includes the
+fix (`PropVariantClear` + `CoTaskMemFree`); apply the same pattern to the
+two other `device.GetId()` call sites in `list_wasapi_devices` itself
+(`CoTaskMemFree` on the `PWSTR` after decoding it with `.to_string()`,
+before it goes out of scope).
+```rust
 ```
 
 **Note for the implementer:** channel counts above are hardcoded to 2

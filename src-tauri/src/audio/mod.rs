@@ -3,6 +3,7 @@ pub mod device;
 pub mod mixer;
 pub mod types;
 pub mod vu_meter;
+pub mod backend;
 #[cfg(target_os = "windows")]
 pub mod mmcss;
 

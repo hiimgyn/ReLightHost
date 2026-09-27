@@ -94,8 +94,11 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
     if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
+        let app_handle = app.clone();
         update
-            .download_and_install(|_chunk, _total| {}, || {})
+            .download_and_install(|_chunk, _total| {}, move || {
+                shutdown_for_exit(&app_handle);
+            })
             .await
             .map_err(|e| e.to_string())?;
     }

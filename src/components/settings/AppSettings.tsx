@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Modal, Switch, Descriptions, Space, Typography, Card, Button, Select, theme } from 'antd';
+import { Modal, Switch, Space, Typography, Button, Select, Tabs, theme } from 'antd';
 import { 
   Settings2, 
-  Rocket, 
   Info,
   RefreshCw,
   Download,
-  Languages,
+  ExternalLink,
+  Sliders,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
@@ -43,7 +43,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   const [installing, setInstalling] = useState(false);
 
   const { token } = theme.useToken();
-  const modalWidth = typeof window === 'undefined' ? 660 : 'clamp(520px, 65vw, 680px)';
+  const modalWidth = typeof window === 'undefined' ? 560 : 'clamp(480px, 52vw, 560px)';
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => {});
@@ -138,12 +138,211 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '12px 16px',
+    padding: '10px 14px',
     background: token.colorBgContainer,
-    borderRadius: 10,
+    borderRadius: 8,
     border: `1px solid ${token.colorBorderSecondary}`,
     transition: 'all 160ms ease',
   };
+
+  const generalTab = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+      {/* Language */}
+      <div style={settingRowStyle}>
+        <div style={{ flex: 1, paddingRight: 16 }}>
+          <Text strong style={{ fontSize: 13 }}>{t('appSettings.language')}</Text>
+          <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 11.5 }}>
+            {t('appSettings.languageDesc')}
+          </Paragraph>
+        </div>
+        <Select
+          value={locale}
+          onChange={(val) => setLocale(val)}
+          style={{ width: 140 }}
+          options={[
+            { value: 'en', label: t('appSettings.languageEnglish') },
+            { value: 'vi', label: t('appSettings.languageVietnamese') },
+          ]}
+        />
+      </div>
+
+      {/* Run on Startup */}
+      <div style={settingRowStyle}>
+        <div style={{ flex: 1, paddingRight: 16 }}>
+          <Text strong style={{ fontSize: 13 }}>{t('appSettings.runOnStartup')}</Text>
+          <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 11.5 }}>
+            {t('appSettings.runOnStartupDesc')}
+          </Paragraph>
+        </div>
+        <Switch checked={runOnStartup} onChange={handleStartupToggle} />
+      </div>
+
+      {/* Show Window on Startup */}
+      <div style={{ ...settingRowStyle, opacity: runOnStartup ? 1 : 0.55 }}>
+        <div style={{ flex: 1, paddingRight: 16 }}>
+          <Text strong style={{ fontSize: 13 }}>{t('appSettings.showOnStartup')}</Text>
+          <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 11.5 }}>
+            {t('appSettings.showOnStartupDesc')}
+          </Paragraph>
+        </div>
+        <Switch
+          checked={showAppOnStartup}
+          onChange={handleShowAppOnStartupToggle}
+          disabled={!runOnStartup}
+        />
+      </div>
+
+      {/* Minimize to Tray */}
+      <div style={settingRowStyle}>
+        <div style={{ flex: 1, paddingRight: 16 }}>
+          <Text strong style={{ fontSize: 13 }}>{t('appSettings.minimizeToTray')}</Text>
+          <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 11.5 }}>
+            {t('appSettings.minimizeToTrayDesc')}
+          </Paragraph>
+        </div>
+        <Switch checked={minimizeToTray} onChange={handleMinimizeToggle} />
+      </div>
+    </div>
+  );
+
+  const aboutTab = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+      {/* App Identity Banner */}
+      <div
+        style={{
+          padding: '12px 14px',
+          background: token.colorBgContainer,
+          borderRadius: 8,
+          border: `1px solid ${token.colorBorderSecondary}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+        }}
+      >
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <Text strong style={{ fontSize: 15 }}>{APP_NAME}</Text>
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                fontFamily: 'JetBrains Mono, monospace',
+                padding: '1px 6px',
+                borderRadius: 4,
+                background: `${token.colorPrimary}22`,
+                color: token.colorPrimary,
+                border: `1px solid ${token.colorPrimary}44`,
+              }}
+            >
+              {appVersion ? `v${appVersion}` : 'v1.0.0'}
+            </span>
+          </div>
+          <Paragraph type="secondary" style={{ marginBottom: 4, fontSize: 11.5, lineHeight: 1.4 }}>
+            {t('appSettings.appDescription')}
+          </Paragraph>
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            {t('appSettings.author')}: <Text strong style={{ fontSize: 11 }}>{APP_AUTHOR}</Text>
+          </Text>
+        </div>
+
+        <Button
+          icon={<ExternalLink size={13} />}
+          size="small"
+          style={{ borderRadius: 6, flexShrink: 0 }}
+          onClick={async () => {
+            try {
+              await openExternalUrl(APP_GITHUB_URL);
+            } catch (error) {
+              console.error('Failed to open GitHub repository:', error);
+            }
+          }}
+        >
+          GitHub
+        </Button>
+      </div>
+
+      {/* Updates Section */}
+      <div
+        style={{
+          padding: '12px 14px',
+          background: token.colorBgContainer,
+          borderRadius: 8,
+          border: `1px solid ${token.colorBorderSecondary}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Text strong style={{ fontSize: 13, display: 'block' }}>{t('appSettings.updates')}</Text>
+          {updateInfo?.available ? (
+            <div>
+              <Text type="success" style={{ fontSize: 11.5, fontWeight: 600 }}>
+                {t('appSettings.versionAvailable', { version: updateInfo.version || '' })}
+              </Text>
+              {updateInfo.notes && (
+                <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 11 }}>
+                  {updateInfo.notes}
+                </Paragraph>
+              )}
+            </div>
+          ) : updateInfo !== null ? (
+            <Text type="secondary" style={{ fontSize: 11.5 }}>{t('appSettings.upToDate')}</Text>
+          ) : (
+            <Text type="secondary" style={{ fontSize: 11.5 }}>ReLightHost update channel</Text>
+          )}
+        </div>
+
+        {updateInfo?.available ? (
+          <Button
+            type="primary"
+            icon={<Download size={13} />}
+            loading={installing}
+            onClick={handleInstallUpdate}
+            style={{ borderRadius: 6 }}
+            size="small"
+          >
+            {t('appSettings.installRestart')}
+          </Button>
+        ) : (
+          <Button
+            icon={<RefreshCw size={12} className={checking ? 'animate-spin' : ''} />}
+            loading={checking}
+            onClick={handleCheckUpdate}
+            style={{ borderRadius: 6 }}
+            size="small"
+          >
+            {checking ? t('appSettings.checkingUpdates') : t('appSettings.checkForUpdates')}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+
+  const tabItems = [
+    {
+      key: 'general',
+      label: (
+        <Space size={6}>
+          <Sliders size={14} />
+          <span>{t('appSettings.general') || 'General'}</span>
+        </Space>
+      ),
+      children: generalTab,
+    },
+    {
+      key: 'about',
+      label: (
+        <Space size={6}>
+          <Info size={14} />
+          <span>{t('appSettings.about')}</span>
+        </Space>
+      ),
+      children: aboutTab,
+    },
+  ];
 
   return (
     <Modal
@@ -151,9 +350,9 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
         <Space size={12} align="center">
           <div
             style={{
-              width: 36,
-              height: 36,
-              borderRadius: 10,
+              width: 32,
+              height: 32,
+              borderRadius: 8,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -161,13 +360,13 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
               border: `1px solid ${token.colorPrimary}38`,
             }}
           >
-            <Settings2 size={18} style={{ color: token.colorPrimary }} />
+            <Settings2 size={16} style={{ color: token.colorPrimary }} />
           </div>
           <div>
-            <Text strong style={{ fontSize: 16, display: 'block', lineHeight: 1.2, color: token.colorText }}>
+            <Text strong style={{ fontSize: 15, display: 'block', lineHeight: 1.2, color: token.colorText }}>
               {t('appSettings.title')}
             </Text>
-            <Text type="secondary" style={{ fontSize: 11.5 }}>
+            <Text type="secondary" style={{ fontSize: 11 }}>
               {t('appSettings.subtitle')}
             </Text>
           </div>
@@ -176,174 +375,15 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
       open={isOpen}
       onCancel={onClose}
       width={modalWidth}
-      style={{ top: 28, maxWidth: 680 }}
+      centered
       styles={{
         body: {
-          maxHeight: 'calc(100vh - 180px)',
-          overflowY: 'auto',
-          overflowX: 'hidden',
-          padding: '16px 22px 22px',
+          padding: '4px 18px 16px',
         },
       }}
       footer={null}
     >
-      {/* Language Settings */}
-      <Card
-        title={
-          <Space>
-            <Languages size={16} style={{ color: token.colorPrimary }} />
-            <span>{t('appSettings.language')}</span>
-          </Space>
-        }
-        style={{ marginBottom: 20 }}
-        styles={{ body: { padding: 16 } }}
-      >
-        <div style={settingRowStyle}>
-          <div style={{ flex: 1, paddingRight: 16 }}>
-            <Text strong>{t('appSettings.language')}</Text>
-            <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-              {t('appSettings.languageDesc')}
-            </Paragraph>
-          </div>
-          <Select
-            value={locale}
-            onChange={(val) => setLocale(val)}
-            style={{ width: 140 }}
-            options={[
-              { value: 'en', label: t('appSettings.languageEnglish') },
-              { value: 'vi', label: t('appSettings.languageVietnamese') },
-            ]}
-          />
-        </div>
-      </Card>
-
-      {/* Startup Settings */}
-      <Card
-        title={
-          <Space>
-            <Rocket size={16} style={{ color: token.colorPrimary }} />
-            <span>{t('appSettings.startupBehavior')}</span>
-          </Space>
-        }
-        style={{ marginBottom: 20 }}
-        styles={{ body: { padding: 16 } }}
-      >
-        <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <div style={settingRowStyle}>
-            <div style={{ flex: 1, paddingRight: 16 }}>
-              <Text strong>{t('appSettings.runOnStartup')}</Text>
-              <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-                {t('appSettings.runOnStartupDesc')}
-              </Paragraph>
-            </div>
-            <Switch checked={runOnStartup} onChange={handleStartupToggle} />
-          </div>
-
-          <div style={{ ...settingRowStyle, opacity: runOnStartup ? 1 : 0.6 }}>
-            <div style={{ flex: 1, paddingRight: 16 }}>
-              <Text strong>{t('appSettings.showOnStartup')}</Text>
-              <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-                {t('appSettings.showOnStartupDesc')}
-              </Paragraph>
-            </div>
-            <Switch
-              checked={showAppOnStartup}
-              onChange={handleShowAppOnStartupToggle}
-              disabled={!runOnStartup}
-            />
-          </div>
-
-          <div style={settingRowStyle}>
-            <div style={{ flex: 1, paddingRight: 16 }}>
-              <Text strong>{t('appSettings.minimizeToTray')}</Text>
-              <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-                {t('appSettings.minimizeToTrayDesc')}
-              </Paragraph>
-            </div>
-            <Switch checked={minimizeToTray} onChange={handleMinimizeToggle} />
-          </div>
-        </Space>
-      </Card>
-
-      {/* About Section */}
-      <Card
-        title={
-          <Space>
-            <Info size={16} />
-            <span>{t('appSettings.about')}</span>
-          </Space>
-        }
-        styles={{ body: { padding: 16 } }}
-      >
-        <Descriptions bordered column={1} size="small">
-          <Descriptions.Item label={t('appSettings.application')}>
-            <Text strong>{APP_NAME}</Text>
-          </Descriptions.Item>
-          <Descriptions.Item label={t('appSettings.version')}>
-            <Text strong>{appVersion ? `v${appVersion}` : 'Beta'}</Text>
-          </Descriptions.Item>
-          <Descriptions.Item label={t('appSettings.author')}>
-            <Text strong>{APP_AUTHOR}</Text>
-          </Descriptions.Item>
-          <Descriptions.Item label={t('appSettings.github')}>
-            <Button
-              type="link"
-              style={{ padding: 0, height: 'auto' }}
-              onClick={async () => {
-                try {
-                  await openExternalUrl(APP_GITHUB_URL);
-                } catch (error) {
-                  console.error('Failed to open GitHub repository:', error);
-                }
-              }}
-            >
-              {APP_GITHUB_URL}
-            </Button>
-          </Descriptions.Item>
-          <Descriptions.Item label={t('appSettings.updates')}>
-            <Space direction="vertical" size={4}>
-              {updateInfo?.available ? (
-                <Space direction="vertical" size={4}>
-                  <Space>
-                    <Text type="success">{t('appSettings.versionAvailable', { version: updateInfo.version || '' })}</Text>
-                    <Button
-                      size="small"
-                      type="primary"
-                      icon={<Download size={14} />}
-                      loading={installing}
-                      onClick={handleInstallUpdate}
-                    >
-                      {t('appSettings.installRestart')}
-                    </Button>
-                  </Space>
-                  {updateInfo.notes && (
-                    <Text type="secondary" style={{ fontSize: 11 }}>{updateInfo.notes}</Text>
-                  )}
-                </Space>
-              ) : (
-                <Space>
-                  {updateInfo !== null && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>{t('appSettings.upToDate')}</Text>
-                  )}
-                  <Button
-                    size="small"
-                    icon={<RefreshCw size={13} className={checking ? "animate-spin" : ""} />}
-                    loading={checking}
-                    onClick={handleCheckUpdate}
-                  >
-                    {checking ? t('appSettings.checkingUpdates') : t('appSettings.checkForUpdates')}
-                  </Button>
-                </Space>
-              )}
-            </Space>
-          </Descriptions.Item>
-          <Descriptions.Item label={t('appSettings.description')}>
-            <Paragraph style={{ marginBottom: 0 }} type="secondary">
-              {t('appSettings.appDescription')}
-            </Paragraph>
-          </Descriptions.Item>
-        </Descriptions>
-      </Card>
+      <Tabs defaultActiveKey="general" items={tabItems} />
     </Modal>
   );
 }

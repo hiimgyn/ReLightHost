@@ -118,12 +118,24 @@ pub fn attribute_crashes_from_unclean_exit() {
     save_to_disk(&reg.path, &state);
 }
 
+/// Returns true if the plugin is known to be fragile (e.g. ML inference plugins like Supertone Clear
+/// with internal fixed-size buffers and DirectWrite/Direct2D GUI fragility).
+pub fn is_known_fragile_plugin(plugin_path: &str) -> bool {
+    let lower = plugin_path.to_lowercase();
+    lower.contains("supertone") || lower.contains("clear.vst3")
+}
+
 /// Pure status computation, kept separate from the global `registry()`
 /// singleton so it's testable against a hand-built `RegistryFile`.
 fn compute_status(state: &RegistryFile, plugin_path: &str) -> SandboxStatus {
     let crash_count = state.crash_counts.get(plugin_path).copied().unwrap_or(0);
     let forced = state.forced_sandbox.contains(plugin_path);
-    SandboxStatus { sandboxed: forced || crash_count >= SANDBOX_THRESHOLD, forced, crash_count }
+    let known_fragile = is_known_fragile_plugin(plugin_path);
+    SandboxStatus {
+        sandboxed: forced || known_fragile || crash_count >= SANDBOX_THRESHOLD,
+        forced,
+        crash_count,
+    }
 }
 
 /// Whether `plugin_path` should load sandboxed — either because the user
@@ -299,5 +311,12 @@ mod tests {
         assert!(!status.sandboxed);
         assert!(!status.forced);
         assert_eq!(status.crash_count, 0);
+    }
+
+    #[test]
+    fn known_fragile_plugin_is_sandboxed() {
+        let state = RegistryFile::default();
+        let status = compute_status(&state, "C:/Program Files/Common Files/VST3/Supertone Clear.vst3");
+        assert!(status.sandboxed);
     }
 }

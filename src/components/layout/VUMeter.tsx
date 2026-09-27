@@ -22,28 +22,35 @@ const BAR_GRAD_CLIP = 'linear-gradient(to right, #f97316 0%, #ef4444 60%, #ff4d4
 function HBar({ peak, rms, peak_hold, clip, isDark }: {
   peak: number; rms: number; peak_hold: number; clip: boolean; isDark: boolean;
 }) {
-  const peakPct = toFrac(toDb(peak)) * 100;
-  const rmsPct  = toFrac(toDb(rms))  * 100;
-  const holdPct = toFrac(toDb(peak_hold)) * 100;
+  const peakFrac = toFrac(toDb(peak));
+  const rmsFrac  = toFrac(toDb(rms));
+  const holdPct  = toFrac(toDb(peak_hold)) * 100;
 
   return (
     <div style={{
       position: 'relative', flex: 1, height: 6, borderRadius: 3,
       background: isDark ? 'rgba(0, 0, 0, 0.45)' : 'rgba(0, 0, 0, 0.08)',
       border: `1px solid ${isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)'}`,
+      overflow: 'hidden',
     }}>
       {/* RMS ghost */}
       <div style={{
-        position: 'absolute', top: 0, left: 0, bottom: 0,
-        width: rmsPct + '%', borderRadius: 3,
+        position: 'absolute', top: 0, left: 0, bottom: 0, right: 0,
+        borderRadius: 3,
+        transformOrigin: 'left center',
+        transform: `scaleX(${rmsFrac})`,
+        willChange: 'transform',
         background: isDark ? 'rgba(99,102,241,0.32)' : 'rgba(99,102,241,0.22)',
       }} />
       {/* Peak fill */}
       <div style={{
-        position: 'absolute', top: 0, left: 0, bottom: 0,
-        width: peakPct + '%', borderRadius: 3,
+        position: 'absolute', top: 0, left: 0, bottom: 0, right: 0,
+        borderRadius: 3,
+        transformOrigin: 'left center',
+        transform: `scaleX(${peakFrac})`,
+        willChange: 'transform',
         background: clip ? BAR_GRAD_CLIP : BAR_GRAD,
-        transition: 'width 80ms linear',
+        transition: 'transform 80ms linear',
       }} />
       {/* Peak-hold tick */}
       {peak_hold > 0.001 && holdPct < 99 && (
@@ -51,6 +58,7 @@ function HBar({ peak, rms, peak_hold, clip, isDark }: {
           position: 'absolute', top: -1, bottom: -1,
           left: 'calc(' + holdPct + '% - 1px)',
           width: 2, borderRadius: 1,
+          willChange: 'left',
           background: isDark ? 'rgba(255,255,255,0.9)' : 'rgba(15,23,42,0.9)',
         }} />
       )}

@@ -1,4 +1,5 @@
 import React from 'react';
+import { useThemeStore } from '../../../stores/themeStore';
 
 interface VisualStageContainerProps {
   title?: string;
@@ -17,21 +18,39 @@ export const VisualStageContainer: React.FC<VisualStageContainerProps> = ({
   className = '',
   controls,
 }) => {
+  const isDark = useThemeStore((s) => s.theme === 'dark');
+
   return (
     <div
-      className={`relative rounded-xl overflow-hidden flex flex-col border border-white/10 ${className}`}
+      className={`relative rounded-xl overflow-hidden flex flex-col border ${
+        isDark ? 'border-white/10' : 'border-slate-200'
+      } ${className}`}
       style={{
         height,
-        background: 'linear-gradient(180deg, #0e1118 0%, #080a0e 100%)',
-        boxShadow: 'inset 0 1px 1px rgba(255, 255, 255, 0.05), 0 8px 24px rgba(0, 0, 0, 0.45)',
+        background: isDark
+          ? 'linear-gradient(180deg, #0e1118 0%, #080a0e 100%)'
+          : 'linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%)',
+        boxShadow: isDark
+          ? 'inset 0 1px 1px rgba(255, 255, 255, 0.05), 0 8px 24px rgba(0, 0, 0, 0.45)'
+          : 'inset 0 1px 1px rgba(255, 255, 255, 0.8), 0 4px 14px rgba(0, 0, 0, 0.06)',
       }}
     >
       {/* Top Bar (Title & Mode Badges) */}
       {(title || badge || controls) && (
-        <div className="flex items-center justify-between px-3.5 py-2 border-b border-white/5 bg-white/[0.02] select-none z-10">
+        <div
+          className={`flex items-center justify-between px-3.5 py-2 border-b select-none z-10 ${
+            isDark
+              ? 'border-white/5 bg-white/[0.02]'
+              : 'border-slate-200/80 bg-slate-50/80'
+          }`}
+        >
           <div className="flex items-center gap-2">
             {title && (
-              <span className="text-[11px] font-semibold tracking-wider uppercase text-white/70">
+              <span
+                className={`text-[11px] font-semibold tracking-wider uppercase ${
+                  isDark ? 'text-white/70' : 'text-slate-700'
+                }`}
+              >
                 {title}
               </span>
             )}
@@ -48,8 +67,8 @@ export const VisualStageContainer: React.FC<VisualStageContainerProps> = ({
           className="absolute inset-0 pointer-events-none opacity-20"
           style={{
             backgroundImage: `
-              linear-gradient(to right, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
-              linear-gradient(to bottom, rgba(255, 255, 255, 0.08) 1px, transparent 1px)
+              linear-gradient(to right, ${isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)'} 1px, transparent 1px),
+              linear-gradient(to bottom, ${isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)'} 1px, transparent 1px)
             `,
             backgroundSize: '24px 24px',
           }}

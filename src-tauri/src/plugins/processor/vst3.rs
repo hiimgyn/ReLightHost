@@ -1,4 +1,4 @@
-﻿//! VST3 audio processor — uses the `vst3` crate (ComPtr / ComWrapper / Interface).
+//! VST3 audio processor — uses the `vst3` crate (ComPtr / ComWrapper / Interface).
 //!
 //! CRITICAL: VST3 plugins often use COM internally (D2D, DirectWrite on Windows).
 //! Every thread that accesses VST3 interfaces must have COM initialized.
@@ -200,11 +200,15 @@ mod win {
         /// rather than block; get_state()/set_state() already treat "can't
         /// safely read/write it right now" as an empty/no-op result.
         com_access_lock: Arc<PLMutex<()>>,
+        /// Tracks whether IConnectionPoint (component ↔ controller) has already been connected,
+        /// ensuring we only connect once per plugin instance lifetime and never reconnect on reopen.
+        icp_connected: Arc<AtomicBool>,
         /// maxSamplesPerBlock negotiated with the plugin via setupProcessing.
         /// The VST3 spec forbids calling process() with more samples than this;
         /// fragile plugins (e.g. Supertone Clear, which uses fixed-size internal
         /// buffers for its ML inference) corrupt their own heap if that contract
         /// is violated, so callers must chunk to this size (see process_stereo).
+        sample_rate: f64,
         max_block:  usize,
         /// MUST be last: DLL must outlive all COM interface pointers above so that
         /// ComPtr::drop() (which calls Release() through the vtable) never fires
@@ -399,6 +403,8 @@ mod win {
                 // toggled during GUI attach to avoid init-time races.
                 attachment_ready: Arc::new(AtomicBool::new(true)),
                 com_access_lock: Arc::new(PLMutex::new(())),
+                icp_connected: Arc::new(AtomicBool::new(false)),
+                sample_rate,
                 max_block: block_size.max(1),
             })
         }
@@ -482,6 +488,7 @@ mod win {
             };
             unsafe {
                 let mut process_ctx: ProcessContext = std::mem::zeroed();
+                process_ctx.sampleRate = self.sample_rate;
                 pd.processContext = &mut process_ctx;
                 self.audio_proc.process(&mut pd);
             }
@@ -565,6 +572,7 @@ mod win {
             let component = self.component.clone();
             let attachment_ready = Arc::clone(&self.attachment_ready);
             let com_access_lock = Arc::clone(&self.com_access_lock);
+            let icp_connected = Arc::clone(&self.icp_connected);
 
             if let Err(e) = crate::plugins::gui::vst3::win::open_gui_window(
                 controller,
@@ -574,6 +582,7 @@ mod win {
                 gui_hwnd,
                 attachment_ready.clone(),
                 com_access_lock,
+                icp_connected,
                 sync_component_state,
                 restored_state_blob,
             ) {

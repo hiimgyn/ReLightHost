@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import { useWindowVisibility } from '../../../lib/windowVisibility';
+import { useThemeStore } from '../../../stores/themeStore';
 
 interface NeuralVADOrbProps {
   vad: number; // 0.0 to 1.0 voice activity probability
@@ -18,6 +19,7 @@ export const NeuralVADOrb: React.FC<NeuralVADOrbProps> = ({
   const smoothedVadRef = useRef(vad);
   const phaseRef = useRef(0);
   const isWindowVisible = useWindowVisibility();
+  const isDark = useThemeStore((s) => s.theme === 'dark');
 
   useEffect(() => {
     if (!isWindowVisible) return;
@@ -99,14 +101,18 @@ export const NeuralVADOrb: React.FC<NeuralVADOrbProps> = ({
         <span
           className="absolute font-mono text-[10px] font-bold tabular-nums tracking-tighter"
           style={{
-            color: vad > 0.4 ? '#ffffff' : 'rgba(255,255,255,0.4)',
+            color: vad > 0.4 ? (isDark ? '#ffffff' : '#047857') : (isDark ? 'rgba(255,255,255,0.4)' : 'rgba(15,23,42,0.45)'),
             textShadow: vad > 0.4 ? '0 0 6px rgba(16,185,129,0.8)' : 'none',
           }}
         >
           {Math.round(vad * 100)}%
         </span>
       </div>
-      <span className="text-[9px] uppercase tracking-wider font-semibold text-white/50 mt-0.5">
+      <span
+        className={`text-[9px] uppercase tracking-wider font-semibold mt-0.5 ${
+          isDark ? 'text-white/50' : 'text-slate-500'
+        }`}
+      >
         {label}
       </span>
     </div>

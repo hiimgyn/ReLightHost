@@ -158,8 +158,8 @@ impl DeepFilterProcessor {
             prod_to_worker_r,
             cons_from_worker_l,
             cons_from_worker_r,
-            dry_l: VecDeque::with_capacity(4096),
-            dry_r: VecDeque::with_capacity(4096),
+            dry_l: VecDeque::with_capacity(RB_CAPACITY),
+            dry_r: VecDeque::with_capacity(RB_CAPACITY),
 
             atten_lim_bits,
             post_filter_bits,

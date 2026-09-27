@@ -52,7 +52,7 @@ pub fn shutdown_autosave_worker() {
 
 fn run_autosave_worker(
     rx: Receiver<AutosaveRequest>,
-    plugin_manager: Arc<parking_lot::RwLock<crate::plugins::PluginInstanceManager>>,
+    plugin_manager: Arc<crate::plugins::PluginInstanceManager>,
     preset_manager: Arc<parking_lot::RwLock<crate::domain::preset::PresetManager>>,
     autosave_last_hash: Arc<AtomicU64>,
 ) {
@@ -75,7 +75,7 @@ fn run_autosave_worker(
 }
 
 fn save_autosave_snapshot(
-    plugin_manager: &Arc<parking_lot::RwLock<crate::plugins::PluginInstanceManager>>,
+    plugin_manager: &Arc<crate::plugins::PluginInstanceManager>,
     preset_manager: &Arc<parking_lot::RwLock<crate::domain::preset::PresetManager>>,
     autosave_last_hash: &Arc<AtomicU64>,
 ) {

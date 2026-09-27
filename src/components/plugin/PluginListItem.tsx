@@ -48,12 +48,12 @@ const PluginListItem = memo(function PluginListItem({
               {plugin.name}
             </Text>
             <Text type="secondary" style={{ fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {plugin.manufacture || t('info.unknownDeveloper')}
+              {plugin.format === 'builtin' ? (t('common.system') || 'System') : (plugin.manufacture || t('info.unknownDeveloper'))}
             </Text>
             <div style={{ marginTop: 6 }}>
               <Space size={4} wrap>
                 <Tag color={getFormatColor(plugin.format)} style={{ margin: 0 }}>
-                  {plugin.format.toUpperCase()}
+                  {plugin.format === 'builtin' ? (t('common.system') || 'SYSTEM') : plugin.format.toUpperCase()}
                 </Tag>
                 {plugin.category && (
                   <Tag style={{ margin: 0 }}>{plugin.category}</Tag>

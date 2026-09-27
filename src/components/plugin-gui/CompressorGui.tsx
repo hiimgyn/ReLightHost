@@ -4,6 +4,7 @@ import { Activity } from 'lucide-react';
 import * as tauri from '../../lib/tauri';
 import type { PluginInstanceInfo } from '../../lib/types';
 import { useTranslation } from '../../i18n';
+import { useThemeStore } from '../../stores/themeStore';
 import {
   AudioKnob,
   VisualStageContainer,
@@ -128,6 +129,8 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
     ? t('compressor.gentle')
     : t('compressor.linear');
 
+  const isDark = useThemeStore((s) => s.theme === 'dark');
+
   return (
     <Modal
       open={isOpen}
@@ -138,15 +141,21 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
       closable={false}
       styles={{
         body: {
-          background: 'linear-gradient(180deg, #141822 0%, #0c0e14 100%)',
-          border: '1px solid rgba(255, 255, 255, 0.12)',
-          boxShadow: '0 24px 60px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          background: isDark
+            ? 'linear-gradient(180deg, #141822 0%, #0c0e14 100%)'
+            : 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
+          border: isDark
+            ? '1px solid rgba(255, 255, 255, 0.12)'
+            : '1px solid rgba(0, 0, 0, 0.1)',
+          boxShadow: isDark
+            ? '0 24px 60px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.08)'
+            : '0 20px 48px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.04)',
           borderRadius: 16,
           padding: '20px 22px 24px',
         },
       }}
     >
-      <div className="flex flex-col gap-4 text-white">
+      <div className={`flex flex-col gap-4 ${isDark ? 'text-white' : 'text-slate-900'}`}>
         {/* Header */}
         <PluginHeader
           title={t('compressor.title') || 'Studio Compressor'}
@@ -183,7 +192,11 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
         </VisualStageContainer>
 
         {/* Primary Controls Row: Precision Audio Knobs */}
-        <div className="flex items-center justify-around py-3 px-2 bg-white/[0.03] border border-white/5 rounded-xl">
+        <div
+          className={`flex items-center justify-around py-3 px-2 rounded-xl border ${
+            isDark ? 'bg-white/[0.03] border-white/5' : 'bg-slate-50 border-slate-200/80'
+          }`}
+        >
           <AudioKnob
             label={t('compressor.threshold') || 'Threshold'}
             value={threshold}
@@ -254,7 +267,11 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
         </div>
 
         {/* Secondary Polish Controls Strip */}
-        <div className="flex items-center justify-around py-2.5 px-4 bg-white/[0.02] border border-white/5 rounded-xl">
+        <div
+          className={`flex items-center justify-around py-2.5 px-4 rounded-xl border ${
+            isDark ? 'bg-white/[0.02] border-white/5' : 'bg-slate-50/80 border-slate-200/80'
+          }`}
+        >
           <AudioKnob
             label={t('compressor.knee') || 'Knee'}
             value={knee}
@@ -311,9 +328,13 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
         <div className="flex justify-end pt-1">
           <button
             onClick={onClose}
-            className="px-4 py-1.5 text-xs font-semibold text-white/80 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg transition-colors cursor-pointer"
+            className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer border ${
+              isDark
+                ? 'text-white/80 hover:text-white bg-white/5 hover:bg-white/10 border-white/10'
+                : 'text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border-slate-300'
+            }`}
           >
-            Close
+            {t('common.close') || 'Close'}
           </button>
         </div>
       </div>

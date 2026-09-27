@@ -152,7 +152,7 @@ pub fn set_loopback(state: tauri::State<AppState>, enabled: bool) -> Result<(), 
 
 #[tauri::command]
 pub fn get_vu_data(state: tauri::State<AppState>) -> Result<VUData, String> {
-    Ok(state.audio_manager.read().get_vu_data())
+    Ok(state.vu_meter.get_data())
 }
 
 #[tauri::command]

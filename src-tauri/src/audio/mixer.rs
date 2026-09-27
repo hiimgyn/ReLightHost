@@ -44,11 +44,16 @@ pub fn process_block(left: &mut [f32], right: &mut [f32], state: &MixerState, sa
         if let Some(ref f) = *guard {
             f(left, right);
             let dsp_ns = t0.elapsed().as_nanos() as f64;
-            let block_ns = left.len() as f64 / sample_rate_hz * 1_000_000_000.0;
-            let measured = ((dsp_ns / block_ns) * 100.0).clamp(0.0, 100.0) as f32;
-            let old = f32::from_bits(state.dsp_load_u32.load(Ordering::Relaxed));
-            let smoothed = old * 0.9 + measured * 0.1;
-            state.dsp_load_u32.store(smoothed.to_bits(), Ordering::Relaxed);
+            if sample_rate_hz > 0.0 && !left.is_empty() {
+                let block_ns = left.len() as f64 / sample_rate_hz * 1_000_000_000.0;
+                if block_ns > 0.0 {
+                    let ratio = (dsp_ns / block_ns) * 100.0;
+                    let measured = if ratio.is_finite() { ratio.clamp(0.0, 100.0) as f32 } else { 0.0 };
+                    let old = f32::from_bits(state.dsp_load_u32.load(Ordering::Relaxed));
+                    let smoothed = old * 0.9 + measured * 0.1;
+                    state.dsp_load_u32.store(smoothed.to_bits(), Ordering::Relaxed);
+                }
+            }
         }
     }
 

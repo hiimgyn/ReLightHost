@@ -2,7 +2,7 @@ import type { TranslationSchema } from './types';
 
 export const en: TranslationSchema = {
   common: {
-    builtin: 'Built-in',
+    builtin: 'System',
     resetToDefault: 'Reset to default',
     reset: 'Reset',
     cancel: 'Cancel',
@@ -119,7 +119,7 @@ export const en: TranslationSchema = {
     tabVst3: 'VST3 ({count})',
     tabVst: 'VST2 ({count})',
     tabClap: 'CLAP ({count})',
-    tabBuiltin: 'Built-in ({count})',
+    tabBuiltin: 'System ({count})',
     scanning: 'Scanning for plugins...',
     noPluginsFound: 'No plugins found',
     tryDifferentSearch: 'Try a different search',
@@ -201,6 +201,7 @@ export const en: TranslationSchema = {
   appSettings: {
     title: 'Application Settings',
     subtitle: 'Configure startup, tray behavior, language, and system updates',
+    general: 'General',
     startupBehavior: 'Startup Behavior',
     runOnStartup: 'Run on System Startup',
     runOnStartupDesc: 'Automatically launch ReLightHost when your computer starts',

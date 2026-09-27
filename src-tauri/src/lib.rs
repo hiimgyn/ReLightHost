@@ -23,8 +23,9 @@ pub(crate) use core::{app_events, session, timing};
 #[derive(Clone)]
 pub(crate) struct AppState {
     audio_manager: Arc<RwLock<AudioManager>>,
+    vu_meter: Arc<audio::VUMeter>,
     plugin_scanner: Arc<RwLock<PluginScanner>>,
-    plugin_manager: Arc<RwLock<PluginInstanceManager>>,
+    plugin_manager: Arc<PluginInstanceManager>,
     preset_manager: Arc<RwLock<PresetManager>>,
     config_manager: Arc<RwLock<ConfigManager>>,
     sys_info: Arc<RwLock<sysinfo::System>>,
@@ -95,9 +96,17 @@ pub fn run() {
     // on the next startup).
     crate::plugins::processor::vst3_sandbox::registry::attribute_crashes_from_unclean_exit();
 
-    let audio_manager  = Arc::new(RwLock::new(AudioManager::new()));
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // Request 1ms system timer resolution for low-jitter audio & worker threads
+        windows_sys::Win32::Media::timeBeginPeriod(1);
+    }
+
+    let audio_mgr      = AudioManager::new();
+    let vu_meter       = audio_mgr.vu_meter();
+    let audio_manager  = Arc::new(RwLock::new(audio_mgr));
     let plugin_scanner = Arc::new(RwLock::new(PluginScanner::new()));
-    let plugin_manager = Arc::new(RwLock::new(PluginInstanceManager::new()));
+    let plugin_manager = Arc::new(PluginInstanceManager::new());
     let preset_manager = Arc::new(RwLock::new(PresetManager::default()));
     let config_manager = Arc::new(RwLock::new(
         match ConfigManager::new() {
@@ -121,6 +130,7 @@ pub fn run() {
 
     let app_state = AppState {
         audio_manager: Arc::clone(&audio_manager),
+        vu_meter: Arc::clone(&vu_meter),
         plugin_scanner: Arc::clone(&plugin_scanner),
         plugin_manager: Arc::clone(&plugin_manager),
         preset_manager: Arc::clone(&preset_manager),
@@ -145,14 +155,12 @@ pub fn run() {
     {
         let pm = Arc::clone(&plugin_manager);
         audio_manager.read().set_process_callback(move |left, right| {
-            // try_read is non-blocking — safe for real-time audio thread.
-            if let Some(guard) = pm.try_read() {
-                guard.process_chain_stereo(left, right);
-            }
+            // Lock-free RCU plugin chain execution: zero lock contention, zero audio dropouts.
+            pm.process_chain_stereo(left, right);
         });
     }
 
-    tauri::Builder::default()
+    let res = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Second instance launched — focus the existing window instead
             if let Some(window) = app.get_webview_window("main") {
@@ -220,10 +228,16 @@ pub fn run() {
             commands::system::check_for_update,
             commands::system::install_update,
         ])
-        .run(tauri::generate_context!())
-        .unwrap_or_else(|e| {
-            log::error!("Tauri application error: {}", e);
-            std::process::exit(1);
-        });
+        .run(tauri::generate_context!());
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        windows_sys::Win32::Media::timeEndPeriod(1);
+    }
+
+    if let Err(e) = res {
+        log::error!("Tauri application error: {}", e);
+        std::process::exit(1);
+    }
 }
 

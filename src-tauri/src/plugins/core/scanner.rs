@@ -513,7 +513,7 @@ impl PluginScanner {
             PluginInfo {
                 id:       noise_suppressor::ID.to_string(),
                 name:     "Noise Suppressor (RNNoise)".to_string(),
-                vendor:   "Built-in".to_string(),
+                vendor:   "System".to_string(),
                 version:  env!("CARGO_PKG_VERSION").to_string(),
                 path:     noise_suppressor::ID.to_string(),
                 format:   PluginFormat::Builtin,
@@ -522,7 +522,7 @@ impl PluginScanner {
             PluginInfo {
                 id:       deep_filter::ID.to_string(),
                 name:     "AI Noise Suppressor (DeepFilterNet)".to_string(),
-                vendor:   "Built-in (Rikorose)".to_string(),
+                vendor:   "System".to_string(),
                 version:  env!("CARGO_PKG_VERSION").to_string(),
                 path:     deep_filter::ID.to_string(),
                 format:   PluginFormat::Builtin,
@@ -531,7 +531,7 @@ impl PluginScanner {
             PluginInfo {
                 id:       compressor::ID.to_string(),
                 name:     "Compressor".to_string(),
-                vendor:   "Built-in".to_string(),
+                vendor:   "System".to_string(),
                 version:  env!("CARGO_PKG_VERSION").to_string(),
                 path:     compressor::ID.to_string(),
                 format:   PluginFormat::Builtin,
@@ -540,7 +540,7 @@ impl PluginScanner {
             PluginInfo {
                 id:       voice::ID.to_string(),
                 name:     "Voice Designer".to_string(),
-                vendor:   "Built-in".to_string(),
+                vendor:   "System".to_string(),
                 version:  env!("CARGO_PKG_VERSION").to_string(),
                 path:     voice::ID.to_string(),
                 format:   PluginFormat::Builtin,

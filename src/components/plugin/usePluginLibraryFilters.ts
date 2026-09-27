@@ -22,20 +22,22 @@ export function usePluginLibraryFilters({
     return availablePlugins.filter((plugin) => {
       const matchesSearch =
         plugin.name.toLowerCase().includes(query) ||
-        (plugin.manufacture?.toLowerCase().includes(query) ?? false) ||
+        (plugin.format === 'builtin'
+          ? (t('common.system') || 'System').toLowerCase().includes(query) || 'system'.includes(query)
+          : (plugin.manufacture?.toLowerCase().includes(query) ?? false)) ||
         (plugin.category?.toLowerCase().includes(query) ?? false);
       const matchesFormat = filterFormat === 'all' || plugin.format === filterFormat;
       return matchesSearch && matchesFormat;
     });
-  }, [availablePlugins, filterFormat, searchQuery]);
+  }, [availablePlugins, filterFormat, searchQuery, t]);
 
   // Group plugins by manufacture/author
   const groupedByAuthor = useMemo(() => filteredPlugins.reduce((acc: Record<string, PluginInfo[]>, plugin) => {
-    const author = plugin.manufacture?.trim() || 'Unknown';
+    const author = plugin.format === 'builtin' ? (t('common.system') || 'System') : (plugin.manufacture?.trim() || 'Unknown');
     if (!acc[author]) acc[author] = [];
     acc[author].push(plugin);
     return acc;
-  }, {} as Record<string, PluginInfo[]>), [filteredPlugins]);
+  }, {} as Record<string, PluginInfo[]>), [filteredPlugins, t]);
   const authorKeys = useMemo(() => Object.keys(groupedByAuthor).sort((a, b) => a.localeCompare(b)), [groupedByAuthor]);
 
   const builtinCount = useMemo(() => availablePlugins.filter(p => p.format === 'builtin').length, [availablePlugins]);

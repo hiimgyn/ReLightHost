@@ -4,9 +4,10 @@ version = 3
 
 [[package]]
 name = "ReLightHost"
-version = "2.6.2"
+version = "2.6.3"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "asio-sys",
  "auto-launch",
  "chrono",
@@ -131,6 +132,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 dependencies = [
  "derive_arbitrary",
+]
+
+[[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@ import type { TranslationSchema } from './types';
 
 export const vi: TranslationSchema = {
   common: {
-    builtin: 'Tích hợp',
+    builtin: 'Hệ thống',
     resetToDefault: 'Đặt lại về mặc định',
     reset: 'Đặt lại',
     cancel: 'Hủy',
@@ -119,7 +119,7 @@ export const vi: TranslationSchema = {
     tabVst3: 'VST3 ({count})',
     tabVst: 'VST2 ({count})',
     tabClap: 'CLAP ({count})',
-    tabBuiltin: 'Tích hợp ({count})',
+    tabBuiltin: 'Hệ thống ({count})',
     scanning: 'Đang quét tìm plugin...',
     noPluginsFound: 'Không tìm thấy plugin nào',
     tryDifferentSearch: 'Thử tìm kiếm với từ khóa khác',
@@ -201,6 +201,7 @@ export const vi: TranslationSchema = {
   appSettings: {
     title: 'Cài đặt Ứng dụng',
     subtitle: 'Cấu hình khởi động, khay hệ thống, ngôn ngữ và cập nhật',
+    general: 'Cài đặt chung',
     startupBehavior: 'Hành vi khởi động',
     runOnStartup: 'Khởi động cùng Windows',
     runOnStartupDesc: 'Tự động mở ReLightHost khi khởi động máy tính',

@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Tooltip } from 'antd';
 import { RotateCcw } from 'lucide-react';
+import { useThemeStore } from '../../../stores/themeStore';
 
 export interface AudioKnobProps {
   label: string;
@@ -153,24 +154,33 @@ export const AudioKnob: React.FC<AudioKnobProps> = ({
     }
   };
 
+  const isDark = useThemeStore((s) => s.theme === 'dark');
+
   return (
     <div
       className="flex flex-col items-center select-none"
-      style={{ opacity: disabled ? 0.45 : 1, width: cfg.diameter + 16 }}
+      style={{
+        opacity: disabled ? 0.45 : 1,
+        minWidth: cfg.diameter + 24,
+        maxWidth: 116,
+        width: 'auto',
+      }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      {/* Parameter Label */}
-      <div className="flex items-center justify-center gap-1 mb-1 text-center w-full">
+      {/* Parameter Label - full wrapping, no ellipsis cut-off */}
+      <div className="flex items-center justify-center gap-1 mb-1.5 text-center w-full min-h-[28px] px-1">
         <span
           style={{
             fontSize: cfg.labelSize,
-            color: 'var(--rh-text-muted, rgba(255,255,255,0.65))',
-            letterSpacing: '0.04em',
+            color: isDark ? 'rgba(255, 255, 255, 0.72)' : 'rgba(15, 23, 42, 0.75)',
+            letterSpacing: '0.03em',
             textTransform: 'uppercase',
             fontWeight: 600,
+            lineHeight: 1.25,
+            wordBreak: 'break-word',
+            whiteSpace: 'normal',
           }}
-          className="truncate"
           title={label}
         >
           {label}
@@ -179,7 +189,9 @@ export const AudioKnob: React.FC<AudioKnobProps> = ({
           <Tooltip title={`Reset to ${format(defaultValue)}${unit ? ' ' + unit : ''}`}>
             <button
               onClick={() => onChange(defaultValue)}
-              className="text-white/30 hover:text-white/80 transition-colors p-0.5 cursor-pointer"
+              className={`${
+                isDark ? 'text-white/30 hover:text-white/80' : 'text-slate-400 hover:text-slate-700'
+              } transition-colors p-0.5 cursor-pointer shrink-0`}
             >
               <RotateCcw size={10} />
             </button>
@@ -215,7 +227,7 @@ export const AudioKnob: React.FC<AudioKnobProps> = ({
           <path
             d={trackPath}
             fill="none"
-            stroke="rgba(255, 255, 255, 0.12)"
+            stroke={isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.12)'}
             strokeWidth={cfg.stroke}
             strokeLinecap="round"
           />
@@ -240,15 +252,31 @@ export const AudioKnob: React.FC<AudioKnobProps> = ({
           style={{
             width: cfg.capSize,
             height: cfg.capSize,
-            background: isDragging
-              ? 'linear-gradient(145deg, #2b3040, #171a24)'
-              : isHovered
-              ? 'linear-gradient(145deg, #262a38, #13151e)'
-              : 'linear-gradient(145deg, #202431, #101218)',
-            border: `1px solid ${isDragging ? color : isHovered ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.1)'}`,
-            boxShadow: isDragging
-              ? `0 0 12px ${color}55, inset 0 1px 1px rgba(255,255,255,0.2)`
-              : '0 4px 10px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.12)',
+            background: isDark
+              ? (isDragging
+                  ? 'linear-gradient(145deg, #2b3040, #171a24)'
+                  : isHovered
+                  ? 'linear-gradient(145deg, #262a38, #13151e)'
+                  : 'linear-gradient(145deg, #202431, #101218)')
+              : (isDragging
+                  ? 'linear-gradient(145deg, #e2e8f0, #cbd5e1)'
+                  : isHovered
+                  ? 'linear-gradient(145deg, #ffffff, #e2e8f0)'
+                  : 'linear-gradient(145deg, #ffffff, #f1f5f9)'),
+            border: `1px solid ${
+              isDragging
+                ? color
+                : isDark
+                ? (isHovered ? 'rgba(255, 255, 255, 0.22)' : 'rgba(255, 255, 255, 0.1)')
+                : (isHovered ? 'rgba(0, 0, 0, 0.22)' : 'rgba(0, 0, 0, 0.12)')
+            }`,
+            boxShadow: isDark
+              ? (isDragging
+                  ? `0 0 12px ${color}55, inset 0 1px 1px rgba(255,255,255,0.2)`
+                  : '0 4px 10px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.12)')
+              : (isDragging
+                  ? `0 0 10px ${color}44, inset 0 1px 1px rgba(255,255,255,0.8)`
+                  : '0 3px 8px rgba(0,0,0,0.12), inset 0 1px 1px rgba(255,255,255,0.9)'),
             transform: `rotate(${currentAngle}deg)`,
           }}
         >
@@ -258,7 +286,7 @@ export const AudioKnob: React.FC<AudioKnobProps> = ({
             style={{
               width: cfg.stroke - 1.5,
               height: cfg.capSize * 0.28,
-              backgroundColor: isDragging ? '#ffffff' : color,
+              backgroundColor: isDragging ? (isDark ? '#ffffff' : '#0f172a') : color,
               boxShadow: `0 0 4px ${color}`,
             }}
           />
@@ -271,12 +299,18 @@ export const AudioKnob: React.FC<AudioKnobProps> = ({
         onDoubleClick={handleDoubleClick}
         style={{
           fontSize: cfg.valueSize,
-          color: isDragging ? '#ffffff' : 'rgba(255,255,255,0.88)',
-          textShadow: isDragging ? `0 0 8px ${color}88` : 'none',
+          color: isDark
+            ? (isDragging ? '#ffffff' : 'rgba(255, 255, 255, 0.9)')
+            : (isDragging ? color : 'rgba(15, 23, 42, 0.9)'),
+          textShadow: isDragging ? `0 0 8px ${color}66` : 'none',
         }}
       >
         {format(value)}
-        {unit && <span className="ml-0.5 text-white/50 text-[10px]">{unit}</span>}
+        {unit && (
+          <span className={`ml-0.5 text-[10px] ${isDark ? 'text-white/50' : 'text-slate-400'}`}>
+            {unit}
+          </span>
+        )}
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useCallback } from 'react';
+import { useThemeStore } from '../../../stores/themeStore';
 
 interface TransferCurveCanvasProps {
   threshold: number; // dB, e.g. -60 to 0
@@ -44,6 +45,8 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
   const MAX_DB = 0;
   const DB_SPAN = MAX_DB - MIN_DB;
 
+  const isDark = useThemeStore((s) => s.theme === 'dark');
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -79,10 +82,10 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
 
     // 1. Grid & dB labels
     const gridDbs = [-48, -36, -24, -12, 0];
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+    ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.08)';
     ctx.lineWidth = 1;
     ctx.font = '9px JetBrains Mono, monospace';
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.fillStyle = isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(15, 23, 42, 0.45)';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
 
@@ -107,7 +110,7 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
 
     // 2. 1:1 Unity gain reference dashed line
     ctx.setLineDash([3, 3]);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.16)';
     ctx.beginPath();
     ctx.moveTo(toX(MIN_DB), toY(MIN_DB));
     ctx.lineTo(toX(MAX_DB), toY(MAX_DB));
@@ -185,7 +188,7 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
     const grH = plotH;
 
     // Meter track
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.fillStyle = isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.06)';
     ctx.fillRect(grX, padT, grW, grH);
 
     // Active GR fill (drops down from 0dB at top)
@@ -204,12 +207,12 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
 
     // GR label
     ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+    ctx.fillStyle = isDark ? 'rgba(255, 255, 255, 0.4)' : 'rgba(15, 23, 42, 0.45)';
     ctx.font = '8px monospace';
     ctx.fillText('GR', grX + grW / 2, height - 8);
 
     ctx.restore();
-  }, [threshold, ratio, knee, makeup, liveInputDb, liveGainReductionDb, accentColor, computeOutputDb]);
+  }, [threshold, ratio, knee, makeup, liveInputDb, liveGainReductionDb, accentColor, computeOutputDb, isDark]);
 
   // Pointer drag to adjust threshold or ratio on the canvas
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {

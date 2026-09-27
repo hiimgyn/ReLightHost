@@ -11,4 +11,4 @@ pub mod mmcss;
 pub use manager::AudioManager;
 pub use device::AudioDevice;
 pub use types::*;
-pub use vu_meter::VUData;
+pub use vu_meter::{VUData, VUMeter};

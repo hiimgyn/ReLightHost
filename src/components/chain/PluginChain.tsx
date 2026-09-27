@@ -350,7 +350,7 @@ export default function PluginChain() {
                       style={{
                         display: 'flex',
                         alignItems: 'center',
-                        margin: isWrapBreak ? '0 6px 0 0' : '0 6px',
+                        margin: '0 6px',
                         flexShrink: 0,
                         padding: '4px 6px',
                         borderRadius: 999,

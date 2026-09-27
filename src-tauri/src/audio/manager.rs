@@ -181,7 +181,7 @@ pub struct AudioManager {
     /// Plugin chain callback — set by lib.rs after AppState is built.
     process_fn:  Arc<Mutex<Option<ProcessChainFn>>>,
     /// VU meter for output level monitoring
-    vu_meter:    Arc<VUMeter>,
+    pub(crate) vu_meter: Arc<VUMeter>,
     /// Output mute — when true the output callback writes silence.
     muted:       Arc<AtomicBool>,
     /// Loopback — when true, captures system output and mixes into the output.
@@ -712,8 +712,14 @@ impl AudioManager {
     }
 
     /// Get current VU meter data
+    #[allow(dead_code)]
     pub fn get_vu_data(&self) -> crate::audio::vu_meter::VUData {
         self.vu_meter.get_data()
+    }
+
+    /// Expose shared VU meter handle for lock-free external polling
+    pub fn vu_meter(&self) -> Arc<VUMeter> {
+        Arc::clone(&self.vu_meter)
     }
 
     /// Set output device

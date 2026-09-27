@@ -2,14 +2,13 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 
 use crate::domain::preset::Preset;
 use crate::plugins::PluginInstanceManager;
 
 /// Build a preset snapshot from a plugin manager directly.
 pub fn build_chain_preset_from_manager(
-    plugin_manager: &Arc<RwLock<PluginInstanceManager>>,
+    plugin_manager: &Arc<PluginInstanceManager>,
     name: impl Into<String>,
 ) -> Preset {
     // Single lock acquisition; instances and their info stay in chain order,

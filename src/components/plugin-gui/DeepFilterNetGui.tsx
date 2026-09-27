@@ -6,6 +6,7 @@ import { useAudioStore } from '../../stores/audioStore';
 import type { PluginInstanceInfo } from '../../lib/types';
 import { useWindowVisibility } from '../../lib/windowVisibility';
 import { useTranslation } from '../../i18n';
+import { useThemeStore } from '../../stores/themeStore';
 import {
   AudioKnob,
   VisualStageContainer,
@@ -153,6 +154,8 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
     });
   };
 
+  const isDark = useThemeStore((s) => s.theme === 'dark');
+
   return (
     <Modal
       open={isOpen}
@@ -163,15 +166,21 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
       closable={false}
       styles={{
         body: {
-          background: 'linear-gradient(180deg, #130f24 0%, #090812 100%)',
-          border: '1px solid rgba(168, 85, 247, 0.25)',
-          boxShadow: '0 24px 60px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          background: isDark
+            ? 'linear-gradient(180deg, #130f24 0%, #090812 100%)'
+            : 'linear-gradient(180deg, #ffffff 0%, #f8f6ff 100%)',
+          border: isDark
+            ? '1px solid rgba(168, 85, 247, 0.25)'
+            : '1px solid rgba(168, 85, 247, 0.2)',
+          boxShadow: isDark
+            ? '0 24px 60px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.08)'
+            : '0 20px 48px rgba(168, 85, 247, 0.08), 0 4px 12px rgba(0, 0, 0, 0.04)',
           borderRadius: 16,
           padding: '20px 22px 24px',
         },
       }}
     >
-      <div className="flex flex-col gap-4 text-white">
+      <div className={`flex flex-col gap-4 ${isDark ? 'text-white' : 'text-slate-900'}`}>
         {/* Header */}
         <PluginHeader
           title={t('deepFilter.title') || 'DeepFilterNet 3 Pro'}
@@ -222,7 +231,11 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
               />
             </div>
             {/* Neural VAD Orb takes right section */}
-            <div className="w-28 h-full flex items-center justify-center border-l border-white/5 bg-black/25">
+            <div
+              className={`w-28 h-full flex items-center justify-center border-l ${
+                isDark ? 'border-white/5 bg-black/25' : 'border-slate-200 bg-slate-100/50'
+              }`}
+            >
               <NeuralVADOrb
                 vad={vad}
                 size={74}
@@ -233,7 +246,11 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
         </VisualStageContainer>
 
         {/* Primary Controls Row: Rotary Studio Knobs */}
-        <div className="flex items-center justify-around py-3 px-2 bg-white/[0.025] border border-white/5 rounded-xl">
+        <div
+          className={`flex items-center justify-around py-3 px-2 rounded-xl border ${
+            isDark ? 'bg-white/[0.025] border-white/5' : 'bg-slate-50 border-slate-200/80'
+          }`}
+        >
           <AudioKnob
             label={t('deepFilter.maxAttenuation') || 'Max Attenuation'}
             value={attenLim}
@@ -304,14 +321,32 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
         </div>
 
         {/* Neural Info Pill Footer */}
-        <div className="flex items-center justify-between text-[11px] text-zinc-400/80 px-2">
+        <div
+          className={`flex items-center justify-between text-[11px] px-2 ${
+            isDark ? 'text-zinc-400/80' : 'text-slate-500'
+          }`}
+        >
           <span className="flex items-center gap-1.5">
-            <Zap size={12} className="text-purple-400" />
+            <Zap size={12} className={isDark ? 'text-purple-400' : 'text-purple-600'} />
             <span>DeepFilterNet3 ONNX • Tract Runtime</span>
           </span>
-          <span className="text-[10px] font-mono text-zinc-400/60">
+          <span className={`text-[10px] font-mono ${isDark ? 'text-zinc-400/60' : 'text-slate-400'}`}>
             Atten: -{attenLim.toFixed(0)} dB • Beta: {postFilter.toFixed(2)}
           </span>
+        </div>
+
+        {/* Close Button Footer */}
+        <div className="flex justify-end pt-1">
+          <button
+            onClick={onClose}
+            className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer border ${
+              isDark
+                ? 'text-white/80 hover:text-white bg-white/5 hover:bg-white/10 border-white/10'
+                : 'text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border-slate-300'
+            }`}
+          >
+            {t('common.close') || 'Close'}
+          </button>
         </div>
       </div>
     </Modal>

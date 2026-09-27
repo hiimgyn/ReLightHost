@@ -115,6 +115,8 @@ pub mod win {
             const { std::cell::RefCell::new(None) };
         /// Whether component and controller are separate objects.
         static TL_SEPARATE_CONTROLLER: Cell<bool> = const { Cell::new(true) };
+        /// Prevents re-entrancy in WM_CLOSE message pumping.
+        static TL_CLOSING: Cell<bool> = const { Cell::new(false) };
     }
 
     /// Posted to self just before the message loop starts.
@@ -206,12 +208,14 @@ pub mod win {
         gui_hwnd: Arc<AtomicIsize>,
         attachment_ready: Arc<std::sync::atomic::AtomicBool>,
         com_access_lock: Arc<parking_lot::Mutex<()>>,
+        icp_connected: Arc<AtomicBool>,
         sync_component_state: bool,
         restored_state_blob: Option<Vec<u8>>,
     ) -> Result<()> {
         let controller_clone = controller.clone();
         let component_clone  = component.clone();
         let name_owned = plugin_name.to_string();
+        let icp_connected_clone = Arc::clone(&icp_connected);
 
         std::thread::Builder::new()
             .name(format!("vst3-gui-{}", plugin_name))
@@ -287,6 +291,7 @@ pub mod win {
                     &name_owned,
                     &gui_hwnd,
                     &_cleanup.attachment_ready,
+                    &icp_connected_clone,
                     sync_component_state,
                     restored_state_blob,
                 ) {
@@ -303,12 +308,14 @@ pub mod win {
 
     // ── GUI window lifecycle ──────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn run_gui_window_impl(
         controller: &ComPtr<IEditController>,
         component:  &ComPtr<IComponent>,
         plugin_name: &str,
         gui_hwnd_arc: &Arc<AtomicIsize>,
         attachment_ready: &Arc<std::sync::atomic::AtomicBool>,
+        icp_connected: &Arc<AtomicBool>,
         sync_component_state: bool,
         restored_state_blob: Option<Vec<u8>>,
     ) -> Result<bool> {
@@ -331,6 +338,9 @@ pub mod win {
         //    which would corrupt the stack on non-thread-safe plugins.
         //    Skip for single-component plugins (comp and ctrl are the same object);
         //    calling connect(self) is a no-op at best and crashes at worst.
+        //    CRITICAL: Only connect once per plugin lifetime. Reconnecting on
+        //    reopen without disconnect (or calling connect twice) corrupts plugin
+        //    internal connection lists on fragile plugins like Supertone Clear.
         let connected_icp = if let (Some(comp_cp), Some(ctrl_cp)) = (
             component.cast::<IConnectionPoint>(),
             controller.cast::<IConnectionPoint>(),
@@ -344,12 +354,16 @@ pub mod win {
             if same_object {
                 log::debug!("'{}': single-component — skipping IConnectionPoint connect", plugin_name);
                 false
-            } else {
+            } else if !icp_connected.load(Ordering::Acquire) {
                 unsafe {
                     let _ = comp_cp.connect(ctrl_cp.as_ptr());
                     let _ = ctrl_cp.connect(comp_cp.as_ptr());
                 }
+                icp_connected.store(true, Ordering::Release);
                 log::debug!("'{}': IConnectionPoint connected (component ↔ controller)", plugin_name);
+                true
+            } else {
+                log::debug!("'{}': IConnectionPoint already connected — skipping duplicate connect", plugin_name);
                 true
             }
         } else {
@@ -544,6 +558,7 @@ pub mod win {
         TL_INITIAL_SIZE.with(|c| c.set((0, 0)));
         TL_ATTACHMENT_READY.with(|c| *c.borrow_mut() = None);
         TL_SEPARATE_CONTROLLER.with(|c| c.set(true));
+        TL_CLOSING.with(|c| c.set(false));
         TL_HWND.set(0);
 
         if !attach_finished {
@@ -599,10 +614,15 @@ pub mod win {
     ) -> windows_sys::Win32::Foundation::LRESULT {
         match msg {
             WM_CLOSE => {
-                // Tell the attach thread's message loop to exit before we destroy
-                // the window.  The attach thread owns all plugin child HWNDs for
-                // non-JUCE plugins; it must finish cleaning them up before we call
-                // view.removed() in run_gui_window_impl.
+                if TL_CLOSING.with(|c| c.get()) {
+                    return 0;
+                }
+                TL_CLOSING.with(|c| c.set(true));
+
+                // 1. Hide the host window immediately for instant visual feedback.
+                ShowWindow(hwnd, SW_HIDE);
+
+                // 2. Tell the attach thread to exit its message loop and call view.removed().
                 let attach_tid = TL_ATTACH_TID.with(|c| {
                     c.borrow()
                         .as_ref()
@@ -612,10 +632,46 @@ pub mod win {
                 if attach_tid != 0 {
                     unsafe { PostThreadMessageW(attach_tid, WM_QUIT, 0, 0); }
                 }
-                // Let DefWindowProcW destroy the window (sends WM_DESTROY).
-                DefWindowProcW(hwnd, msg, wparam, lparam)
+
+                // 3. CRITICAL (Steinberg VST3 SDK): IPlugView::removed() MUST be called BEFORE
+                // DestroyWindow(parent). If the parent HWND is destroyed first, Windows destroys
+                // child HWNDs out from under the plugin while its internal state still references them.
+                // On the next GUI open, the plugin crashes inside CallWindowProcW -> IsWindowUnicode -> InitDll.
+                // Wait for the attach thread to signal TL_ATTACH_DONE while actively pumping
+                // messages on this GUI thread so cross-thread SendMessages from the plugin
+                // during removed() are processed immediately.
+                let done = TL_ATTACH_DONE.with(|c| c.borrow().as_ref().map(Arc::clone));
+                if let Some(done) = done {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+                    while !done.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                        let mut msg: MSG = std::mem::zeroed();
+                        while PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                            if msg.message == WM_QUIT {
+                                PostQuitMessage(msg.wParam as i32);
+                                break;
+                            }
+                            TranslateMessage(&msg);
+                            DispatchMessageW(&msg);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+
+                // 4. Now that the plugin view has completely detached, safely destroy the host window.
+                DestroyWindow(hwnd);
+                0
             }
             WM_DESTROY => {
+                // Ensure attach thread is signaled even if WM_CLOSE was bypassed
+                let attach_tid = TL_ATTACH_TID.with(|c| {
+                    c.borrow()
+                        .as_ref()
+                        .map(|arc| arc.load(Ordering::Acquire))
+                        .unwrap_or(0)
+                });
+                if attach_tid != 0 {
+                    unsafe { PostThreadMessageW(attach_tid, WM_QUIT, 0, 0); }
+                }
                 PostQuitMessage(0);
                 0
             }
@@ -909,6 +965,7 @@ pub mod win {
         _gui_hwnd: Arc<std::sync::atomic::AtomicIsize>,
         _attachment_ready: Arc<AtomicBool>,
         _com_access_lock: Arc<parking_lot::Mutex<()>>,
+        _icp_connected: Arc<AtomicBool>,
         _sync_component_state: bool,
         _restored_state_blob: Option<Vec<u8>>,
     ) -> Result<()> {

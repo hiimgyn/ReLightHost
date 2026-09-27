@@ -1,4 +1,5 @@
 import React, { useRef, useEffect } from 'react';
+import { useThemeStore } from '../../../stores/themeStore';
 
 interface BodePlotCanvasProps {
   lowGain: number;   // -12 to +12 dB
@@ -66,6 +67,8 @@ export const BodePlotCanvas: React.FC<BodePlotCanvasProps> = ({
     return gLow + gMid + gHigh;
   };
 
+  const isDark = useThemeStore((s) => s.theme === 'dark');
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -109,10 +112,10 @@ export const BodePlotCanvas: React.FC<BodePlotCanvasProps> = ({
       { f: 10000, label: '10k' },
     ];
 
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.07)';
     ctx.lineWidth = 1;
     ctx.font = '9px JetBrains Mono, monospace';
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.fillStyle = isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(15, 23, 42, 0.45)';
     ctx.textAlign = 'center';
 
     freqMarkers.forEach(({ f, label }) => {
@@ -132,7 +135,10 @@ export const BodePlotCanvas: React.FC<BodePlotCanvasProps> = ({
     dbMarkers.forEach((db) => {
       const y = toY(db);
       ctx.beginPath();
-      ctx.strokeStyle = db === 0 ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.05)';
+      ctx.strokeStyle =
+        db === 0
+          ? (isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.18)')
+          : (isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.07)');
       ctx.lineWidth = db === 0 ? 1.5 : 1;
       ctx.moveTo(padL, y);
       ctx.lineTo(padL + plotW, y);
@@ -206,7 +212,7 @@ export const BodePlotCanvas: React.FC<BodePlotCanvasProps> = ({
     });
 
     ctx.restore();
-  }, [lowGain, midGain, highGain, accentColor]);
+  }, [lowGain, midGain, highGain, accentColor, isDark]);
 
   // Pointer drag on nodes
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {

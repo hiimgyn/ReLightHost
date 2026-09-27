@@ -1,6 +1,6 @@
 [package]
 name = "ReLightHost"
-version = "2.6.2"
+version = "2.6.3"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
 license = "CC-BY-NC-SA-4.0"
@@ -42,6 +42,7 @@ webbrowser = "1.0"
 # Lock-free SPSC ring buffer for audio callbacks (avoids Mutex in realtime thread)
 ringbuf = "0.5"
 parking_lot = "0.12"
+arc-swap = "1.7"
 
 # Plugin hosting
 vst3 = "0.3"                                              # vst3-rs: VST3 plugin hosting
@@ -75,6 +76,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Gdi",             # RedrawWindow, InvalidateRect
     "Win32_UI_HiDpi",                 # GetDpiForWindow (DPI scale factor)
     "Win32_System_JobObjects",        # kill-sandboxed-child-on-host-exit job object
+    "Win32_Media",                    # timeBeginPeriod, timeEndPeriod
 ] }
 windows = { version = "0.62", features = [
     "Win32_Media_Audio",
@@ -87,3 +89,10 @@ windows = { version = "0.62", features = [
     "Win32_System_Variant",               # PropVariantToStringAlloc
 ] }
 asio-sys = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+

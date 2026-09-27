@@ -55,11 +55,11 @@ export default function PluginInfoModal({ plugin, isOpen, onClose, onLoad }: Plu
             <Space size={8} align="center">
               <Text strong style={{ fontSize: 16, lineHeight: 1.2 }}>{plugin.name}</Text>
               <Tag color={getFormatColor(plugin.format)} style={{ margin: 0 }}>
-                {plugin.format.toUpperCase()}
+                {plugin.format === 'builtin' ? (t('common.system') || 'SYSTEM') : plugin.format.toUpperCase()}
               </Tag>
             </Space>
             <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-              {plugin.manufacture || t('info.unknownDeveloper')}
+              {plugin.format === 'builtin' ? (t('common.system') || 'System') : (plugin.manufacture || t('info.unknownDeveloper'))}
             </Text>
           </div>
         </Space>
@@ -91,11 +91,13 @@ export default function PluginInfoModal({ plugin, isOpen, onClose, onLoad }: Plu
         style={{ marginBottom: 16 }}
         labelStyle={{ fontWeight: 600, width: 120 }}
       >
-        <Descriptions.Item label={t('info.manufacturer')}>{plugin.manufacture || '—'}</Descriptions.Item>
+        <Descriptions.Item label={t('info.manufacturer')}>
+          {plugin.format === 'builtin' ? (t('common.system') || 'System') : (plugin.manufacture || '—')}
+        </Descriptions.Item>
         <Descriptions.Item label={t('info.version')}>{plugin.version || '—'}</Descriptions.Item>
         <Descriptions.Item label={t('info.format')}>
           <Tag color={getFormatColor(plugin.format)} style={{ margin: 0 }}>
-            {plugin.format.toUpperCase()}
+            {plugin.format === 'builtin' ? (t('common.system') || 'SYSTEM') : plugin.format.toUpperCase()}
           </Tag>
         </Descriptions.Item>
         <Descriptions.Item label={t('info.category')}>{plugin.category || '—'}</Descriptions.Item>

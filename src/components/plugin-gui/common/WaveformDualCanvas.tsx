@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import { useWindowVisibility } from '../../../lib/windowVisibility';
+import { useThemeStore } from '../../../stores/themeStore';
 
 interface WaveformDualCanvasProps {
   vad: number;          // 0.0 to 1.0
@@ -19,6 +20,8 @@ export const WaveformDualCanvas: React.FC<WaveformDualCanvasProps> = ({
   });
   const timeRef = useRef(0);
   const isWindowVisible = useWindowVisibility();
+
+  const isDark = useThemeStore((s) => s.theme === 'dark');
 
   useEffect(() => {
     if (!isWindowVisible || !active) return;
@@ -66,7 +69,7 @@ export const WaveformDualCanvas: React.FC<WaveformDualCanvasProps> = ({
       const amp = height * 0.42;
 
       // Center reference line
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.08)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, centerY);
@@ -84,7 +87,7 @@ export const WaveformDualCanvas: React.FC<WaveformDualCanvasProps> = ({
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
-      ctx.strokeStyle = 'rgba(245, 158, 11, 0.35)';
+      ctx.strokeStyle = isDark ? 'rgba(245, 158, 11, 0.35)' : 'rgba(217, 119, 6, 0.55)';
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
@@ -96,18 +99,18 @@ export const WaveformDualCanvas: React.FC<WaveformDualCanvasProps> = ({
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
-      ctx.strokeStyle = '#00f0ff';
+      ctx.strokeStyle = isDark ? '#00f0ff' : '#0891b2';
       ctx.lineWidth = 2.0;
-      ctx.shadowColor = '#00f0ff';
-      ctx.shadowBlur = 6;
+      ctx.shadowColor = isDark ? '#00f0ff' : '#0891b2';
+      ctx.shadowBlur = isDark ? 6 : 2;
       ctx.stroke();
       ctx.shadowBlur = 0;
 
       // Legend overlay
       ctx.font = '9px Inter, sans-serif';
-      ctx.fillStyle = '#00f0ff';
+      ctx.fillStyle = isDark ? '#00f0ff' : '#0891b2';
       ctx.fillText('● CLEAN SPEECH', 10, 16);
-      ctx.fillStyle = 'rgba(245, 158, 11, 0.7)';
+      ctx.fillStyle = isDark ? 'rgba(245, 158, 11, 0.7)' : 'rgba(217, 119, 6, 0.85)';
       ctx.fillText('● RAW NOISE FLOOR', 105, 16);
 
       ctx.restore();
@@ -116,7 +119,7 @@ export const WaveformDualCanvas: React.FC<WaveformDualCanvasProps> = ({
 
     animId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animId);
-  }, [vad, reductionDb, active, isWindowVisible]);
+  }, [vad, reductionDb, active, isWindowVisible, isDark]);
 
   return (
     <div className="relative w-full h-full select-none">

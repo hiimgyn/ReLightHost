@@ -6,6 +6,7 @@ import { useAudioStore } from '../../stores/audioStore';
 import type { PluginInstanceInfo } from '../../lib/types';
 import { useWindowVisibility } from '../../lib/windowVisibility';
 import { useTranslation } from '../../i18n';
+import { useThemeStore } from '../../stores/themeStore';
 import {
   AudioKnob,
   VisualStageContainer,
@@ -148,6 +149,8 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
     });
   };
 
+  const isDark = useThemeStore((s) => s.theme === 'dark');
+
   return (
     <Modal
       open={isOpen}
@@ -158,15 +161,21 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
       closable={false}
       styles={{
         body: {
-          background: 'linear-gradient(180deg, #111722 0%, #0a0d14 100%)',
-          border: '1px solid rgba(255, 255, 255, 0.12)',
-          boxShadow: '0 24px 60px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          background: isDark
+            ? 'linear-gradient(180deg, #111722 0%, #0a0d14 100%)'
+            : 'linear-gradient(180deg, #ffffff 0%, #f0fdfa 100%)',
+          border: isDark
+            ? '1px solid rgba(255, 255, 255, 0.12)'
+            : '1px solid rgba(0, 0, 0, 0.1)',
+          boxShadow: isDark
+            ? '0 24px 60px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.08)'
+            : '0 20px 48px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.04)',
           borderRadius: 16,
           padding: '20px 22px 24px',
         },
       }}
     >
-      <div className="flex flex-col gap-4 text-white">
+      <div className={`flex flex-col gap-4 ${isDark ? 'text-white' : 'text-slate-900'}`}>
         {/* Header */}
         <PluginHeader
           title={t('noise.title') || 'Noise Suppressor Pro'}
@@ -212,14 +221,22 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
               />
             </div>
             {/* Neural VAD Orb takes right section */}
-            <div className="w-28 h-full flex items-center justify-center border-l border-white/5 bg-black/20">
+            <div
+              className={`w-28 h-full flex items-center justify-center border-l ${
+                isDark ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-100/50'
+              }`}
+            >
               <NeuralVADOrb vad={vad} size={74} label="VAD CONFIDENCE" />
             </div>
           </div>
         </VisualStageContainer>
 
         {/* Primary Controls Row: Precision Audio Knobs */}
-        <div className="flex items-center justify-around py-3 px-2 bg-white/[0.03] border border-white/5 rounded-xl">
+        <div
+          className={`flex items-center justify-around py-3 px-2 rounded-xl border ${
+            isDark ? 'bg-white/[0.03] border-white/5' : 'bg-slate-50 border-slate-200/80'
+          }`}
+        >
           <AudioKnob
             label={t('noise.mixTitle') || 'Wet / Dry Mix'}
             value={mix}
@@ -294,9 +311,13 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
         <div className="flex justify-end pt-1">
           <button
             onClick={onClose}
-            className="px-4 py-1.5 text-xs font-semibold text-white/80 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg transition-colors cursor-pointer"
+            className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer border ${
+              isDark
+                ? 'text-white/80 hover:text-white bg-white/5 hover:bg-white/10 border-white/10'
+                : 'text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border-slate-300'
+            }`}
           >
-            Close
+            {t('common.close') || 'Close'}
           </button>
         </div>
       </div>

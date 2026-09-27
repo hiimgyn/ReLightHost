@@ -34,12 +34,12 @@ function getFormatPalette(format: PluginInstanceInfo['format']) {
 }
 
 function normalizeManufacturerLabel(format: PluginInstanceInfo['format'], value?: string, systemLabel = 'System') {
+  if (format === 'builtin') {
+    return systemLabel;
+  }
   if (!value) return null;
   const normalized = value.trim();
   if (!normalized) return null;
-  if (format === 'builtin' && normalized.toLowerCase().includes('built')) {
-    return systemLabel;
-  }
   return normalized;
 }
 

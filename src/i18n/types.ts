@@ -201,6 +201,7 @@ export interface TranslationSchema {
   appSettings: {
     title: string;
     subtitle: string;
+    general: string;
     startupBehavior: string;
     runOnStartup: string;
     runOnStartupDesc: string;

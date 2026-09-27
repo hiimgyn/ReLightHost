@@ -197,6 +197,7 @@ pub mod win {
 
     // ── Public entry point ────────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     pub fn open_gui_window(
         controller: &ComPtr<IEditController>,
         component: &ComPtr<IComponent>,
@@ -899,6 +900,7 @@ pub mod win {
     use vst3::ComPtr;
     use vst3::Steinberg::Vst::{IComponent, IEditController};
 
+    #[allow(clippy::too_many_arguments)]
     pub fn open_gui_window(
         _controller: &ComPtr<IEditController>,
         _component: &ComPtr<IComponent>,

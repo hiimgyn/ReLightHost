@@ -151,6 +151,7 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                             let _ = win.show();
                             let _ = win.unminimize();
                             let _ = win.set_focus();
+                            let _ = win.emit("rh:window-visibility", true);
                         }
                     }
                     "toggle_mute" => {
@@ -181,6 +182,7 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                             let _ = win.show();
                             let _ = win.unminimize();
                             let _ = win.set_focus();
+                            let _ = win.emit("rh:window-visibility", true);
                             let _ = win.emit("tray-open-audio-settings", ());
                         }
                     }
@@ -189,6 +191,7 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                             let _ = win.show();
                             let _ = win.unminimize();
                             let _ = win.set_focus();
+                            let _ = win.emit("rh:window-visibility", true);
                             let _ = win.emit("tray-open-app-settings", ());
                         }
                     }
@@ -211,6 +214,7 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                     let _ = window.show();
                     let _ = window.unminimize();
                     let _ = window.set_focus();
+                    let _ = window.emit("rh:window-visibility", true);
                 }
             }
         })

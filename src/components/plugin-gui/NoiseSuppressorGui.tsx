@@ -4,6 +4,7 @@ import { Mic, AlertTriangle } from 'lucide-react';
 import * as tauri from '../../lib/tauri';
 import { useAudioStore } from '../../stores/audioStore';
 import type { PluginInstanceInfo } from '../../lib/types';
+import { useWindowVisibility } from '../../lib/windowVisibility';
 import { useTranslation } from '../../i18n';
 import {
   AudioKnob,
@@ -34,6 +35,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
   const [gateAtten,  setGateAtten]  = useState(() => paramValue(plugin, 2, 0.0));
   const [outputGain, setOutputGain] = useState(() => paramValue(plugin, 3, 0.0));
   const [vad,        setVad]        = useState<number>(0);
+  const isWindowVisible = useWindowVisibility();
 
   const rafRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
@@ -114,7 +116,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
   }, [plugin.instance_id]);
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && isWindowVisible) {
       mountedRef.current = true;
       pollVad();
     } else {
@@ -131,7 +133,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
         rafRef.current = null;
       }
     };
-  }, [isOpen, pollVad]);
+  }, [isOpen, isWindowVisible, pollVad]);
 
   const handleResetAll = () => {
     const defaults = [

@@ -1,4 +1,5 @@
 import React, { useRef, useEffect } from 'react';
+import { useWindowVisibility } from '../../../lib/windowVisibility';
 
 interface NeuralVADOrbProps {
   vad: number; // 0.0 to 1.0 voice activity probability
@@ -16,8 +17,10 @@ export const NeuralVADOrb: React.FC<NeuralVADOrbProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const smoothedVadRef = useRef(vad);
   const phaseRef = useRef(0);
+  const isWindowVisible = useWindowVisibility();
 
   useEffect(() => {
+    if (!isWindowVisible) return;
     let animId: number;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -87,7 +90,7 @@ export const NeuralVADOrb: React.FC<NeuralVADOrbProps> = ({
 
     animId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animId);
-  }, [vad, size]);
+  }, [vad, size, isWindowVisible]);
 
   return (
     <div className={`flex flex-col items-center select-none ${className}`}>

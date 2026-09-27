@@ -1,4 +1,5 @@
 import React, { useRef, useEffect } from 'react';
+import { useWindowVisibility } from '../../../lib/windowVisibility';
 
 interface WaveformDualCanvasProps {
   vad: number;          // 0.0 to 1.0
@@ -17,8 +18,10 @@ export const WaveformDualCanvas: React.FC<WaveformDualCanvasProps> = ({
     clean: new Array(160).fill(0),
   });
   const timeRef = useRef(0);
+  const isWindowVisible = useWindowVisibility();
 
   useEffect(() => {
+    if (!isWindowVisible || !active) return;
     let animId: number;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -113,7 +116,7 @@ export const WaveformDualCanvas: React.FC<WaveformDualCanvasProps> = ({
 
     animId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animId);
-  }, [vad, reductionDb, active]);
+  }, [vad, reductionDb, active, isWindowVisible]);
 
   return (
     <div className="relative w-full h-full select-none">

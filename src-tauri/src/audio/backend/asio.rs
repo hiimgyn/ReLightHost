@@ -98,7 +98,7 @@ fn f32_to_asio_i32(v: f32) -> i32 {
     // `f32_to_i16` clamp-symmetry pattern, where `i16::MAX` fits `f32`
     // exactly and this rounding issue doesn't arise). `f64` has enough
     // mantissa bits (52) to hold `i32::MAX` exactly, avoiding it here.
-    (v.max(-1.0).min(1.0) as f64 * i32::MAX as f64) as i32
+    (v.clamp(-1.0, 1.0) as f64 * i32::MAX as f64) as i32
 }
 
 /// Inverse of [`f32_to_asio_i32`]. See its doc comment for the sample-type

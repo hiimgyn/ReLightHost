@@ -138,6 +138,7 @@ mod enum_tests {
 /// when it doesn't, `Initialize` fails with `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED`
 /// and reports the actual required frame count via `GetBufferSize`, which
 /// this helper is used to round up to.
+#[allow(dead_code)]
 fn align_frames_up(frames: u32, alignment: u32) -> u32 {
     if alignment == 0 {
         return frames;

@@ -153,7 +153,7 @@ pub fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Resu
     if let Some(instance) = instance_opt {
         let info = instance.get_info();
         if info.format == PluginFormat::VST3 {
-            wait_for_vst3_restore_ready(&*state);
+            wait_for_vst3_restore_ready(&state);
         }
         log::info!(
             "launch_plugin requested: id={}, name='{}', gui_open={} format={:?}",
@@ -211,7 +211,7 @@ pub fn launch_plugins(
     });
 
     if has_vst3 {
-        wait_for_vst3_restore_ready(&*state);
+        wait_for_vst3_restore_ready(&state);
     }
 
     for id in ids {

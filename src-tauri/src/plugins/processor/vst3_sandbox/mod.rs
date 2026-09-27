@@ -122,11 +122,7 @@ fn spawn_child(plugin_path: &str, sample_rate: f64, block_size: usize) -> Result
         .name("vst3-sandbox-reader".into())
         .spawn(move || {
             let mut stdout = stdout;
-            loop {
-                let (tag, payload) = match protocol::read_frame(&mut stdout) {
-                    Ok(f) => f,
-                    Err(_) => break, // pipe closed — child exited or crashed
-                };
+            while let Ok((tag, payload)) = protocol::read_frame(&mut stdout) {
                 match tag {
                     protocol::TAG_PROCESS_RESPONSE => {
                         if process_tx.send(payload).is_err() { break; }
@@ -418,34 +414,6 @@ mod win {
     }
 }
 
-#[cfg(test)]
-mod timeout_tests {
-    use super::response_timeout;
-    use std::time::Duration;
-
-    #[test]
-    fn scales_with_block_size_and_sample_rate() {
-        // 128 samples @ 48kHz = 2.666ms block; timeout must exceed it but
-        // not be pinned to the old fixed 20ms regardless of input.
-        let t_small = response_timeout(128, 48_000);
-        assert!(t_small > Duration::from_micros(2_666));
-        assert!(t_small < Duration::from_millis(20));
-
-        // 2048 samples @ 48kHz = ~42.7ms block; timeout must scale up past
-        // the old fixed 20ms constant instead of truncating the plugin.
-        let t_large = response_timeout(2048, 48_000);
-        assert!(t_large > Duration::from_millis(20));
-    }
-
-    #[test]
-    fn zero_sample_rate_falls_back_instead_of_panicking() {
-        // `block_size as f64 / 0.0` is infinite/NaN — `Duration::from_secs_f64`
-        // would panic on that; must fall back to a safe fixed timeout instead.
-        assert_eq!(response_timeout(512, 0), Duration::from_millis(8));
-        assert_eq!(response_timeout(0, 0), Duration::from_millis(8));
-    }
-}
-
 /// Either an in-process or sandboxed VST3 processor, behind one interface so
 /// `instance.rs` only branches on which one to construct — every call site
 /// after that (`process_stereo`, `get_state`, ...) stays uniform.
@@ -503,5 +471,33 @@ impl Vst3ProcessorKind {
             Self::Sandboxed(p) => Some(p),
             Self::InProcess(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::response_timeout;
+    use std::time::Duration;
+
+    #[test]
+    fn scales_with_block_size_and_sample_rate() {
+        // 128 samples @ 48kHz = 2.666ms block; timeout must exceed it but
+        // not be pinned to the old fixed 20ms regardless of input.
+        let t_small = response_timeout(128, 48_000);
+        assert!(t_small > Duration::from_micros(2_666));
+        assert!(t_small < Duration::from_millis(20));
+
+        // 2048 samples @ 48kHz = ~42.7ms block; timeout must scale up past
+        // the old fixed 20ms constant instead of truncating the plugin.
+        let t_large = response_timeout(2048, 48_000);
+        assert!(t_large > Duration::from_millis(20));
+    }
+
+    #[test]
+    fn zero_sample_rate_falls_back_instead_of_panicking() {
+        // `block_size as f64 / 0.0` is infinite/NaN — `Duration::from_secs_f64`
+        // would panic on that; must fall back to a safe fixed timeout instead.
+        assert_eq!(response_timeout(512, 0), Duration::from_millis(8));
+        assert_eq!(response_timeout(0, 0), Duration::from_millis(8));
     }
 }

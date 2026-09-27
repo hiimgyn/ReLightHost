@@ -987,6 +987,13 @@ body {
   color: rgba(0, 0, 0, 0.42) !important;
 }
 
+/* ==========================================================================
+   Background / Minimized Mode: Freeze all GPU animations and compositor work
+   ========================================================================== */
 
-
-
+html.rh-app-hidden *,
+html.rh-app-hidden *::before,
+html.rh-app-hidden *::after {
+  animation: none !important;
+  transition: none !important;
+}

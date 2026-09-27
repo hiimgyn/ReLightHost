@@ -7,6 +7,7 @@ import { usePluginStore } from './stores/pluginStore';
 import LoadingScreen from './components/layout/LoadingScreen';
 import ErrorBoundary from './components/layout/ErrorBoundary';
 import { getMinimizeToTray } from './lib/tauri';
+import { initWindowVisibilitySync, setWindowVisible } from './lib/windowVisibility';
 
 const Layout = lazy(() => import('./components/layout'));
 const PluginChain = lazy(() => import('./components/chain'));
@@ -167,6 +168,11 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Window visibility synchronization ────────────────────────────────────
+  useEffect(() => {
+    return initWindowVisibilitySync();
+  }, []);
+
   // ── Window resize / close listeners ──────────────────────────────────────
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -187,6 +193,7 @@ function App() {
 
       // Only intercept the close to hide to tray when the option is enabled.
       if (minimizeToTray) {
+        setWindowVisible(false);
         await appWindow.hide();
         return;
       }

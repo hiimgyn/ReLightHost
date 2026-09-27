@@ -2,8 +2,10 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use crate::audio::vu_meter::VUMeter;
 
+pub type AudioProcessFn = Box<dyn Fn(&mut [f32], &mut [f32]) + Send + 'static>;
+
 pub struct MixerState {
-    pub process_fn: Arc<Mutex<Option<Box<dyn Fn(&mut [f32], &mut [f32]) + Send + 'static>>>>,
+    pub process_fn: Arc<Mutex<Option<AudioProcessFn>>>,
     pub vu_meter: Arc<VUMeter>,
     pub muted: Arc<std::sync::atomic::AtomicBool>,
     pub loopback_enabled: Arc<std::sync::atomic::AtomicBool>,

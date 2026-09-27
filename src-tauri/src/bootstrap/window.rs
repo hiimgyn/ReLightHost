@@ -1,4 +1,4 @@
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 pub fn setup_main_window(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
     const RATIO: f64 = 860.0 / 560.0;
@@ -11,18 +11,32 @@ pub fn setup_main_window(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> 
     if let Some(window) = app.get_webview_window("main") {
         let app_handle = app.handle().clone();
         window.on_window_event(move |event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let state = app_handle.state::<crate::AppState>();
-                if state.config_manager.read().get_minimize_to_tray() {
-                    api.prevent_close();
-                    let _ = app_handle
-                        .get_webview_window("main")
-                        .map(|window| window.hide());
-                } else {
-                    api.prevent_close();
-                    crate::commands::system::shutdown_for_exit(&app_handle);
-                    app_handle.exit(0);
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    let state = app_handle.state::<crate::AppState>();
+                    if state.config_manager.read().get_minimize_to_tray() {
+                        api.prevent_close();
+                        if let Some(w) = app_handle.get_webview_window("main") {
+                            let _ = w.emit("rh:window-visibility", false);
+                            let _ = w.hide();
+                        }
+                    } else {
+                        api.prevent_close();
+                        crate::commands::system::shutdown_for_exit(&app_handle);
+                        app_handle.exit(0);
+                    }
                 }
+                tauri::WindowEvent::Resized(size) => {
+                    if let Some(w) = app_handle.get_webview_window("main") {
+                        let is_min = size.width == 0 && size.height == 0;
+                        if is_min {
+                            let _ = w.emit("rh:window-visibility", false);
+                        } else if w.is_visible().unwrap_or(false) {
+                            let _ = w.emit("rh:window-visibility", true);
+                        }
+                    }
+                }
+                _ => {}
             }
         });
 
@@ -54,6 +68,7 @@ pub fn setup_main_window(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> 
         }
 
         if start_hidden {
+            let _ = window.emit("rh:window-visibility", false);
             let _ = window.hide();
         }
     }

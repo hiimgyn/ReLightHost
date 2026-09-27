@@ -113,13 +113,14 @@ pub(crate) fn restore_session_impl(
             let buffer_size = config.buffer_size;
 
             let mut infos: Vec<PluginInfo> = Vec::new();
-            let mut restore_rows: Vec<(
+            type PluginRestoreRow = (
                 bool,
                 crate::plugins::PluginFormat,
                 String,
                 Option<Vec<u8>>,
                 Vec<crate::domain::preset::PresetParameter>,
-            )> = Vec::new();
+            );
+            let mut restore_rows: Vec<PluginRestoreRow> = Vec::new();
 
             for plugin_preset in &preset.plugin_chain {
                 let (Some(path), Some(format)) =

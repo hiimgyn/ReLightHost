@@ -141,7 +141,7 @@ impl PluginScanner {
 
     fn cache_path() -> PathBuf {
         dirs::config_local_dir()
-            .unwrap_or_else(|| std::env::temp_dir())
+            .unwrap_or_else(std::env::temp_dir)
             .join("ReLightHost")
             .join("plugin-scan-cache.json")
     }
@@ -318,10 +318,7 @@ impl PluginScanner {
                     } else {
                         allow_loose_dll
                     };
-                    match self.scan_directory(&path, child_allow_loose_dll) {
-                        Ok(v) => v,
-                        Err(_) => Vec::new(),
-                    }
+                    self.scan_directory(&path, child_allow_loose_dll).unwrap_or_default()
                 // File
                 } else if path.is_file() {
                     if !allow_loose_dll {

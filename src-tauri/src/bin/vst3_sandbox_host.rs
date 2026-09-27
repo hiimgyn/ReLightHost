@@ -67,11 +67,7 @@ mod win {
         let mut plugin: Option<Vst3Processor> = None;
         let mut stdin_handle = stdin();
 
-        loop {
-            let (tag, payload) = match protocol::read_frame(&mut stdin_handle) {
-                Ok(f) => f,
-                Err(_) => break, // host closed the pipe — exit quietly
-            };
+        while let Ok((tag, payload)) = protocol::read_frame(&mut stdin_handle) {
 
             match tag {
                 protocol::TAG_CONTROL => {

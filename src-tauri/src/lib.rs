@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Instant;
 use crate::domain::config::ConfigManager;
 use crate::domain::preset::PresetManager;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use audio::AudioManager;
 use plugins::{PluginScanner, PluginInstanceManager};
 
@@ -159,6 +159,7 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
+                let _ = window.emit("rh:window-visibility", true);
             }
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())

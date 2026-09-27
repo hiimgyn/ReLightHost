@@ -1,12 +1,12 @@
 [package]
 name = "ReLightHost"
-version = "2.6.1"
+version = "2.6.2"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
 license = "CC-BY-NC-SA-4.0"
 repository = ""
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.80.0"
 # `pnpm tauri dev` runs `cargo run` with no --bin flag; without this, adding
 # the vst3_sandbox_host bin target made that ambiguous.
 default-run = "ReLightHost"

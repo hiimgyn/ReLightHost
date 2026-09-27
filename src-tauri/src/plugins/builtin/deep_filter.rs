@@ -110,11 +110,11 @@ impl DeepFilterProcessor {
 
                     // When a complete HOP_SIZE (480 samples = 10ms) is ready in both channels, process it
                     if cons_to_worker_l.occupied_len() >= HOP_SIZE && cons_to_worker_r.occupied_len() >= HOP_SIZE {
-                        for i in 0..HOP_SIZE {
-                            raw_buf[i] = cons_to_worker_l.try_pop().unwrap_or(0.0);
+                        for sample in raw_buf[..HOP_SIZE].iter_mut() {
+                            *sample = cons_to_worker_l.try_pop().unwrap_or(0.0);
                         }
-                        for i in 0..HOP_SIZE {
-                            raw_buf[HOP_SIZE + i] = cons_to_worker_r.try_pop().unwrap_or(0.0);
+                        for sample in raw_buf[HOP_SIZE..2 * HOP_SIZE].iter_mut() {
+                            *sample = cons_to_worker_r.try_pop().unwrap_or(0.0);
                         }
 
                         if let Ok(noisy) = Array2::from_shape_vec((2, HOP_SIZE), raw_buf.clone()) {

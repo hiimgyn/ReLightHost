@@ -62,3 +62,20 @@ pub fn set_show_app_on_startup(state: tauri::State<AppState>, enabled: bool) -> 
 
     Ok(())
 }
+
+/// Takes effect the next time plugins are batch-loaded (a fresh
+/// `restore_session` or preset load) — not for an already-running session.
+#[tauri::command]
+pub fn get_parallel_vst3_loading(state: tauri::State<AppState>) -> bool {
+    state.config_manager.read().get_parallel_vst3_loading()
+}
+
+#[tauri::command]
+pub fn set_parallel_vst3_loading(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+    state
+        .config_manager
+        .read()
+        .set_parallel_vst3_loading(enabled)
+        .map_err(|e| format!("Failed to save parallel_vst3_loading: {}", e))
+    .map(|_| info!("Setting updated: parallel_vst3_loading={enabled}"))
+}

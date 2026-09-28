@@ -1,6 +1,6 @@
 mod audio;
-// `pub`: the vst3_sandbox_host bin target (src/bin/) reuses the VST3
-// processor/GUI code in here via `app_lib::plugins::...`.
+// `pub`: examples/test_inprocess_gui.rs reuses the VST3 processor/GUI code
+// in here via `app_lib::plugins::...`.
 pub mod plugins;
 mod domain;
 pub mod core;
@@ -89,12 +89,10 @@ pub struct SessionRestoreResult {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Before loading anything: attribute any unclean exit from the previous
-    // run to whichever VST3 plugin(s) were active when it happened (a
-    // native crash never runs code to record itself — see
-    // vst3_sandbox::registry for why this has to happen from the outside,
-    // on the next startup).
-    crate::plugins::processor::vst3_sandbox::registry::attribute_crashes_from_unclean_exit();
+    // Before loading anything: capture which VST3 plugin(s), if any, were
+    // still active when the previous run ended uncleanly (see crash_marker
+    // docs) so the frontend can warn about them once it's up.
+    crate::core::crash_marker::take_unclean_exit_plugins();
 
     #[cfg(target_os = "windows")]
     unsafe {
@@ -217,14 +215,14 @@ pub fn run() {
             commands::plugin::get_plugin_crash_status,
             commands::plugin::get_plugin_crash_statuses,
             commands::plugin::reset_plugin_crash_protection,
-            commands::plugin::get_vst3_sandbox_status,
-            commands::plugin::set_vst3_forced_sandbox,
-            commands::plugin::reset_vst3_sandbox_crash_count,
             commands::plugin::get_noise_suppressor_vad,
+            commands::config::get_parallel_vst3_loading,
+            commands::config::set_parallel_vst3_loading,
             commands::plugin::get_plugin_parameters,
             commands::system::open_external_url,
             commands::system::quit_app,
             commands::session::restore_session,
+            commands::session::get_startup_crash_warning,
             commands::system::check_for_update,
             commands::system::install_update,
         ])

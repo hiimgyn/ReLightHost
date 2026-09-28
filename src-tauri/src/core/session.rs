@@ -146,10 +146,21 @@ pub(crate) fn restore_session_impl(
                 ));
             }
 
+            // The frontend needs the total *before* the (potentially
+            // multi-second, e.g. a plugin loading its own ML model)  load
+            // phase below, not after — restore_session doesn't return until
+            // that phase is done, so waiting for its result to learn the
+            // target would only ever show it once there's nothing left to
+            // show progress for. `restore_progress` events (emitted per
+            // plugin inside load_plugins_parallel_results) carry the running
+            // count; this carries the denominator.
+            crate::app_events::emit_plugin_chain_changed("restore_total", Some(&infos.len().to_string()));
+
+            let parallel_vst3 = state.config_manager.read().get_parallel_vst3_loading();
             let results = state
                 .plugin_manager
                 .read()
-                .load_plugins_parallel_results(infos, sample_rate, buffer_size as usize);
+                .load_plugins_parallel_results(infos, sample_rate, buffer_size as usize, parallel_vst3);
 
             log::info!(
                 "{} Session restore load phase completed in {} ms",

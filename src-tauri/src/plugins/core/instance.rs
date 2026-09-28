@@ -66,14 +66,24 @@ impl PluginInstance {
         // Load the appropriate audio processor for the plugin format.
         // Failure is non-fatal; the instance still works in pass-through mode.
         let vst3_processor = if plugin_info.format == PluginFormat::VST3 {
+            // Marked active BEFORE the call, not after a successful return:
+            // the whole point of this marker is to survive a *native* crash
+            // (access violation, heap corruption) inside Vst3Processor::load()
+            // itself — createInstance/initialize() are exactly the calls a
+            // fragile plugin can crash inside, and a crash there never
+            // reaches an `Ok(proc) =>` arm to mark itself active after the
+            // fact. A clean `Err` (ordinary load failure, not a crash) clears
+            // the marker right back below — only a crash leaves it stuck for
+            // take_unclean_exit_plugins() to find on next launch.
+            crate::core::crash_marker::mark_active(&plugin_info.path);
             match Vst3Processor::load(&plugin_info.path, sample_rate, block_size) {
                 Ok(proc) => {
                     log::info!("{} VST3 processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
-                    crate::core::crash_marker::mark_active(&plugin_info.path);
                     Some(proc)
                 }
                 Err(e) => {
                     log::warn!("{} VST3 audio processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
+                    crate::core::crash_marker::mark_inactive(&plugin_info.path);
                     None
                 }
             }
@@ -617,6 +627,24 @@ impl PluginInstanceManager {
     /// Return value aligns 1:1 with `infos`: `Ok(id)` on success, `Err` when
     /// that plugin failed to construct (same semantics as skipping a failed
     /// `load_plugin` in a loop).
+    ///
+    /// CAVEAT (review finding, "Important #1"): `restore_session` — the only
+    /// caller — is a plain synchronous Tauri command, which Tauri 2 runs on
+    /// the main/UI thread. With `parallel_vst3` off (default), every VST3
+    /// plugin is therefore created on that same main thread, same as before
+    /// this feature existed. With it on and more than one VST3 plugin, those
+    /// `createInstance`/`initialize()` calls move to Rayon worker threads
+    /// instead. Some plugin frameworks (JUCE is the common one) assume the
+    /// thread that first creates a plugin is *the* UI/message thread and set
+    /// up internal timers or later editor calls relative to it; moving that
+    /// identity for such a plugin is a real, undocumented-by-this-comment-
+    /// until-now risk this feature does not otherwise account for. No code
+    /// fix ships for this — doing so would mean either not actually
+    /// parallelizing plugin creation, or verifying against real JUCE
+    /// plugins, neither of which this change attempts. Before ever
+    /// defaulting this setting on: test with real JUCE-based plugins and
+    /// watch the `thread=` field in debug logs during `createInstance`/
+    /// `initialize()` for exactly this class of hang.
     pub fn load_plugins_parallel_results(
         &self,
         infos: Vec<PluginInfo>,

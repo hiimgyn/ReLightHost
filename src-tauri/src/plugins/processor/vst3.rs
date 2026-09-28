@@ -177,6 +177,29 @@ mod win {
     /// comment for exactly what's inside vs. outside this lock and why.
     static FACTORY_CREATE_LOCK: PLMutex<()> = PLMutex::new(());
 
+    /// Per-plugin-*path* locks for everything after FACTORY_CREATE_LOCK
+    /// releases — `component.initialize()`, bus setup, and controller
+    /// creation. Two *different* plugin paths must stay free to run this
+    /// section fully in parallel (that's the whole point of `parallel_vst3`),
+    /// but two *instances of the same plugin DLL* share that DLL's
+    /// process-wide static/global state, so their calls into this section
+    /// must not overlap — a single shared lock here would defeat the
+    /// parallelism this feature exists for, and no lock at all would let two
+    /// copies of one plugin corrupt each other's global state for the first
+    /// time (previously all VST3 loads were fully sequential, so this never
+    /// happened). The map itself grows by one entry per *distinct* plugin
+    /// path ever loaded this run and is never shrunk — bounded by the size
+    /// of the user's plugin catalog, not by how many times they load it.
+    static INIT_LOCKS: PLMutex<Option<std::collections::HashMap<String, Arc<PLMutex<()>>>>> = PLMutex::new(None);
+
+    fn init_lock_for(plugin_path: &str) -> Arc<PLMutex<()>> {
+        let mut map_guard = INIT_LOCKS.lock();
+        let map = map_guard.get_or_insert_with(std::collections::HashMap::new);
+        map.entry(plugin_path.to_string())
+            .or_insert_with(|| Arc::new(PLMutex::new(())))
+            .clone()
+    }
+
     //  Vst3Processor
     pub struct Vst3Processor {
         component:  ComPtr<IComponent>,
@@ -341,8 +364,12 @@ mod win {
                 (lib, factory, component)
             };
 
-            // Initialize, activate all buses (audio + event)
-            log::debug!("{} calling initialize() for '{}' — unlocked, may run concurrently with other plugins", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
+            // Initialize, activate all buses (audio + event). Only serialized
+            // against OTHER instances of this SAME plugin path (see
+            // INIT_LOCKS) — different plugins still run this concurrently.
+            let init_lock = init_lock_for(plugin_path);
+            let _init_guard = init_lock.lock();
+            log::debug!("{} calling initialize() for '{}' — locked only against other instances of the same plugin, may still run concurrently with other plugins", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
             unsafe {
                 component.initialize(ptr::null_mut());
                 let ai = component.getBusCount(kAudio, kInput);
@@ -753,6 +780,84 @@ mod lock_tests {
             max_concurrent.load(Ordering::SeqCst),
             1,
             "more than one thread was inside the locked section at once"
+        );
+    }
+
+    /// Stands in for `win::init_lock_for` — same shape, defined here so this
+    /// test compiles on non-Windows too. Fixes review finding "Important #3":
+    /// two *instances of the same plugin path* must never run their
+    /// `initialize()` (and the rest of the unlocked post-createInstance
+    /// section) concurrently, since they share that DLL's process-wide
+    /// static/global state — but *different* plugin paths must still be
+    /// free to run fully in parallel (that's the whole point of this
+    /// feature), so this can't just be one lock shared by everyone.
+    fn test_init_lock_for(
+        registry: &Mutex<std::collections::HashMap<String, Arc<Mutex<()>>>>,
+        plugin_path: &str,
+    ) -> Arc<Mutex<()>> {
+        let mut map = registry.lock();
+        map.entry(plugin_path.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    #[test]
+    fn same_path_serializes_initialize_but_different_paths_run_concurrently() {
+        let registry: Arc<Mutex<std::collections::HashMap<String, Arc<Mutex<()>>>>> =
+            Arc::new(Mutex::new(std::collections::HashMap::new()));
+
+        // Two "instances" of the SAME plugin path — their critical sections
+        // (standing in for initialize()) must never overlap.
+        let same_path_concurrent = Arc::new(AtomicU32::new(0));
+        let same_path_max = Arc::new(AtomicU32::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let reg = Arc::clone(&registry);
+            let cur = Arc::clone(&same_path_concurrent);
+            let max = Arc::clone(&same_path_max);
+            handles.push(thread::spawn(move || {
+                let lock = test_init_lock_for(&reg, "C:/Same/Plugin.vst3");
+                let _guard = lock.lock();
+                let now = cur.fetch_add(1, Ordering::SeqCst) + 1;
+                max.fetch_max(now, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(5));
+                cur.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            same_path_max.load(Ordering::SeqCst),
+            1,
+            "two instances of the SAME plugin path ran initialize() concurrently"
+        );
+
+        // Two DIFFERENT plugin paths — must be able to overlap (this is what
+        // the whole feature is for; a global per-registry lock would break it).
+        let different_paths_concurrent = Arc::new(AtomicU32::new(0));
+        let different_paths_max = Arc::new(AtomicU32::new(0));
+        let mut handles = Vec::new();
+        for path in ["C:/Plugin/A.vst3", "C:/Plugin/B.vst3"] {
+            let reg = Arc::clone(&registry);
+            let cur = Arc::clone(&different_paths_concurrent);
+            let max = Arc::clone(&different_paths_max);
+            handles.push(thread::spawn(move || {
+                let lock = test_init_lock_for(&reg, path);
+                let _guard = lock.lock();
+                let now = cur.fetch_add(1, Ordering::SeqCst) + 1;
+                max.fetch_max(now, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(20));
+                cur.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            different_paths_max.load(Ordering::SeqCst),
+            2,
+            "different plugin paths were serialized against each other — parallelism broken"
         );
     }
 }

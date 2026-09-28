@@ -8,7 +8,6 @@ use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, Plu
 use crate::plugins::processor::clap::ClapProcessor;
 use crate::plugins::processor::vst2::Vst2Processor;
 use crate::plugins::processor::vst3::Vst3Processor;
-use crate::plugins::processor::vst3_sandbox::{registry as vst3_sandbox_registry, SandboxedVst3Processor, Vst3ProcessorKind};
 use crate::plugins::builtin::BuiltinProcessor;
 use crate::plugins::crash_protection::{self, SharedCrashProtection};
 use anyhow::{Error, Result};
@@ -27,10 +26,8 @@ pub struct PluginInstance {
     display_name:   RwLock<Option<String>>,
     bypassed:       Arc<AtomicBool>,
     parameters:     Arc<RwLock<Vec<PluginParameter>>>,
-    /// VST3 audio processor — in-process (vst3-rs) or sandboxed in a child
-    /// process, depending on that plugin's crash history. Present when
-    /// format == VST3.
-    vst3_processor: Mutex<Option<Vst3ProcessorKind>>,
+    /// VST3 audio processor (vst3-rs), in-process. Present when format == VST3.
+    vst3_processor: Mutex<Option<Vst3Processor>>,
     /// VST2 audio processor (vst-rs) — present when format == VST.
     vst2_processor: Mutex<Option<Vst2Processor>>,
     /// CLAP audio processor — present when format == CLAP.
@@ -69,41 +66,15 @@ impl PluginInstance {
         // Load the appropriate audio processor for the plugin format.
         // Failure is non-fatal; the instance still works in pass-through mode.
         let vst3_processor = if plugin_info.format == PluginFormat::VST3 {
-            if vst3_sandbox_registry::should_sandbox(&plugin_info.path) {
-                match SandboxedVst3Processor::load(&plugin_info.path, sample_rate, block_size) {
-                    Ok(proc) => {
-                        log::warn!("{} VST3 processor for '{}' is SANDBOXED (isolated process)", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
-                        Some(Vst3ProcessorKind::Sandboxed(Arc::new(proc)))
-                    }
-                    Err(e) => {
-                        log::warn!("{} Sandboxed VST3 processor failed for '{}': {}, falling back to in-process", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
-                        match Vst3Processor::load(&plugin_info.path, sample_rate, block_size) {
-                            Ok(proc) => {
-                                vst3_sandbox_registry::mark_active_in_process(&plugin_info.path);
-                                Some(Vst3ProcessorKind::InProcess(proc))
-                            }
-                            Err(e2) => {
-                                log::warn!("{} VST3 audio processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e2);
-                                None
-                            }
-                        }
-                    }
+            match Vst3Processor::load(&plugin_info.path, sample_rate, block_size) {
+                Ok(proc) => {
+                    log::info!("{} VST3 processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
+                    crate::core::crash_marker::mark_active(&plugin_info.path);
+                    Some(proc)
                 }
-            } else {
-                match Vst3Processor::load(&plugin_info.path, sample_rate, block_size) {
-                    Ok(proc) => {
-                        log::info!("{} VST3 processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
-                        // Only the in-process path needs attribution: a
-                        // sandboxed child dying is already directly
-                        // observable (see process_stereo's child_died
-                        // check) and can never take this process down.
-                        vst3_sandbox_registry::mark_active_in_process(&plugin_info.path);
-                        Some(Vst3ProcessorKind::InProcess(proc))
-                    }
-                    Err(e) => {
-                        log::warn!("{} VST3 audio processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
-                        None
-                    }
+                Err(e) => {
+                    log::warn!("{} VST3 audio processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
+                    None
                 }
             }
         } else {
@@ -280,51 +251,10 @@ impl PluginInstance {
         }
 
         match self.plugin_info.format {
-            PluginFormat::VST3    => {
-                run_processor!(self.vst3_processor.try_lock(), "VST3");
-                self.check_sandboxed_vst3_health();
-            }
+            PluginFormat::VST3    => run_processor!(self.vst3_processor.try_lock(), "VST3"),
             PluginFormat::VST     => run_processor!(self.vst2_processor.try_lock(),    "VST2"),
             PluginFormat::Builtin => run_processor!(self.builtin_processor.try_lock(), "Built-in"),
             PluginFormat::CLAP    => run_processor!(self.clap_processor.try_lock(),    "CLAP"),
-        }
-    }
-
-    /// A sandboxed child dying is a plain Rust-level observation (the pipe
-    /// closed), not a panic — `crash_protection::protected_call`'s
-    /// `catch_unwind` above never sees it. Feed the same
-    /// `CrashProtection`/threshold machinery used for in-process crashes so
-    /// the UI and restart policy behave identically either way, then kick
-    /// off a restart off the audio thread (never block the realtime path
-    /// waiting for a fresh child to load).
-    fn check_sandboxed_vst3_health(&self) {
-        let Some(guard) = self.vst3_processor.try_lock() else { return };
-        let Some(Vst3ProcessorKind::Sandboxed(sandboxed)) = guard.as_ref() else { return };
-        if !sandboxed.take_child_died() { return; }
-        let sandboxed = Arc::clone(sandboxed);
-        drop(guard);
-
-        vst3_sandbox_registry::record_crash(&self.plugin_info.path);
-        log::error!("{} sandboxed VST3 child process exited unexpectedly", self.plugin_info.name);
-
-        let should_restart = {
-            let mut protection = self.crash_protection.lock();
-            protection.mark_crashed("sandboxed VST3 child process exited".to_string());
-            if protection.crash_count == 3 {
-                let id = self.instance_id.clone();
-                std::thread::spawn(move || {
-                    crate::app_events::emit_plugin_chain_changed("crash_limit_exceeded", Some(&id));
-                });
-            }
-            protection.should_auto_restart()
-        };
-
-        if should_restart {
-            std::thread::spawn(move || {
-                if let Err(e) = sandboxed.restart() {
-                    log::error!("Failed to restart sandboxed VST3 child: {e}");
-                }
-            });
         }
     }
 
@@ -480,13 +410,22 @@ impl PluginInstance {
             if let Some(ref proc) = *guard {
                 let plugin_name = self.plugin_info.name.clone();
                 let gui_hwnd    = self.gui_hwnd.clone();
-                // Temporary diagnostic: skip replaying restored VST3 state into the GUI path.
-                // This isolates whether the blank editor comes from controller/state sync.
-                let sync_component_state = false;
-                let restored_state_blob = None;
+                // Replay the restored state into the GUI's controller exactly once per
+                // restore — only the first open after a set_state_binary() call needs
+                // this; reopening later would otherwise replay stale bytes on top of
+                // whatever the user has since changed via the GUI itself.
+                let sync_component_state = self.vst3_gui_state_sync_pending.load(Ordering::Acquire);
+                let restored_state_blob = if sync_component_state {
+                    self.vst3_restored_state.read().clone()
+                } else {
+                    None
+                };
                 let result = crash_protection::protected_call(AssertUnwindSafe(|| {
                     proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd, sync_component_state, restored_state_blob)
                 }));
+                if result.is_ok() {
+                    self.vst3_gui_state_sync_pending.store(false, Ordering::Release);
+                }
                 match result {
                     Ok(Ok(())) => return Ok(()),
                     Ok(Err(e)) => {
@@ -581,12 +520,11 @@ impl PluginInstance {
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
-        // Clean drop = clean shutdown for this plugin's crash-attribution
-        // marker (see vst3_sandbox::registry docs). Unconditional: if the
-        // plugin was sandboxed instead, this path is a no-op (the marker is
-        // only ever set for the in-process load).
+        // Clean drop = clean shutdown for this plugin's crash marker (see
+        // crash_marker docs) — a native crash never reaches here at all,
+        // which is exactly how the marker tells the two apart on next launch.
         if self.plugin_info.format == PluginFormat::VST3 {
-            vst3_sandbox_registry::mark_inactive(&self.plugin_info.path);
+            crate::core::crash_marker::mark_inactive(&self.plugin_info.path);
         }
 
         // If GUI teardown gets stuck, leaking processors is safer than dropping
@@ -609,6 +547,24 @@ impl Drop for PluginInstance {
             }
         }
     }
+}
+
+/// Splits job indices into (sequential, parallel) groups. VST3 jobs go
+/// in `sequential` unless `parallel_vst3` is true, in which case every
+/// job (VST3 included) goes in `parallel` — this is the entire behavior
+/// difference the setting controls; everything downstream just iterates
+/// whichever group a job landed in.
+fn split_load_groups(is_vst3: &[bool], parallel_vst3: bool) -> (Vec<usize>, Vec<usize>) {
+    let mut sequential = Vec::new();
+    let mut parallel = Vec::new();
+    for (idx, &vst3) in is_vst3.iter().enumerate() {
+        if vst3 && !parallel_vst3 {
+            sequential.push(idx);
+        } else {
+            parallel.push(idx);
+        }
+    }
+    (sequential, parallel)
 }
 
 /// Manager for all plugin instances — lock-free RCU for audio processing.
@@ -651,8 +607,12 @@ impl PluginInstanceManager {
 
     /// Load many plugins for preset/session restore. Preserves chain order.
     ///
-    /// VST3 factories are initialised **sequentially** (COM + host stability).
-    /// CLAP, VST2, and built-ins load **in parallel** across a Rayon pool.
+    /// VST3 factories are initialised **sequentially** by default (COM +
+    /// host stability), unless `parallel_vst3` is true, in which case they
+    /// join the same Rayon batch as CLAP/VST2/built-ins. See
+    /// `Vst3Processor::load()`'s `FACTORY_CREATE_LOCK` for what's still
+    /// serialized even when this is on. Off by default; see
+    /// `ConfigManager::get_parallel_vst3_loading`.
     ///
     /// Return value aligns 1:1 with `infos`: `Ok(id)` on success, `Err` when
     /// that plugin failed to construct (same semantics as skipping a failed
@@ -662,6 +622,7 @@ impl PluginInstanceManager {
         infos: Vec<PluginInfo>,
         sample_rate: f64,
         block_size: usize,
+        parallel_vst3: bool,
     ) -> Vec<Result<String, Error>> {
         let n = infos.len();
         if n == 0 {
@@ -669,7 +630,8 @@ impl PluginInstanceManager {
         }
         if n == 1 {
             let info = infos.into_iter().next().unwrap();
-            return vec![match PluginInstance::new(info, sample_rate, block_size) {
+            let name = info.name.clone();
+            let result = match PluginInstance::new(info, sample_rate, block_size) {
                 Ok(p) => {
                     let arc = Arc::new(p);
                     let id = arc.instance_id().to_string();
@@ -681,7 +643,11 @@ impl PluginInstanceManager {
                     Ok(id)
                 }
                 Err(e) => Err(e),
-            }];
+            };
+            // See the multi-plugin path below for why this is a separate
+            // event from the ones `fetchChain()` reacts to.
+            crate::app_events::emit_plugin_chain_changed("restore_progress", Some(&name));
+            return vec![result];
         }
 
         #[derive(Clone)]
@@ -702,19 +668,33 @@ impl PluginInstanceManager {
 
         let mut slots: Vec<Option<Result<Arc<PluginInstance>, Error>>> = (0..n).map(|_| None).collect();
 
-        for j in &jobs {
-            if j.vst3 {
-                slots[j.idx] = Some(PluginInstance::new(j.info.clone(), sample_rate, block_size).map(Arc::new));
-            }
+        // Progress feedback for the frontend's "Preparing plugins... N/total"
+        // indicator. The manager's own instance list (what `fetchChain()`
+        // reads) only gets these plugins appended once the WHOLE batch below
+        // finishes, so it can't show incremental progress on its own — a
+        // sequentially-loaded heavy VST3 (e.g. a plugin that loads its own
+        // multi-second ML model in initialize()) would otherwise leave the
+        // restore screen looking frozen for its entire load time. This event
+        // fires per-plugin, independently of the batch commit, specifically
+        // so the frontend can count it live instead of waiting.
+        let is_vst3: Vec<bool> = jobs.iter().map(|j| j.vst3).collect();
+        let (sequential_idx, parallel_idx) = split_load_groups(&is_vst3, parallel_vst3);
+
+        for &idx in &sequential_idx {
+            let j = &jobs[idx];
+            slots[j.idx] = Some(PluginInstance::new(j.info.clone(), sample_rate, block_size).map(Arc::new));
+            crate::app_events::emit_plugin_chain_changed("restore_progress", Some(&j.info.name));
         }
 
-        let parallel_jobs: Vec<Job> = jobs.iter().filter(|j| !j.vst3).cloned().collect();
+        let parallel_jobs: Vec<Job> = parallel_idx.iter().map(|&idx| jobs[idx].clone()).collect();
         if !parallel_jobs.is_empty() {
             let filled: Vec<(usize, Result<Arc<PluginInstance>, Error>)> = parallel_jobs
                 .into_par_iter()
                 .map(|j| {
                     let idx = j.idx;
+                    let name = j.info.name.clone();
                     let r = PluginInstance::new(j.info, sample_rate, block_size).map(Arc::new);
+                    crate::app_events::emit_plugin_chain_changed("restore_progress", Some(&name));
                     (idx, r)
                 })
                 .collect();
@@ -895,5 +875,40 @@ mod uuid {
             let id = COUNTER.fetch_add(1, Ordering::SeqCst);
             format!("{:016x}", id)
         }
+    }
+}
+
+#[cfg(test)]
+mod parallel_flag_tests {
+    use super::split_load_groups;
+
+    #[test]
+    fn flag_off_routes_all_vst3_to_sequential() {
+        let is_vst3 = vec![true, false, true, false];
+        let (seq, par) = split_load_groups(&is_vst3, false);
+        assert_eq!(seq, vec![0, 2]);
+        assert_eq!(par, vec![1, 3]);
+    }
+
+    #[test]
+    fn flag_on_routes_everything_to_parallel() {
+        let is_vst3 = vec![true, false, true, false];
+        let (seq, par) = split_load_groups(&is_vst3, true);
+        assert!(seq.is_empty());
+        assert_eq!(par, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn empty_input_produces_empty_groups_either_way() {
+        let is_vst3: Vec<bool> = vec![];
+        assert_eq!(split_load_groups(&is_vst3, false), (vec![], vec![]));
+        assert_eq!(split_load_groups(&is_vst3, true), (vec![], vec![]));
+    }
+
+    #[test]
+    fn single_vst3_job_respects_the_flag() {
+        let is_vst3 = vec![true];
+        assert_eq!(split_load_groups(&is_vst3, false), (vec![0], vec![]));
+        assert_eq!(split_load_groups(&is_vst3, true), (vec![], vec![0]));
     }
 }

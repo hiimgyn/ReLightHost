@@ -246,6 +246,7 @@ mod win {
                 let _factory_guard = FACTORY_CREATE_LOCK.lock();
 
                 // Load DLL
+                log::debug!("{} loading DLL for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
                 let lib = unsafe { Library::new(plugin_path) }
                     .map_err(|e| anyhow!("Failed to load '{}': {}", plugin_path, e))?;
 
@@ -288,6 +289,7 @@ mod win {
                     .ok_or_else(|| anyhow!("'{}': no Audio Module Class found", plugin_path))?;
 
                 // createInstance  IComponent (with FUnknown fallback)
+                log::debug!("{} createInstance (IComponent) for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
                 let mut component_ptr: *mut IComponent = ptr::null_mut();
                 let result = unsafe {
                     factory.createInstance(
@@ -340,6 +342,7 @@ mod win {
             };
 
             // Initialize, activate all buses (audio + event)
+            log::debug!("{} calling initialize() for '{}' — unlocked, may run concurrently with other plugins", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
             unsafe {
                 component.initialize(ptr::null_mut());
                 let ai = component.getBusCount(kAudio, kInput);
@@ -351,6 +354,7 @@ mod win {
                 for i in 0..ei { component.activateBus(kEvent, kInput,  i, 1); }
                 for i in 0..eo { component.activateBus(kEvent, kOutput, i, 1); }
             }
+            log::debug!("{} initialize() returned for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
 
             // QueryInterface  IAudioProcessor
             let audio_proc = component.cast::<IAudioProcessor>().ok_or_else(|| {

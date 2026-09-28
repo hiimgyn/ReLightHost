@@ -171,7 +171,13 @@ mod win {
         }
     }
 
-    //  Vst3Processor 
+    /// Serializes DLL loading + factory creation across concurrently-loading
+    /// VST3 plugins (see PluginInstanceManager::load_plugins_parallel_results'
+    /// `parallel_vst3` flag). Scope is intentionally narrow — see load()'s
+    /// comment for exactly what's inside vs. outside this lock and why.
+    static FACTORY_CREATE_LOCK: PLMutex<()> = PLMutex::new(());
+
+    //  Vst3Processor
     pub struct Vst3Processor {
         component:  ComPtr<IComponent>,
         audio_proc: ComPtr<IAudioProcessor>,
@@ -225,86 +231,112 @@ mod win {
             // Some plugins call COM APIs during load/initialize.
             ensure_com_initialized();
 
-            // Load DLL
-            let lib = unsafe { Library::new(plugin_path) }
-                .map_err(|e| anyhow!("Failed to load '{}': {}", plugin_path, e))?;
+            // Only DLL loading + factory + createInstance are serialized —
+            // the Windows loader lock and any COM apartment setup a plugin's
+            // DllMain/static initializers do are the actual concurrency risk
+            // when multiple *different* VST3 DLLs load at once (see
+            // PluginInstanceManager's `parallel_vst3` flag). component.
+            // initialize() below — where a heavy plugin does its own slow
+            // work (e.g. loading an ML model) — runs UNLOCKED, on purpose:
+            // that's the part parallel loading is trying to overlap, and it's
+            // ordinary plugin code, not host-loader-adjacent code, so there's
+            // no more reason to serialize it across *different* plugins than
+            // there is for any other method call into a plugin.
+            let (lib, factory, component): (Library, ComPtr<IPluginFactory>, ComPtr<IComponent>) = {
+                let _factory_guard = FACTORY_CREATE_LOCK.lock();
 
-            // Optional InitDll (some plugins require it)
-            type BoolFn = unsafe extern "system" fn() -> bool;
-            if let Ok(init_dll) = unsafe { lib.get::<BoolFn>(b"InitDll\0") } {
-                if !unsafe { init_dll() } {
-                    log::warn!("{} InitDll() returned false for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
-                }
-            }
+                // Load DLL
+                let lib = unsafe { Library::new(plugin_path) }
+                    .map_err(|e| anyhow!("Failed to load '{}': {}", plugin_path, e))?;
 
-            // GetPluginFactory
-            type GetPluginFactory = unsafe extern "system" fn() -> *mut IPluginFactory;
-            let get_factory: Symbol<GetPluginFactory> = unsafe { lib.get(b"GetPluginFactory\0") }
-                .map_err(|_| anyhow!("'{}' has no GetPluginFactory export", plugin_path))?;
-            let factory_ptr = unsafe { get_factory() };
-            if factory_ptr.is_null() {
-                return Err(anyhow!("GetPluginFactory returned null for '{}'", plugin_path));
-            }
-            let factory = unsafe {
-                ComPtr::<IPluginFactory>::from_raw(factory_ptr)
-                    .ok_or_else(|| anyhow!("Failed to wrap IPluginFactory"))?
-            };
-
-            // Find the Audio Module Class CID
-            let n = unsafe { factory.countClasses() };
-            let mut audio_cid: Option<vst3::Steinberg::TUID> = None;
-            for i in 0..n {
-                let mut ci: PClassInfo = unsafe { std::mem::zeroed() };
-                if unsafe { factory.getClassInfo(i, &mut ci) } == kResultOk {
-                    let cat: &[u8] = unsafe {
-                        std::slice::from_raw_parts(ci.category.as_ptr() as *const u8, ci.category.len())
-                    };
-                    if cat.starts_with(b"Audio Module Class") && audio_cid.is_none() {
-                        audio_cid = Some(ci.cid);
+                // Optional InitDll (some plugins require it)
+                type BoolFn = unsafe extern "system" fn() -> bool;
+                if let Ok(init_dll) = unsafe { lib.get::<BoolFn>(b"InitDll\0") } {
+                    if !unsafe { init_dll() } {
+                        log::warn!("{} InitDll() returned false for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
                     }
                 }
-            }
-            let cid = audio_cid
-                .ok_or_else(|| anyhow!("'{}': no Audio Module Class found", plugin_path))?;
 
-            // createInstance  IComponent (with FUnknown fallback)
-            let mut component_ptr: *mut IComponent = ptr::null_mut();
-            let result = unsafe {
-                factory.createInstance(
-                    cid.as_ptr(),
-                    IComponent::IID.as_ptr() as *const i8,
-                    &mut component_ptr as *mut _ as *mut _,
-                )
-            };
-
-            let component: ComPtr<IComponent> = if result == kResultOk && !component_ptr.is_null() {
-                unsafe {
-                    ComPtr::<IComponent>::from_raw(component_ptr)
-                        .ok_or_else(|| anyhow!("Failed to wrap IComponent"))?
+                // GetPluginFactory
+                type GetPluginFactory = unsafe extern "system" fn() -> *mut IPluginFactory;
+                let get_factory: Symbol<GetPluginFactory> = unsafe { lib.get(b"GetPluginFactory\0") }
+                    .map_err(|_| anyhow!("'{}' has no GetPluginFactory export", plugin_path))?;
+                let factory_ptr = unsafe { get_factory() };
+                if factory_ptr.is_null() {
+                    return Err(anyhow!("GetPluginFactory returned null for '{}'", plugin_path));
                 }
-            } else {
-                // Fallback: createInstance with FUnknown IID then QueryInterface
-                let mut raw_ptr: *mut vst3::Steinberg::FUnknown = ptr::null_mut();
-                let r2 = unsafe {
+                let factory = unsafe {
+                    ComPtr::<IPluginFactory>::from_raw(factory_ptr)
+                        .ok_or_else(|| anyhow!("Failed to wrap IPluginFactory"))?
+                };
+
+                // Find the Audio Module Class CID
+                let n = unsafe { factory.countClasses() };
+                let mut audio_cid: Option<vst3::Steinberg::TUID> = None;
+                for i in 0..n {
+                    let mut ci: PClassInfo = unsafe { std::mem::zeroed() };
+                    if unsafe { factory.getClassInfo(i, &mut ci) } == kResultOk {
+                        let cat: &[u8] = unsafe {
+                            std::slice::from_raw_parts(ci.category.as_ptr() as *const u8, ci.category.len())
+                        };
+                        if cat.starts_with(b"Audio Module Class") && audio_cid.is_none() {
+                            audio_cid = Some(ci.cid);
+                        }
+                    }
+                }
+                let cid = audio_cid
+                    .ok_or_else(|| anyhow!("'{}': no Audio Module Class found", plugin_path))?;
+
+                // createInstance  IComponent (with FUnknown fallback)
+                let mut component_ptr: *mut IComponent = ptr::null_mut();
+                let result = unsafe {
                     factory.createInstance(
                         cid.as_ptr(),
-                        vst3::Steinberg::FUnknown::IID.as_ptr() as *const i8,
-                        &mut raw_ptr as *mut _ as *mut _,
+                        IComponent::IID.as_ptr() as *const i8,
+                        &mut component_ptr as *mut _ as *mut _,
                     )
                 };
-                if r2 != kResultOk || raw_ptr.is_null() {
-                    return Err(anyhow!(
-                        "'{}': createInstance failed ({:#010x})",
-                        plugin_path, result as u32
-                    ));
-                }
-                let fu = unsafe {
-                    ComPtr::<vst3::Steinberg::FUnknown>::from_raw(raw_ptr)
-                        .ok_or_else(|| anyhow!("Failed to wrap FUnknown"))?
+
+                let component: ComPtr<IComponent> = if result == kResultOk && !component_ptr.is_null() {
+                    unsafe {
+                        ComPtr::<IComponent>::from_raw(component_ptr)
+                            .ok_or_else(|| anyhow!("Failed to wrap IComponent"))?
+                    }
+                } else {
+                    // Fallback: createInstance with FUnknown IID then QueryInterface
+                    let mut raw_ptr: *mut vst3::Steinberg::FUnknown = ptr::null_mut();
+                    let r2 = unsafe {
+                        factory.createInstance(
+                            cid.as_ptr(),
+                            vst3::Steinberg::FUnknown::IID.as_ptr() as *const i8,
+                            &mut raw_ptr as *mut _ as *mut _,
+                        )
+                    };
+                    if r2 != kResultOk || raw_ptr.is_null() {
+                        return Err(anyhow!(
+                            "'{}': createInstance failed ({:#010x})",
+                            plugin_path, result as u32
+                        ));
+                    }
+                    let fu = unsafe {
+                        ComPtr::<vst3::Steinberg::FUnknown>::from_raw(raw_ptr)
+                            .ok_or_else(|| anyhow!("Failed to wrap FUnknown"))?
+                    };
+                    fu.cast::<IComponent>().ok_or_else(|| {
+                        anyhow!("'{}': IComponent QueryInterface failed after FUnknown createInstance", plugin_path)
+                    })?
                 };
-                fu.cast::<IComponent>().ok_or_else(|| {
-                    anyhow!("'{}': IComponent QueryInterface failed after FUnknown createInstance", plugin_path)
-                })?
+
+                // Tail expression: hand `lib`, `factory`, and `component` out
+                // of the locked block as a tuple, instead of letting them
+                // drop when the block ends — `lib` (the Library) must
+                // outlive `component`, same as before this refactor (see the
+                // existing `_lib: Option<Library>` field ordering / "MUST be
+                // last" comment further down in this struct). `factory` is
+                // needed again below for the separate-controller
+                // createInstance call, which re-acquires the same lock for
+                // that one call (see there for why).
+                (lib, factory, component)
             };
 
             // Initialize, activate all buses (audio + event)
@@ -370,12 +402,20 @@ mod win {
                     let gc_ok = unsafe { component.getControllerClassId(&mut ctrl_cid) };
                     if gc_ok == kResultOk && ctrl_cid != [0i8; 16] {
                         let mut ec_ptr: *mut IEditController = ptr::null_mut();
-                        let r = unsafe {
-                            factory.createInstance(
-                                ctrl_cid.as_ptr(),
-                                IEditController::IID.as_ptr() as *const i8,
-                                &mut ec_ptr as *mut _ as *mut _,
-                            )
+                        // Same lock as the IComponent createInstance above —
+                        // same risk category (factory method call into the
+                        // plugin's own code), reacquired here since this one
+                        // fires after component.initialize(), which runs
+                        // deliberately unlocked (see that block's comment).
+                        let r = {
+                            let _factory_guard = FACTORY_CREATE_LOCK.lock();
+                            unsafe {
+                                factory.createInstance(
+                                    ctrl_cid.as_ptr(),
+                                    IEditController::IID.as_ptr() as *const i8,
+                                    &mut ec_ptr as *mut _ as *mut _,
+                                )
+                            }
                         };
                         if r == kResultOk && !ec_ptr.is_null() {
                             if let Some(ec) = unsafe { ComPtr::<IEditController>::from_raw(ec_ptr) } {
@@ -666,3 +706,49 @@ pub fn set_global_process_block_ms(_block_ms: u64) {}
 
 #[cfg(not(target_os = "windows"))]
 pub fn is_vst3_settling() -> bool { false }
+
+#[cfg(test)]
+mod lock_tests {
+    use parking_lot::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Stands in for `win::FACTORY_CREATE_LOCK` — same shape, defined here
+    /// so this test compiles on non-Windows too. Proves the pattern Task 1
+    /// step 3 wires into `load()`: while one thread holds the lock, a second
+    /// thread attempting to acquire it must block until the first releases.
+    fn test_lock() -> &'static Mutex<()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        &LOCK
+    }
+
+    #[test]
+    fn second_acquirer_blocks_until_first_releases() {
+        let in_critical_section = Arc::new(AtomicU32::new(0));
+        let max_concurrent = Arc::new(AtomicU32::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let in_cs = Arc::clone(&in_critical_section);
+            let max_cs = Arc::clone(&max_concurrent);
+            handles.push(thread::spawn(move || {
+                let _guard = test_lock().lock();
+                let now = in_cs.fetch_add(1, Ordering::SeqCst) + 1;
+                max_cs.fetch_max(now, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(5));
+                in_cs.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(
+            max_concurrent.load(Ordering::SeqCst),
+            1,
+            "more than one thread was inside the locked section at once"
+        );
+    }
+}

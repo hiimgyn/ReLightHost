@@ -15,6 +15,13 @@ pub struct AppConfig {
     pub minimize_to_tray: bool,
     #[serde(default = "default_true")]
     pub show_app_on_startup: bool,
+    /// Experimental: load VST3 plugins in parallel during a batch restore
+    /// instead of one at a time. Off by default — see
+    /// PluginInstanceManager::load_plugins_parallel_results for the
+    /// trade-off (faster restore, but a native crash in one plugin can now
+    /// happen while others are mid-load instead of at a predictable point).
+    #[serde(default)]
+    pub parallel_vst3_loading: bool,
 }
 
 /// Persisted per-session state: audio device config + mute + loopback.
@@ -36,6 +43,7 @@ impl Default for AppConfig {
             custom_scan_paths: Vec::new(),
             minimize_to_tray: false,
             show_app_on_startup: true,
+            parallel_vst3_loading: false,
         }
     }
 }
@@ -110,6 +118,17 @@ impl ConfigManager {
         Ok(())
     }
 
+    pub fn get_parallel_vst3_loading(&self) -> bool {
+        self.config.read().parallel_vst3_loading
+    }
+
+    pub fn set_parallel_vst3_loading(&self, enabled: bool) -> Result<()> {
+        let mut config = self.config.write();
+        config.parallel_vst3_loading = enabled;
+        self.save_config(&config)?;
+        Ok(())
+    }
+
     fn save_config(&self, config: &AppConfig) -> Result<()> {
         let content = serde_json::to_string_pretty(config)?;
         fs::write(&self.config_path, content)?;
@@ -161,5 +180,45 @@ impl ConfigManager {
         }
         let content = fs::read_to_string(&path).ok()?;
         serde_json::from_str(&content).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A scratch config path under the OS temp dir, unique per test run, so
+    /// tests never collide with the real config.json or with each other.
+    struct ScratchConfig(PathBuf);
+    impl Drop for ScratchConfig {
+        fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+    }
+    fn scratch_manager() -> (ScratchConfig, ConfigManager) {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("relighthost_config_test_{n}.json"));
+        let manager = ConfigManager {
+            config: Arc::new(RwLock::new(AppConfig::default())),
+            config_path: path.clone(),
+        };
+        (ScratchConfig(path), manager)
+    }
+
+    #[test]
+    fn parallel_vst3_loading_defaults_to_false() {
+        let (_scratch, manager) = scratch_manager();
+        assert!(!manager.get_parallel_vst3_loading());
+    }
+
+    #[test]
+    fn parallel_vst3_loading_round_trips_through_disk() {
+        let (scratch, manager) = scratch_manager();
+        manager.set_parallel_vst3_loading(true).expect("save should succeed");
+        assert!(manager.get_parallel_vst3_loading());
+
+        let content = fs::read_to_string(&scratch.0).expect("config file should exist");
+        let reloaded: AppConfig = serde_json::from_str(&content).expect("should parse");
+        assert!(reloaded.parallel_vst3_loading);
     }
 }

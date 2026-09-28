@@ -20,6 +20,7 @@ const KEYS = {
   startup: 'appSettings.runOnStartup',
   showOnStartup: 'appSettings.showOnStartup',
   minimize: 'minimizeToTray',
+  parallelVst3Loading: 'appSettings.parallelVst3Loading',
 } as const;
 
 function readCachedBool(key: string, fallback: boolean): boolean {
@@ -37,6 +38,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   const [runOnStartup, setRunOnStartup] = useState(() => readCachedBool(KEYS.startup, false));
   const [showAppOnStartup, setShowAppOnStartup] = useState(() => readCachedBool(KEYS.showOnStartup, true));
   const [minimizeToTray, setMinimizeToTray] = useState(() => readCachedBool(KEYS.minimize, false));
+  const [parallelVst3Loading, setParallelVst3LoadingState] = useState(() => readCachedBool(KEYS.parallelVst3Loading, false));
   const [appVersion, setAppVersion] = useState('');
   const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version?: string; notes?: string } | null>(null);
   const [checking, setChecking] = useState(false);
@@ -57,17 +59,20 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
 
   const loadSettings = async () => {
     try {
-      const [startupEnabled, minimizeEnabled, showOnStartupEnabled] = await Promise.all([
+      const [startupEnabled, minimizeEnabled, showOnStartupEnabled, parallelVst3Enabled] = await Promise.all([
         invoke<boolean>('is_startup_enabled'),
         invoke<boolean>('get_minimize_to_tray'),
         invoke<boolean>('get_show_app_on_startup'),
+        invoke<boolean>('get_parallel_vst3_loading'),
       ]);
       setRunOnStartup(startupEnabled);
       setMinimizeToTray(minimizeEnabled);
       setShowAppOnStartup(showOnStartupEnabled);
+      setParallelVst3LoadingState(parallelVst3Enabled);
       localStorage.setItem(KEYS.startup, String(startupEnabled));
       localStorage.setItem(KEYS.minimize, String(minimizeEnabled));
       localStorage.setItem(KEYS.showOnStartup, String(showOnStartupEnabled));
+      localStorage.setItem(KEYS.parallelVst3Loading, String(parallelVst3Enabled));
     } catch (error) {
       console.error('Failed to load settings:', error);
     }
@@ -109,6 +114,13 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     setShowAppOnStartup as React.Dispatch<React.SetStateAction<boolean>>,
     'set_show_app_on_startup',
     KEYS.showOnStartup,
+    'enabled',
+  );
+
+  const handleParallelVst3LoadingToggle = makeToggleHandler(
+    setParallelVst3LoadingState as React.Dispatch<React.SetStateAction<boolean>>,
+    'set_parallel_vst3_loading',
+    KEYS.parallelVst3Loading,
     'enabled',
   );
 
@@ -201,6 +213,17 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
           </Paragraph>
         </div>
         <Switch checked={minimizeToTray} onChange={handleMinimizeToggle} />
+      </div>
+
+      {/* Parallel VST3 Loading (experimental) */}
+      <div style={settingRowStyle}>
+        <div style={{ flex: 1, paddingRight: 16 }}>
+          <Text strong style={{ fontSize: 13 }}>{t('appSettings.parallelVst3Loading')}</Text>
+          <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 11.5 }}>
+            {t('appSettings.parallelVst3LoadingDesc')}
+          </Paragraph>
+        </div>
+        <Switch checked={parallelVst3Loading} onChange={handleParallelVst3LoadingToggle} />
       </div>
     </div>
   );
@@ -383,7 +406,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
       }}
       footer={null}
     >
-      <Tabs defaultActiveKey="general" items={tabItems} />
+      <Tabs className="app-settings-tabs" defaultActiveKey="general" items={tabItems} />
     </Modal>
   );
 }

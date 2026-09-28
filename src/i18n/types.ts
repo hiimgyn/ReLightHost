@@ -90,19 +90,6 @@ export interface TranslationSchema {
     removeFromChain: string;
     removeFailed: string;
     timeout: string;
-    sandboxTooltip: string;
-    sandboxTitle: string;
-    sandboxDescForced: string;
-    sandboxDescAuto: string;
-    sandboxDescOff: string;
-    sandboxCrashCount: string;
-    sandboxForceLabel: string;
-    sandboxResetCount: string;
-    sandboxForcedOn: string;
-    sandboxForcedOff: string;
-    sandboxCrashCountReset: string;
-    sandboxToggleFailed: string;
-    sandboxReloading: string;
   };
   meta: {
     format: string;
@@ -205,6 +192,8 @@ export interface TranslationSchema {
     startupBehavior: string;
     runOnStartup: string;
     runOnStartupDesc: string;
+    parallelVst3Loading: string;
+    parallelVst3LoadingDesc: string;
     showOnStartup: string;
     showOnStartupDesc: string;
     minimizeToTray: string;

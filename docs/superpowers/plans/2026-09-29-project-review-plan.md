@@ -234,3 +234,27 @@ S = < 1 giờ, M = nửa ngày, L = 1–2 ngày.
 - `process_chain_stereo` lock-free (ArcSwap), `try_lock` ở mọi đường audio — không block audio thread (ngoại trừ Task 4).
 - Preset ghi atomic (tmp + rename). Polling frontend chỉ chạy khi cửa sổ hiển thị (`useVisibleInterval`), có chống request chồng (`inFlight`).
 - Clippy/tsc sạch, test pass.
+
+---
+
+## Vòng 2 (2026-09-29) — rà các phần chưa đọc kỹ ở vòng 1
+
+### Phase 7 — Lỗi còn lại
+
+- [ ] **7.1 CLAP `init`/`deinit` không cân bằng ✅ (S).** `ClapProcessor::load` gọi `clap_entry.init` mỗi instance và `Drop` gọi `deinit` mỗi instance (`processor/clap.rs`); `read_clap_metadata` (scanner) cũng init/deinit. Hai instance cùng một plugin CLAP, hoặc quét plugin khi plugin đó đang trong chain → `deinit` gỡ trạng thái toàn cục của instance còn sống → crash với plugin không tự đếm tham chiếu (CLAP < 1.2). Sửa: đếm theo path phía host, chỉ `init` lần đầu và `deinit` lần cuối (scanner dùng chung bộ đếm).
+- [ ] **7.2 CLAP xử lý in-place không kiểm tra ✅ (S).** `process_chunk` trỏ input và output vào cùng buffer; CLAP chỉ cho phép khi plugin khai báo `in_place_pair`. Sửa: copy input sang scratch như VST2/VST3.
+- [ ] **7.3 CLAP `start_processing` gọi sai thread ✅ (S).** Spec: `[audio-thread]`; đang gọi trong `load`. Sửa: gọi lần đầu trong `process_stereo`.
+- [ ] **7.4 CLAP `request_callback` bị bỏ qua ✅ (M).** `on_main_thread` không bao giờ được gọi → plugin dựa vào cơ chế này (nih-plug, clap-wrapper) không đồng bộ tham số/GUI. Sửa: cờ trong host → `AppHandle::run_on_main_thread(on_main_thread)`.
+- [ ] **7.5 DeepFilter: độ trễ tăng vĩnh viễn sau mỗi lần worker chậm ✅ (S–M).** Khi worker trễ, audio thread phát im lặng nhưng không bỏ phần đầu ra đến muộn → mỗi lần như vậy cộng thêm độ trễ, tối đa 1 s (`builtin/deep_filter.rs`). Sửa: gộp 4 ring thành một ring frame `[f32; 4]` (clean L/R + dry L/R) và dùng `BacklogTrimmer` (tổng quát hóa kiểu phần tử).
+- [ ] **7.6 ASIO bỏ qua reset request ✅ (S–M).** Đổi buffer size / sample rate trong control panel của driver → driver gửi `kAsioResetRequest` / `SampleRateChanged`; app không đăng ký `Driver::add_event_callback` nên âm thanh hỏng tới khi restart tay. Sửa: callback set cờ; `get_status` (UI poll) restart monitoring như Task 11.
+- [ ] **7.7 Ba minor còn lại từ vòng 1:** scan async chồng với load plugin; cờ restore kẹt nếu thread replay panic (drop guard); reload chain thừa khi đổi thiết bị lúc không monitoring.
+- [ ] **7.8 Dọn:** `src/stores/presetStore.ts` là file rỗng; canvas gọi `getBoundingClientRect` mỗi frame (dùng `ResizeObserver`); worker DeepFilter poll `sleep(1ms)`.
+
+### Phase 8 — Nâng cấp (tính năng)
+
+- [ ] **8.1 Preset có tên (M):** lưu / tải / xóa chain theo tên. Backend đã có `PresetManager` + đường load của restore; thiếu command + UI.
+- [ ] **8.2 Waveform thật trước/sau xử lý (M):** `WaveformDualCanvas` đang vẽ sóng sin giả lập. Thêm ring peak pre/post mỗi block cho từng instance, UI poll như VAD.
+- [ ] **8.3 Hiển thị tổng latency của chain (S–M):** VST3 `getLatencySamples`, CLAP ext `latency`, VST2 `initial_delay`, DeepFilter hop — cộng vào `AudioStatus`.
+- [ ] **8.4 Bundle nhiều plugin (M):** CLAP/VST3 chỉ lấy plugin đầu tiên trong file; liệt kê và nạp theo index.
+- [ ] **8.5 Tự nối lại thiết bị WASAPI khi cắm lại (M):** `IMMNotificationClient`, dựa trên cờ lỗi của Task 11.
+- [ ] **8.6 Quét plugin out-of-process (L)** và **8.7 thread host plugin riêng (COM STA + message pump) để restore/load không chặn main thread (L).**

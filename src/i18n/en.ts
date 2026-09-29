@@ -1,6 +1,14 @@
 import type { TranslationSchema } from './types';
 
 export const en: TranslationSchema = {
+  app: {
+    installRestart: 'Install & Restart',
+    sessionRestored: 'Session restored — {count} plugin(s) loaded',
+    updateAvailable: 'Update available: v{version}',
+    updateReady: 'A new version of ReLightHost is ready to install.',
+    uncleanExitTitle: 'ReLightHost closed unexpectedly last time',
+    uncleanExitDesc: 'This plugin was loaded when it happened: {names}. If the app keeps disappearing, try removing it from the chain.',
+  },
   common: {
     builtin: 'System',
     resetToDefault: 'Reset to default',

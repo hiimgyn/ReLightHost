@@ -186,7 +186,6 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       await toggleMonitoring(true);
       await fetchStatus();
       message.success(t('audioSettings.appliedSuccess'));
-      localStorage.setItem("audioConfigured", "true");
       onClose();
     } catch (error) {
       console.error("Failed to apply settings:", error);

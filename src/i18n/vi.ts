@@ -1,6 +1,14 @@
 import type { TranslationSchema } from './types';
 
 export const vi: TranslationSchema = {
+  app: {
+    installRestart: 'Cài đặt & khởi động lại',
+    sessionRestored: 'Đã khôi phục phiên — {count} plugin đã được tải',
+    updateAvailable: 'Có bản cập nhật: v{version}',
+    updateReady: 'Phiên bản mới của ReLightHost đã sẵn sàng để cài đặt.',
+    uncleanExitTitle: 'ReLightHost đã đóng bất thường lần trước',
+    uncleanExitDesc: 'Plugin này đang được tải khi sự cố xảy ra: {names}. Nếu app tiếp tục tự tắt, hãy thử gỡ nó khỏi chuỗi.',
+  },
   common: {
     builtin: 'Hệ thống',
     resetToDefault: 'Đặt lại về mặc định',

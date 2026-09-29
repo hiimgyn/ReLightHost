@@ -1,6 +1,14 @@
 export type SupportedLocale = 'en' | 'vi';
 
 export interface TranslationSchema {
+  app: {
+    installRestart: string;
+    sessionRestored: string;
+    updateAvailable: string;
+    updateReady: string;
+    uncleanExitTitle: string;
+    uncleanExitDesc: string;
+  };
   common: {
     builtin: string;
     resetToDefault: string;

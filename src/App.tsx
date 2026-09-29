@@ -8,12 +8,14 @@ import LoadingScreen from './components/layout/LoadingScreen';
 import ErrorBoundary from './components/layout/ErrorBoundary';
 import { getMinimizeToTray } from './lib/tauri';
 import { initWindowVisibilitySync, setWindowVisible } from './lib/windowVisibility';
+import { useTranslation } from './i18n';
 
 const Layout = lazy(() => import('./components/layout'));
 const PluginChain = lazy(() => import('./components/chain'));
 const AudioSettings = lazy(() => import('./components/audio'));
 
 function InstallUpdateButton() {
+  const { t } = useTranslation();
   const [installing, setInstalling] = useState(false);
   const handleInstall = async () => {
     setInstalling(true);
@@ -26,7 +28,7 @@ function InstallUpdateButton() {
   };
   return (
     <Button type="primary" size="small" loading={installing} onClick={handleInstall}>
-      Install & Restart
+      {t('app.installRestart')}
     </Button>
   );
 }
@@ -39,6 +41,7 @@ function App() {
   const updateCheckRef = useRef(false);
   const { syncFromBackend, fetchStatus, fetchDevices, toggleMonitoring } = useAudioStore();
   const [messageApi, contextHolder] = message.useMessage();
+  const { t } = useTranslation();
   const [notificationApi, notificationContextHolder] = notification.useNotification();
 
   // ── Session restore on mount ──────────────────────────────────────────────
@@ -88,10 +91,7 @@ function App() {
           }
 
           if (result.plugins_restored > 0) {
-              messageApi.success(
-                `Session restored — ${result.plugins_restored} plugin${result.plugins_restored > 1 ? 's' : ''} loaded`,
-                4
-              );
+              messageApi.success(t('app.sessionRestored', { count: result.plugins_restored }), 4);
           }
         } else {
           // No session.json — try to start the stream with whatever device is
@@ -154,10 +154,10 @@ function App() {
 
         notificationApi.open({
           key: `update-${info.version}`,
-          message: `Update available: v${info.version}`,
-          description: info.notes || 'A new version of ReLightHost is ready to install.',
+          title: t('app.updateAvailable', { version: info.version ?? '' }),
+          description: info.notes || t('app.updateReady'),
           duration: 0,
-          btn: <InstallUpdateButton />,
+          actions: <InstallUpdateButton />,
         });
       } catch (error) {
         // Silent — this is a background check; the Settings page still
@@ -183,8 +183,8 @@ function App() {
         const names = paths.map((p) => p.split(/[\\/]/).pop() || p);
         notificationApi.open({
           key: 'unclean-exit-warning',
-          message: 'ReLightHost closed unexpectedly last time',
-          description: `This plugin was loaded when it happened: ${names.join(', ')}. If the app keeps disappearing, try removing it from the chain.`,
+          title: t('app.uncleanExitTitle'),
+          description: t('app.uncleanExitDesc', { names: names.join(', ') }),
           duration: 0,
         });
       } catch (error) {

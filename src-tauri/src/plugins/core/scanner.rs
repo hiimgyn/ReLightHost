@@ -405,12 +405,13 @@ impl PluginScanner {
         // code; the fallbacks describe a single (first) plugin.
         // ponytail: multi-class VST3s without moduleInfo.json show as one
         // plugin; enumerate factory classes in read_vst3_dll_info if needed.
+        let probe_dll = || probe(ProbeKind::Vst3, &dll_path).into_iter().next();
         #[cfg(target_os = "windows")]
         let single_meta = || {
-            if dll_path.exists() { read_vst3_pe_version_info(&dll_path).or_else(|| read_vst3_dll_info(&dll_path)) } else { None }
+            if dll_path.exists() { read_vst3_pe_version_info(&dll_path).or_else(probe_dll) } else { None }
         };
         #[cfg(not(target_os = "windows"))]
-        let single_meta = || if dll_path.exists() { read_vst3_dll_info(&dll_path) } else { None };
+        let single_meta = || if dll_path.exists() { probe_dll() } else { None };
 
         let metas = read_vst3_module_info(bundle_path)
             .or_else(|| single_meta().map(|m| vec![m]))
@@ -457,26 +458,24 @@ impl PluginScanner {
         // For single-file VST3 (.vst3 files that are PE DLLs), try VERSIONINFO
         // resource first (no code execution), then IPluginFactory2 as fallback.
         let metas: Vec<(String, String, String, String)> = if matches!(format, PluginFormat::CLAP) {
-            with_code_load_lock(|| crate::plugins::processor::clap::read_clap_metadata(path))
-                .map(|all| all.into_iter().map(|(n, v, ver)| (n, v, ver, "Effect".to_string())).collect())
-                .unwrap_or_else(|| vec![(filename.to_string(), String::new(), String::new(), "Effect".to_string())])
+            let found = probe(ProbeKind::Clap, path);
+            if found.is_empty() {
+                vec![(filename.to_string(), String::new(), String::new(), "Effect".to_string())]
+            } else {
+                found
+            }
         } else {
             let single = if matches!(format, PluginFormat::VST) {
-                let (n, v, ver) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    with_code_load_lock(|| read_vst2_metadata(path))
-                }))
-                .unwrap_or_else(|_| {
-                    log::error!("VST2 DLL panicked during scan: {}", path.display());
-                    None
-                })
-                .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
-                (n, v, ver, "Effect".to_string())
+                probe(ProbeKind::Vst2, path)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| (filename.to_string(), String::new(), String::new(), "Effect".to_string()))
             } else if matches!(format, PluginFormat::VST3) {
                 #[cfg(target_os = "windows")]
                 let meta = read_vst3_pe_version_info(path)
-                    .or_else(|| read_vst3_dll_info(path));
+                    .or_else(|| probe(ProbeKind::Vst3, path).into_iter().next());
                 #[cfg(not(target_os = "windows"))]
-                let meta = read_vst3_dll_info(path);
+                let meta = probe(ProbeKind::Vst3, path).into_iter().next();
                 meta.unwrap_or_else(|| (filename.to_string(), String::new(), String::new(), "Effect".to_string()))
             } else {
                 (filename.to_string(), String::new(), String::new(), "Effect".to_string())
@@ -852,6 +851,144 @@ fn vi_parse(data: &[u8]) -> Option<(String, String, String)> {
 
 /// Briefly load a VST3 DLL and query `IPluginFactory2` for real metadata.
 /// Falls back to `IPluginFactory` (name + factory vendor only) if unavailable.
+/// A scan step that has to run plugin code to read metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeKind {
+    Vst2,
+    Clap,
+    Vst3,
+}
+
+impl ProbeKind {
+    fn arg(self) -> &'static str {
+        match self {
+            Self::Vst2 => "vst2",
+            Self::Clap => "clap",
+            Self::Vst3 => "vst3",
+        }
+    }
+
+    fn from_arg(arg: &str) -> Option<Self> {
+        match arg {
+            "vst2" => Some(Self::Vst2),
+            "clap" => Some(Self::Clap),
+            "vst3" => Some(Self::Vst3),
+            _ => None,
+        }
+    }
+}
+
+type Meta = (String, String, String, String);
+
+/// `<exe> --scan-one <kind> <path>` → the probe to run.
+fn parse_scan_one_args(args: &[String]) -> Option<(ProbeKind, String)> {
+    match args {
+        [_, flag, kind, path, ..] if flag == "--scan-one" => Some((ProbeKind::from_arg(kind)?, path.clone())),
+        _ => None,
+    }
+}
+
+/// Child-process entry point: when started as `--scan-one <kind> <path>`,
+/// probes that one file, prints its metadata as JSON on stdout and returns
+/// true (the caller exits). Returns false for a normal app start.
+pub fn scan_one_cli(args: &[String]) -> bool {
+    let Some((kind, path)) = parse_scan_one_args(args) else { return false };
+    let metas = probe_in_process(kind, Path::new(&path));
+    println!("{}", serde_json::to_string(&metas).unwrap_or_else(|_| "[]".into()));
+    true
+}
+
+/// Runs a probe in this process (the `--scan-one` child, and tests).
+fn probe_in_process(kind: ProbeKind, path: &Path) -> Vec<Meta> {
+    let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_code_load_lock(|| match kind {
+            ProbeKind::Vst2 => read_vst2_metadata(path).map(|(n, v, ver)| vec![(n, v, ver, "Effect".to_string())]),
+            ProbeKind::Clap => crate::plugins::processor::clap::read_clap_metadata(path)
+                .map(|all| all.into_iter().map(|(n, v, ver)| (n, v, ver, "Effect".to_string())).collect()),
+            ProbeKind::Vst3 => read_vst3_dll_info_unlocked(path).map(|m| vec![m]),
+        })
+    }));
+    match found {
+        Ok(metas) => metas.unwrap_or_default(),
+        Err(_) => {
+            log::error!("Plugin panicked while being scanned: {}", path.display());
+            Vec::new()
+        }
+    }
+}
+
+/// Reads metadata that needs plugin code to run. In the app this happens in
+/// a child process (`--scan-one`), so a plugin that crashes or hangs while
+/// being probed takes only that child down — the scan logs it and carries
+/// on with file-name metadata. Tests probe in-process (the test binary
+/// can't act as the child).
+fn probe(kind: ProbeKind, path: &Path) -> Vec<Meta> {
+    #[cfg(test)]
+    {
+        probe_in_process(kind, path)
+    }
+    #[cfg(not(test))]
+    {
+        probe_out_of_process(kind, path)
+    }
+}
+
+#[cfg(not(test))]
+fn probe_out_of_process(kind: ProbeKind, path: &Path) -> Vec<Meta> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    const TIMEOUT: Duration = Duration::from_secs(20);
+
+    let Ok(exe) = std::env::current_exe() else { return probe_in_process(kind, path) };
+    let mut cmd = Command::new(exe);
+    cmd.arg("--scan-one")
+        .arg(kind.arg())
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("Could not start scan helper for '{}': {e}", path.display());
+            return Vec::new();
+        }
+    };
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(status)) => {
+                log::warn!("Plugin crashed while being scanned ({status}), skipped its metadata: {}", path.display());
+                return Vec::new();
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log::warn!("Plugin hung while being scanned (>{TIMEOUT:?}), skipped its metadata: {}", path.display());
+                return Vec::new();
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => {
+                log::warn!("Scan helper wait failed for '{}': {e}", path.display());
+                return Vec::new();
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        use std::io::Read;
+        let _ = stdout.read_to_end(&mut out);
+    }
+    serde_json::from_slice(&out).unwrap_or_default()
+}
+
 /// Serializes every scan step that executes plugin code (DLL load +
 /// entry point / factory). The directory walk and static metadata reads
 /// (moduleinfo.json, VERSIONINFO) stay parallel; running several plugins'
@@ -864,10 +1001,6 @@ fn with_code_load_lock<T>(f: impl FnOnce() -> T) -> T {
     // plugin entry code alongside a plugin being loaded into the chain.
     let _guard = crate::plugins::core::LIBRARY_LOAD_LOCK.lock();
     f()
-}
-
-fn read_vst3_dll_info(dll_path: &Path) -> Option<(String, String, String, String)> {
-    with_code_load_lock(|| read_vst3_dll_info_unlocked(dll_path))
 }
 
 fn read_vst3_dll_info_unlocked(dll_path: &Path) -> Option<(String, String, String, String)> {
@@ -1127,5 +1260,29 @@ mod multi_plugin_tests {
         assert_eq!((plugins[1].name.as_str(), plugins[1].sub_index), ("Suite Comp", 1));
         assert_ne!(plugins[0].id, plugins[1].id, "ids must be unique per sub-plugin");
         assert_eq!(plugins[1].vendor, "Acme");
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn scan_one_arguments_are_recognised() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(matches!(
+            parse_scan_one_args(&args(&["relighthost.exe", "--scan-one", "clap", "C:/P.clap"])),
+            Some((ProbeKind::Clap, ref p)) if p == "C:/P.clap"
+        ));
+        assert!(parse_scan_one_args(&args(&["relighthost.exe"])).is_none());
+        for kind in [ProbeKind::Vst2, ProbeKind::Clap, ProbeKind::Vst3] {
+            assert_eq!(ProbeKind::from_arg(kind.arg()), Some(kind), "child args round-trip");
+        }
+        assert!(parse_scan_one_args(&args(&["relighthost.exe", "--scan-one", "bogus", "x"])).is_none());
+    }
+
+    #[test]
+    fn probing_a_missing_file_finds_nothing() {
+        assert!(probe_in_process(ProbeKind::Vst2, Path::new("C:/does/not/exist.dll")).is_empty());
     }
 }

@@ -13,5 +13,11 @@ fn main() {
     let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   }
 
+  // Plugin-scan helper child (see plugins::core::scanner::probe): do the
+  // one probe and exit before any app/audio/tray setup.
+  if app_lib::run_scan_helper_if_requested() {
+    return;
+  }
+
   app_lib::run();
 }

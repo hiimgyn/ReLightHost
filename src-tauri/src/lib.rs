@@ -89,6 +89,13 @@ pub struct SessionRestoreResult {
 
  
 
+/// `main` calls this first: when the process was started as a plugin-scan
+/// helper (`--scan-one <kind> <path>`) it does that one probe and returns
+/// true, and the app must exit without starting.
+pub fn run_scan_helper_if_requested() -> bool {
+    plugins::core::scanner::scan_one_cli(&std::env::args().collect::<Vec<_>>())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before loading anything: capture which VST3 plugin(s), if any, were

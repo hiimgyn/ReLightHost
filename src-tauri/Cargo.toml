@@ -26,7 +26,6 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
-thiserror = "2"
 auto-launch = "0.6.0"
 webbrowser = "1.0"
 

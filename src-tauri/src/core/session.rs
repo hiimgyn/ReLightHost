@@ -28,6 +28,7 @@ pub(crate) fn restore_session_impl(
             audio_restored: state.audio_manager.read().get_status().is_monitoring,
             plugins_restored,
             needs_deferred_start: false,
+            deferred_start_ms: 0,
         });
     }
     log::info!("{} Session restore started", crate::core::threading::thread_prefix("restore/main"));
@@ -38,6 +39,7 @@ pub(crate) fn restore_session_impl(
     let mut audio_restored: bool = false;
     let mut plugins_restored: usize = 0;
     let mut safe_delay_ms: u64 = 0;
+    let mut safe_start_deadline: Option<Instant> = None;
     let mut monitoring_started_early = false;
     // ── 1. Audio config (stop stream only — do NOT restart yet) ───────────
     if let Some(session) = state.config_manager.read().load_session() {
@@ -79,7 +81,7 @@ pub(crate) fn restore_session_impl(
             }
 
             if audio_restored && safe_delay_ms > 0 {
-                *state.startup.safe_start_deadline.write() = Some(Instant::now() + Duration::from_millis(safe_delay_ms));
+                safe_start_deadline = Some(Instant::now() + Duration::from_millis(safe_delay_ms));
                 // Extra guard after stream start: skip VST3 process() during fragile warmup.
                 // total guard = delayed-start wait + additional post-start settling window.
                 let extra_post_start_ms = if restored_has_vst3 { VST3_POST_START_SETTLE_MS } else { 0 };
@@ -105,7 +107,6 @@ pub(crate) fn restore_session_impl(
                     log::info!("{} Automatic monitoring will remain deferred until restore completion", crate::core::threading::thread_prefix("restore/main"));
                 }
             } else {
-                *state.startup.safe_start_deadline.write() = None;
                 crate::plugins::processor::vst3::set_global_process_block_ms(0);
             }
 
@@ -308,5 +309,9 @@ pub(crate) fn restore_session_impl(
         log::warn!("{} Session restore is slow ({} ms). Check per-plugin load timings above to identify bottlenecks.", crate::core::threading::thread_prefix("restore/main"), total_ms);
     }
 
-    Ok(crate::SessionRestoreResult { audio_restored, plugins_restored, needs_deferred_start })
+    let deferred_start_ms = match (needs_deferred_start, safe_start_deadline) {
+        (true, Some(deadline)) => deadline.saturating_duration_since(Instant::now()).as_millis() as u64,
+        _ => 0,
+    };
+    Ok(crate::SessionRestoreResult { audio_restored, plugins_restored, needs_deferred_start, deferred_start_ms })
 }

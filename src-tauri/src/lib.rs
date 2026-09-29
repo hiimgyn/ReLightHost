@@ -10,7 +10,6 @@ mod bootstrap;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::time::Instant;
 use crate::domain::config::ConfigManager;
 use crate::domain::preset::PresetManager;
 use tauri::{Emitter, Manager};
@@ -45,7 +44,6 @@ struct AutosaveState {
 #[derive(Clone)]
 struct StartupState {
     session_restored: Arc<AtomicBool>,
-    safe_start_deadline: Arc<RwLock<Option<Instant>>>,
     vst3_restore_ready: Arc<AtomicBool>,
 }
 
@@ -83,6 +81,10 @@ pub struct SessionRestoreResult {
     /// delay rather than doing it here to keep the call on a COM-initialized
     /// Tauri command thread (raw std::thread::spawn threads crash on ASIO).
     needs_deferred_start: bool,
+    /// How long the frontend should still wait before that deferred
+    /// `toggle_monitoring(true)` (0 when the safe-start window has already
+    /// passed during plugin loading).
+    deferred_start_ms: u64,
 }
 
  
@@ -139,7 +141,6 @@ pub fn run() {
         },
         startup: StartupState {
             session_restored: Arc::new(AtomicBool::new(false)),
-            safe_start_deadline: Arc::new(RwLock::new(None)),
             vst3_restore_ready: Arc::new(AtomicBool::new(true)),
         },
     };

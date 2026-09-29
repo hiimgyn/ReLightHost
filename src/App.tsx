@@ -51,6 +51,7 @@ function App() {
           audio_restored: boolean;
           plugins_restored: number;
           needs_deferred_start: boolean;
+          deferred_start_ms: number;
         }>('restore_session');
 
         usePluginStore
@@ -73,8 +74,9 @@ function App() {
           // Session found — suppress the first-time setup modal.
 
           if (result.needs_deferred_start) {
-            // Backend orchestrates a safe delayed start window.
-            // Call immediately; backend will wait for its anti-crash deadline.
+            // Wait out the rest of the backend's safe-start window
+            // (Voicemeeter / VST3 warm-up) before opening the stream.
+            await new Promise((r) => setTimeout(r, result.deferred_start_ms));
             try {
               await toggleMonitoring(true);
               await fetchStatus();

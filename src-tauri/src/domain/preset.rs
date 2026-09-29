@@ -198,31 +198,6 @@ impl PresetManager {
     }
 }
 
-// Simple chrono replacement for timestamp
-mod chrono {
-    use std::time::{Duration, SystemTime};
-
-    pub struct Local;
-
-    impl Local {
-        pub fn now() -> DateTime {
-            DateTime
-        }
-    }
-
-    pub struct DateTime;
-
-    impl DateTime {
-        pub fn to_rfc3339(&self) -> String {
-            let duration = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO);
-
-            format!("{}", duration.as_secs())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +215,12 @@ mod tests {
             parameters: vec![],
             vst3_state: state,
         }
+    }
+
+    #[test]
+    fn created_at_is_an_rfc3339_timestamp() {
+        let preset = Preset::new("t".into(), vec![]);
+        assert!(chrono::DateTime::parse_from_rfc3339(&preset.created_at).is_ok(), "{}", preset.created_at);
     }
 
     #[test]

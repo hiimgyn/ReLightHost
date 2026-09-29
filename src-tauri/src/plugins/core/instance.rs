@@ -71,7 +71,7 @@ impl PluginInstance {
     /// processor — matching LightHost's `deviceManager.initialise` values passed
     /// to `formatManager.createPluginInstance`.
     pub fn new(plugin_info: PluginInfo, sample_rate: f64, block_size: usize) -> Result<Self> {
-        let instance_id = format!("instance_{}", uuid::Uuid::new_v4());
+        let instance_id = format!("instance_{}", next_instance_id());
 
         log::info!("{} Creating plugin instance: {} ({})", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, instance_id);
 
@@ -1021,20 +1021,12 @@ impl Default for PluginInstanceManager {
 }
 
 
-// Re-export for uuid
-mod uuid {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    
+/// Process-unique instance id suffix (a counter — ids only need to be
+/// unique within one run; presets identify plugins by path, not by id).
+fn next_instance_id() -> String {
+    use std::sync::atomic::AtomicU64;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    
-    pub struct Uuid;
-    
-    impl Uuid {
-        pub fn new_v4() -> String {
-            let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-            format!("{:016x}", id)
-        }
-    }
+    format!("{:016x}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 #[cfg(test)]

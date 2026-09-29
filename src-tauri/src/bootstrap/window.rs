@@ -5,8 +5,10 @@ pub fn setup_main_window(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> 
     // Matches the hard floor in tauri.conf.json (minWidth/minHeight) — kept
     // in sync here too so this computation's own floor never disagrees with
     // the OS-enforced one.
-    const MIN_W: f64 = 1430.0;
-    const MIN_H: f64 = 880.0;
+    // Fits a 1280×720 logical desktop (1080p at 150 %, 1366×768 laptops)
+    // with the taskbar showing.
+    const MIN_W: f64 = 1024.0;
+    const MIN_H: f64 = 640.0;
 
     if let Some(window) = app.get_webview_window("main") {
         let app_handle = app.handle().clone();
@@ -56,8 +58,10 @@ pub fn setup_main_window(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> 
                 ((h * RATIO).round(), h)
             };
 
-            win_w = win_w.max(MIN_W);
-            win_h = win_h.max(MIN_H);
+            // Never larger than the screen (the OS minimum still wins on a
+            // screen smaller than MIN_W × MIN_H).
+            win_w = win_w.max(MIN_W).min(logical_w);
+            win_h = win_h.max(MIN_H).min(logical_h);
 
             let _ = window.set_size(tauri::LogicalSize::new(win_w, win_h));
             // Re-center explicitly: resizing after creation keeps the

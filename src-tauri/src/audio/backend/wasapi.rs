@@ -241,9 +241,15 @@ fn initialize_client(
     requested_frames: u32,
     sample_rate: u32,
     channels: u16,
+    exclusive: bool,
 ) -> anyhow::Result<(IAudioClient, ExclusiveModeResult)> {
     let format = wave_format_for_channels(sample_rate, channels);
     let period = frames_to_ref_time(requested_frames, sample_rate);
+
+    if !exclusive {
+        let client = init_shared(device, requested_frames, sample_rate, &format)?;
+        return Ok((client, ExclusiveModeResult { exclusive: false, fallback_reason: None }));
+    }
 
     let client = activate_audio_client(device)?;
     // SAFETY: `format` is a validly-constructed `WAVEFORMATEX`; `client` is
@@ -297,9 +303,25 @@ fn fall_back_to_shared(
     format: &WAVEFORMATEX,
     exclusive_err: windows::core::Error,
 ) -> anyhow::Result<(IAudioClient, ExclusiveModeResult)> {
+    let client = init_shared(device, requested_frames, sample_rate, format)?;
+    Ok((
+        client,
+        ExclusiveModeResult {
+            exclusive: false,
+            fallback_reason: Some(format!("Exclusive mode unavailable ({exclusive_err}); using shared mode")),
+        },
+    ))
+}
+
+fn init_shared(
+    device: &IMMDevice,
+    requested_frames: u32,
+    sample_rate: u32,
+    format: &WAVEFORMATEX,
+) -> anyhow::Result<IAudioClient> {
     let period = frames_to_ref_time(requested_frames, sample_rate);
-    // A fresh client — whatever exclusive-mode attempt(s) led here already
-    // consumed their own client instance's one `Initialize` call.
+    // A fresh client — an `IAudioClient` can be `Initialize`d only once, and
+    // any exclusive-mode attempt before this already used its own.
     let client = activate_audio_client(device)?;
     // SAFETY: `format` is a validly-constructed `WAVEFORMATEX`; shared mode
     // requires `hnsperiodicity` of 0 (the engine picks its own period).
@@ -320,14 +342,8 @@ fn fall_back_to_shared(
             None,
         )
     }
-    .map_err(|e| anyhow::anyhow!("WASAPI shared-mode fallback also failed: {e}"))?;
-    Ok((
-        client,
-        ExclusiveModeResult {
-            exclusive: false,
-            fallback_reason: Some(format!("Exclusive mode unavailable ({exclusive_err}); using shared mode")),
-        },
-    ))
+    .map_err(|e| anyhow::anyhow!("WASAPI shared-mode initialization failed: {e}"))?;
+    Ok(client)
 }
 
 /// Owns a running WASAPI exclusive/shared-mode capture stream's real-time
@@ -375,7 +391,7 @@ struct CaptureSetup {
 /// thread instead (which joins the same `COINIT_MULTITHREADED` apartment
 /// via `ensure_com_initialized()` first) means every COM object it creates
 /// simply never leaves the thread it was created on.
-fn setup_capture(device_id: &str, buffer_size_frames: u32, sample_rate: u32) -> anyhow::Result<CaptureSetup> {
+fn setup_capture(device_id: &str, buffer_size_frames: u32, sample_rate: u32, exclusive: bool) -> anyhow::Result<CaptureSetup> {
     let device = open_device(device_id)?;
     // A throwaway client, `Activate`d but never `Initialize`d, purely to
     // query the device's native channel count before committing to a
@@ -385,7 +401,7 @@ fn setup_capture(device_id: &str, buffer_size_frames: u32, sample_rate: u32) -> 
     let channels = query_native_channels(&probe_client);
     drop(probe_client);
 
-    let (client, result) = initialize_client(&device, buffer_size_frames, sample_rate, channels)?;
+    let (client, result) = initialize_client(&device, buffer_size_frames, sample_rate, channels, exclusive)?;
 
     // SAFETY: `CreateEventW` with all-`None`/`false` arguments creates an
     // anonymous, auto-reset-off, initially-unsignaled event; a valid
@@ -438,6 +454,7 @@ pub fn start_capture(
     device_id: &str,
     buffer_size_frames: u32,
     sample_rate: u32,
+    exclusive: bool,
     mut producer: HeapProd<StereoFrame>,
 ) -> anyhow::Result<(WasapiCaptureStream, ExclusiveModeResult)> {
     let device_id = device_id.to_string();
@@ -448,7 +465,7 @@ pub fn start_capture(
     let thread = std::thread::spawn(move || {
         ensure_com_initialized();
         let CaptureSetup { client, capture, event, channels, result } =
-            match setup_capture(&device_id, buffer_size_frames, sample_rate) {
+            match setup_capture(&device_id, buffer_size_frames, sample_rate, exclusive) {
                 Ok(setup) => setup,
                 Err(e) => {
                     let _ = result_tx.send(Err(e));
@@ -606,13 +623,13 @@ struct RenderSetup {
 /// same-thread requirement, plus reading `GetBufferSize()` once the client
 /// is initialized (the render loop needs its total buffer size, not just
 /// `IAudioRenderClient`).
-fn setup_render(device_id: &str, buffer_size_frames: u32, sample_rate: u32) -> anyhow::Result<RenderSetup> {
+fn setup_render(device_id: &str, buffer_size_frames: u32, sample_rate: u32, exclusive: bool) -> anyhow::Result<RenderSetup> {
     let device = open_device(device_id)?;
     let probe_client = activate_audio_client(&device)?;
     let channels = query_native_channels(&probe_client);
     drop(probe_client);
 
-    let (client, result) = initialize_client(&device, buffer_size_frames, sample_rate, channels)?;
+    let (client, result) = initialize_client(&device, buffer_size_frames, sample_rate, channels, exclusive)?;
 
     // SAFETY: see `setup_capture`'s identical `CreateEventW` call.
     let event = unsafe { CreateEventW(None, false, false, None) }?;
@@ -661,6 +678,7 @@ pub fn start_render(
     device_id: &str,
     buffer_size_frames: u32,
     sample_rate: u32,
+    exclusive: bool,
     mut consumer: HeapCons<StereoFrame>,
     mixer: MixerState,
     mut virt_producer: Option<HeapProd<StereoFrame>>,
@@ -674,7 +692,7 @@ pub fn start_render(
     let thread = std::thread::spawn(move || {
         ensure_com_initialized();
         let RenderSetup { client, render, event, channels, buffer_frames, result } =
-            match setup_render(&device_id, buffer_size_frames, sample_rate) {
+            match setup_render(&device_id, buffer_size_frames, sample_rate, exclusive) {
                 Ok(setup) => setup,
                 Err(e) => {
                     let _ = result_tx.send(Err(e));

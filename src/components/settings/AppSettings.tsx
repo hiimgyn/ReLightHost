@@ -21,6 +21,7 @@ const KEYS = {
   showOnStartup: 'appSettings.showOnStartup',
   minimize: 'minimizeToTray',
   parallelVst3Loading: 'appSettings.parallelVst3Loading',
+  wasapiExclusive: 'appSettings.wasapiExclusive',
 } as const;
 
 function readCachedBool(key: string, fallback: boolean): boolean {
@@ -39,6 +40,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   const [showAppOnStartup, setShowAppOnStartup] = useState(() => readCachedBool(KEYS.showOnStartup, true));
   const [minimizeToTray, setMinimizeToTray] = useState(() => readCachedBool(KEYS.minimize, false));
   const [parallelVst3Loading, setParallelVst3LoadingState] = useState(() => readCachedBool(KEYS.parallelVst3Loading, false));
+  const [wasapiExclusive, setWasapiExclusive] = useState(() => readCachedBool(KEYS.wasapiExclusive, false));
   const [appVersion, setAppVersion] = useState('');
   const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version?: string; notes?: string } | null>(null);
   const [checking, setChecking] = useState(false);
@@ -59,20 +61,23 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
 
   const loadSettings = async () => {
     try {
-      const [startupEnabled, minimizeEnabled, showOnStartupEnabled, parallelVst3Enabled] = await Promise.all([
+      const [startupEnabled, minimizeEnabled, showOnStartupEnabled, parallelVst3Enabled, wasapiExclusiveEnabled] = await Promise.all([
         invoke<boolean>('is_startup_enabled'),
         invoke<boolean>('get_minimize_to_tray'),
         invoke<boolean>('get_show_app_on_startup'),
         invoke<boolean>('get_parallel_vst3_loading'),
+        invoke<boolean>('get_wasapi_exclusive'),
       ]);
       setRunOnStartup(startupEnabled);
       setMinimizeToTray(minimizeEnabled);
       setShowAppOnStartup(showOnStartupEnabled);
       setParallelVst3LoadingState(parallelVst3Enabled);
+      setWasapiExclusive(wasapiExclusiveEnabled);
       localStorage.setItem(KEYS.startup, String(startupEnabled));
       localStorage.setItem(KEYS.minimize, String(minimizeEnabled));
       localStorage.setItem(KEYS.showOnStartup, String(showOnStartupEnabled));
       localStorage.setItem(KEYS.parallelVst3Loading, String(parallelVst3Enabled));
+      localStorage.setItem(KEYS.wasapiExclusive, String(wasapiExclusiveEnabled));
     } catch (error) {
       console.error('Failed to load settings:', error);
     }
@@ -121,6 +126,13 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     setParallelVst3LoadingState as React.Dispatch<React.SetStateAction<boolean>>,
     'set_parallel_vst3_loading',
     KEYS.parallelVst3Loading,
+    'enabled',
+  );
+
+  const handleWasapiExclusiveToggle = makeToggleHandler(
+    setWasapiExclusive as React.Dispatch<React.SetStateAction<boolean>>,
+    'set_wasapi_exclusive',
+    KEYS.wasapiExclusive,
     'enabled',
   );
 
@@ -224,6 +236,17 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
           </Paragraph>
         </div>
         <Switch checked={parallelVst3Loading} onChange={handleParallelVst3LoadingToggle} />
+      </div>
+
+      {/* WASAPI exclusive mode */}
+      <div style={settingRowStyle}>
+        <div style={{ flex: 1, paddingRight: 16 }}>
+          <Text strong style={{ fontSize: 13 }}>{t('appSettings.wasapiExclusive')}</Text>
+          <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 11.5 }}>
+            {t('appSettings.wasapiExclusiveDesc')}
+          </Paragraph>
+        </div>
+        <Switch checked={wasapiExclusive} onChange={handleWasapiExclusiveToggle} />
       </div>
     </div>
   );

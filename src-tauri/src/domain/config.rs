@@ -22,6 +22,12 @@ pub struct AppConfig {
     /// happen while others are mid-load instead of at a predictable point).
     #[serde(default)]
     pub parallel_vst3_loading: bool,
+    /// Try WASAPI exclusive mode (lower latency) before shared mode. Off by
+    /// default: exclusive mode takes the device away from every other app
+    /// (no system/Discord/browser audio on that output, mic unavailable to
+    /// others).
+    #[serde(default)]
+    pub wasapi_exclusive: bool,
 }
 
 /// Persisted per-session state: audio device config + mute + loopback.
@@ -44,6 +50,7 @@ impl Default for AppConfig {
             minimize_to_tray: false,
             show_app_on_startup: true,
             parallel_vst3_loading: false,
+            wasapi_exclusive: false,
         }
     }
 }
@@ -125,6 +132,17 @@ impl ConfigManager {
     pub fn set_parallel_vst3_loading(&self, enabled: bool) -> Result<()> {
         let mut config = self.config.write();
         config.parallel_vst3_loading = enabled;
+        self.save_config(&config)?;
+        Ok(())
+    }
+
+    pub fn get_wasapi_exclusive(&self) -> bool {
+        self.config.read().wasapi_exclusive
+    }
+
+    pub fn set_wasapi_exclusive(&self, enabled: bool) -> Result<()> {
+        let mut config = self.config.write();
+        config.wasapi_exclusive = enabled;
         self.save_config(&config)?;
         Ok(())
     }
@@ -220,5 +238,17 @@ mod tests {
         let content = fs::read_to_string(&scratch.0).expect("config file should exist");
         let reloaded: AppConfig = serde_json::from_str(&content).expect("should parse");
         assert!(reloaded.parallel_vst3_loading);
+    }
+
+    #[test]
+    fn wasapi_exclusive_defaults_to_shared_and_round_trips() {
+        let (scratch, manager) = scratch_manager();
+        assert!(!manager.get_wasapi_exclusive());
+        manager.set_wasapi_exclusive(true).expect("save should succeed");
+        let content = fs::read_to_string(&scratch.0).expect("config file should exist");
+        let reloaded: AppConfig = serde_json::from_str(&content).expect("should parse");
+        assert!(reloaded.wasapi_exclusive);
+        let old: AppConfig = serde_json::from_str(r#"{"custom_scan_paths":[]}"#).unwrap();
+        assert!(!old.wasapi_exclusive, "configs saved before this setting existed stay shared");
     }
 }

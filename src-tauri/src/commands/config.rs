@@ -79,3 +79,26 @@ pub fn set_parallel_vst3_loading(state: tauri::State<AppState>, enabled: bool) -
         .map_err(|e| format!("Failed to save parallel_vst3_loading: {}", e))
     .map(|_| info!("Setting updated: parallel_vst3_loading={enabled}"))
 }
+
+#[tauri::command]
+pub fn get_wasapi_exclusive(state: tauri::State<AppState>) -> bool {
+    state.config_manager.read().get_wasapi_exclusive()
+}
+
+/// Restarts a running stream so the new mode applies immediately.
+#[tauri::command]
+pub fn set_wasapi_exclusive(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+    state
+        .config_manager
+        .read()
+        .set_wasapi_exclusive(enabled)
+        .map_err(|e| format!("Failed to save wasapi_exclusive: {}", e))?;
+    let am = state.audio_manager.read();
+    am.set_wasapi_exclusive(enabled);
+    if am.get_status().is_monitoring {
+        am.toggle_monitoring(false).map_err(|e| e.to_string())?;
+        am.toggle_monitoring(true).map_err(|e| e.to_string())?;
+    }
+    info!("Setting updated: wasapi_exclusive={enabled}");
+    Ok(())
+}

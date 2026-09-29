@@ -194,6 +194,8 @@ export const vi: TranslationSchema = {
     runOnStartupDesc: 'Tự động mở ReLightHost khi khởi động máy tính',
     parallelVst3Loading: 'Tải VST3 song song (thử nghiệm)',
     parallelVst3LoadingDesc: 'Tải các plugin VST3 cùng lúc thay vì lần lượt — restore nhanh hơn khi có plugin nặng trong chuỗi, nhưng nếu 1 plugin crash native thì có thể xảy ra ngay khi các plugin khác đang tải dở, thay vì ở một thời điểm dễ đoán như trước — và vẫn sập cả app như cũ dù bật hay tắt tùy chọn này.',
+    wasapiExclusive: 'Chế độ WASAPI độc quyền (Exclusive)',
+    wasapiExclusiveDesc: 'Độ trễ thấp hơn trên thiết bị WASAPI, nhưng chiếm thiết bị khỏi mọi app khác — không còn âm thanh hệ thống, trình duyệt, Discord trên đầu ra đó, và app khác không dùng được micro đó. Tự quay về chế độ chia sẻ nếu thiết bị từ chối.',
     showOnStartup: 'Hiện cửa sổ khi khởi động',
     showOnStartupDesc: 'Khi bật, cửa sổ ứng dụng sẽ xuất hiện sau khi đăng nhập. Khi tắt, ứng dụng khởi động ẩn dưới khay hệ thống.',
     minimizeToTray: 'Thu nhỏ xuống khay hệ thống',

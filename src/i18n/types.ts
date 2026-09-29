@@ -194,6 +194,8 @@ export interface TranslationSchema {
     runOnStartupDesc: string;
     parallelVst3Loading: string;
     parallelVst3LoadingDesc: string;
+    wasapiExclusive: string;
+    wasapiExclusiveDesc: string;
     showOnStartup: string;
     showOnStartupDesc: string;
     minimizeToTray: string;

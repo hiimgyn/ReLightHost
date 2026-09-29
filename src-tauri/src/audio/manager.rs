@@ -207,6 +207,8 @@ pub struct AudioManager {
     /// Rate the running stream actually uses (an ASIO driver may refuse the
     /// configured one); 0 when not monitoring.
     effective_rate: AtomicU32,
+    /// Try WASAPI exclusive mode first (AppConfig::wasapi_exclusive).
+    wasapi_exclusive: AtomicBool,
 }
 
 impl AudioManager {
@@ -226,6 +228,7 @@ impl AudioManager {
             exclusive_mode_active: Arc::new(RwLock::new(false)),
             wasapi_fallback_reason: Arc::new(RwLock::new(None)),
             effective_rate:   AtomicU32::new(0),
+            wasapi_exclusive: AtomicBool::new(false),
         }
     }
 
@@ -336,6 +339,7 @@ impl AudioManager {
         }
 
         let config = self.config.read().clone();
+        let exclusive = self.wasapi_exclusive.load(Ordering::Relaxed);
 
         // -----------------------------------------------------------------
         // Same-ASIO-device (full-duplex insert, e.g. a Voicemeeter insert)
@@ -531,7 +535,7 @@ impl AudioManager {
                 PendingBridgedInput::Asio
             } else {
                 let raw = input_id.strip_prefix("in_").unwrap_or(&input_id);
-                let (stream, result) = wasapi::start_capture(raw, config.buffer_size, rate, producer)
+                let (stream, result) = wasapi::start_capture(raw, config.buffer_size, rate, exclusive, producer)
                     .map_err(|e| anyhow::anyhow!("Failed to start WASAPI input '{raw}': {e}"))?;
                 input_wasapi_result = Some(result);
                 PendingBridgedInput::Wasapi(stream)
@@ -569,7 +573,7 @@ impl AudioManager {
                 }
                 Some(ref id) => {
                     let raw = id.strip_prefix("out_").unwrap_or(id.as_str());
-                    match wasapi::start_render(raw, config.buffer_size, rate, consumer, mixer_state, virt_producer) {
+                    match wasapi::start_render(raw, config.buffer_size, rate, exclusive, consumer, mixer_state, virt_producer) {
                         Ok((stream, result)) => {
                             output_wasapi_result = Some(result);
                             Some(PendingBridgedOutput::Wasapi(stream))
@@ -615,7 +619,7 @@ impl AudioManager {
                     // smear the real one's count.
                     underrun_count: Arc::new(AtomicU64::new(0)),
                 };
-                match wasapi::start_render(&id, config.buffer_size, rate, consumer, passthrough_mixer, None) {
+                match wasapi::start_render(&id, config.buffer_size, rate, false, consumer, passthrough_mixer, None) {
                     Ok((stream, _result)) => Some(stream),
                     Err(e) => {
                         log::warn!("{} Failed to start virtual output stream: {e}; continuing without it", crate::core::threading::thread_prefix("audio/monitor"));
@@ -688,6 +692,11 @@ impl AudioManager {
             if has_virt { " + hardware out" } else { "" },
         );
         Ok(())
+    }
+
+    /// Takes effect the next time monitoring starts.
+    pub fn set_wasapi_exclusive(&self, enabled: bool) {
+        self.wasapi_exclusive.store(enabled, Ordering::Relaxed);
     }
 
     /// Set output mute state.

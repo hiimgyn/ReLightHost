@@ -145,6 +145,8 @@ pub fn run() {
         },
     };
 
+    audio_manager.read().set_wasapi_exclusive(config_manager.read().get_wasapi_exclusive());
+
     crate::core::autosave::init_autosave_worker(&app_state);
 
     // Wire the plugin chain into the audio manager.
@@ -219,6 +221,8 @@ pub fn run() {
             commands::plugin::get_noise_suppressor_vad,
             commands::config::get_parallel_vst3_loading,
             commands::config::set_parallel_vst3_loading,
+            commands::config::get_wasapi_exclusive,
+            commands::config::set_wasapi_exclusive,
             commands::plugin::get_plugin_parameters,
             commands::system::open_external_url,
             commands::system::quit_app,

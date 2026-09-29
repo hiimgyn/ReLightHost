@@ -105,6 +105,12 @@ impl PresetManager {
         Ok(Self { presets_dir })
     }
 
+    /// Manager rooted at an explicit directory (tests).
+    #[cfg(test)]
+    pub(crate) fn with_dir(presets_dir: PathBuf) -> Self {
+        Self { presets_dir }
+    }
+
     fn get_presets_directory() -> Result<PathBuf> {
         let mut path = dirs::data_local_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not locate local data directory"))?;

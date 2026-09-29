@@ -31,6 +31,9 @@ pub(crate) fn restore_session_impl(
         });
     }
     log::info!("{} Session restore started", crate::core::threading::thread_prefix("restore/main"));
+    // Cleared below once the chain is complete — at the end of this function,
+    // or by the vst3-replay thread when state replay is deferred.
+    crate::core::autosave::set_restore_in_progress(true);
 
     let mut audio_restored: bool = false;
     let mut plugins_restored: usize = 0;
@@ -238,6 +241,7 @@ pub(crate) fn restore_session_impl(
                     // Only emit the startup chain-changed event after VST3 replay
                     // completes so autosave cannot capture a partially restored state.
                     vst3_restore_ready.store(true, Ordering::Release);
+                    crate::core::autosave::set_restore_in_progress(false);
                     log::info!("{} VST3 replay thread finished", crate::core::threading::thread_prefix("restore/replay"));
                     crate::app_events::emit_plugin_chain_changed("restore_session_vst3_replay_done", None);
                 }) {
@@ -284,6 +288,13 @@ pub(crate) fn restore_session_impl(
 
     // If VST3 replay was deferred, the background thread emits the chain event
     // after the replay completes. Otherwise, emit it immediately here.
+
+    // No deferred VST3 replay pending (none needed, or its thread failed to
+    // spawn) → the chain is complete now; save it once.
+    if state.startup.vst3_restore_ready.load(Ordering::Acquire) {
+        crate::core::autosave::set_restore_in_progress(false);
+        crate::core::autosave::request_plugin_chain_autosave();
+    }
 
     let total_ms = restore_t0.elapsed().as_millis();
     log::info!(

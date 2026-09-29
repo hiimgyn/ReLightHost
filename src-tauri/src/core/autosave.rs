@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 
@@ -36,6 +36,15 @@ pub(crate) fn init_autosave_worker(state: &crate::AppState) {
             log::error!("Failed to spawn autosave worker: {e}; autosave will be disabled for this session");
         }
     }
+}
+
+/// True while `restore_session_impl` (and its deferred VST3 replay) is
+/// rebuilding the chain. Snapshots taken then would capture an empty or
+/// default-state chain and overwrite the real autosave.
+static RESTORE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_restore_in_progress(active: bool) {
+    RESTORE_IN_PROGRESS.store(active, Ordering::Release);
 }
 
 pub fn request_plugin_chain_autosave() {
@@ -79,6 +88,9 @@ fn save_autosave_snapshot(
     preset_manager: &Arc<parking_lot::RwLock<crate::domain::preset::PresetManager>>,
     autosave_last_hash: &Arc<AtomicU64>,
 ) {
+    if RESTORE_IN_PROGRESS.load(Ordering::Acquire) {
+        return;
+    }
     let preset = build_chain_preset_from_manager(plugin_manager, "autosave");
     let hash = preset_hash_bytes(&preset);
 
@@ -97,5 +109,30 @@ fn save_autosave_snapshot(
             }
         }
         Err(e) => log::warn!("Failed to auto-save plugin chain: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_is_skipped_while_restore_is_in_progress() {
+        let dir = std::env::temp_dir().join(format!("rh-autosave-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("autosave.json");
+        let _ = std::fs::remove_file(&file);
+        let presets = Arc::new(parking_lot::RwLock::new(crate::domain::preset::PresetManager::with_dir(dir.clone())));
+        let plugins = Arc::new(crate::plugins::PluginInstanceManager::new());
+        let hash = Arc::new(AtomicU64::new(0));
+
+        set_restore_in_progress(true);
+        save_autosave_snapshot(&plugins, &presets, &hash);
+        assert!(!file.exists(), "autosave wrote a snapshot mid-restore");
+
+        set_restore_in_progress(false);
+        save_autosave_snapshot(&plugins, &presets, &hash);
+        assert!(file.exists(), "autosave did not resume after restore finished");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

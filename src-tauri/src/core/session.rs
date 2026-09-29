@@ -23,9 +23,9 @@ pub(crate) fn restore_session_impl(
             "{} restore_session: already restored, skipping duplicate call",
             crate::core::threading::thread_prefix("restore/guard")
         );
-        let plugins_restored = state.plugin_manager.read().get_instances().len();
+        let plugins_restored = state.plugin_manager.get_instances().len();
         return Ok(crate::SessionRestoreResult {
-            audio_restored: state.audio_manager.read().get_status().is_monitoring,
+            audio_restored: state.audio_manager.get_status().is_monitoring,
             plugins_restored,
             needs_deferred_start: false,
             deferred_start_ms: 0,
@@ -42,25 +42,25 @@ pub(crate) fn restore_session_impl(
     let mut safe_start_deadline: Option<Instant> = None;
     let mut monitoring_started_early = false;
     // ── 1. Audio config (stop stream only — do NOT restart yet) ───────────
-    if let Some(session) = state.config_manager.read().load_session() {
+    if let Some(session) = state.config_manager.load_session() {
         // Ensure any pre-opened stream is stopped before we swap device config.
-        let _ = state.audio_manager.read().toggle_monitoring(false);
-        state.audio_manager.read().restore_config(session.audio);
-        state.audio_manager.read().set_muted(session.muted);
+        let _ = state.audio_manager.toggle_monitoring(false);
+        state.audio_manager.restore_config(session.audio);
+        state.audio_manager.set_muted(session.muted);
         let tray_state = app.state::<crate::TrayState>();
         crate::bootstrap::tray::sync_audio_tray_state(app, &tray_state, session.muted);
-        let _ = state.audio_manager.read().set_loopback(session.loopback_enabled);
+        let _ = state.audio_manager.set_loopback(session.loopback_enabled);
         audio_restored = true;
         log::info!("{} ✅ Audio session restored", crate::core::threading::thread_prefix("restore/main"));
     }
 
     // buffer handed to Voicemeeter Insert already has the full chain active.
     // Guard: do not reload if the chain already has items (StrictMode double-invoke).
-    let chain_empty = state.plugin_manager.read().get_instances().is_empty();
+    let chain_empty = state.plugin_manager.get_instances().is_empty();
     if chain_empty {
-        if let Ok(preset) = state.preset_manager.read().restore_auto_save() {
+        if let Ok(preset) = state.preset_manager.restore_auto_save() {
             let plugin_restore_t0 = Instant::now();
-            let config = state.audio_manager.read().get_config();
+            let config = state.audio_manager.get_config();
             let restored_has_vst3 = preset
                 .plugin_chain
                 .iter()
@@ -71,7 +71,7 @@ pub(crate) fn restore_session_impl(
                 .map(|id| id.to_lowercase().contains("voicemeeter"))
                 .unwrap_or(false);
 
-            state.plugin_manager.read().clear();
+            state.plugin_manager.clear();
 
             if restored_has_vst3 {
                 safe_delay_ms = safe_delay_ms.max(VST3_STARTUP_DELAY_MS);
@@ -97,7 +97,7 @@ pub(crate) fn restore_session_impl(
                 );
 
                 if restored_has_vst3 && !is_voicemeeter {
-                    if let Err(e) = state.audio_manager.read().toggle_monitoring(true) {
+                    if let Err(e) = state.audio_manager.toggle_monitoring(true) {
                         log::warn!("{} Failed to early-start monitoring before VST3 restore: {e}", crate::core::threading::thread_prefix("restore/main"));
                     } else {
                         monitoring_started_early = true;
@@ -115,7 +115,7 @@ pub(crate) fn restore_session_impl(
 
             // The stream may already be running (early start) at a rate an
             // ASIO driver chose over the configured one.
-            let sample_rate = state.audio_manager.read().processing_rate();
+            let sample_rate = state.audio_manager.processing_rate();
             let buffer_size = config.buffer_size;
 
             let mut infos: Vec<PluginInfo> = Vec::new();
@@ -162,10 +162,9 @@ pub(crate) fn restore_session_impl(
             // count; this carries the denominator.
             crate::app_events::emit_plugin_chain_changed("restore_total", Some(&infos.len().to_string()));
 
-            let parallel_vst3 = state.config_manager.read().get_parallel_vst3_loading();
+            let parallel_vst3 = state.config_manager.get_parallel_vst3_loading();
             let results = state
                 .plugin_manager
-                .read()
                 .load_plugins_parallel_results(infos, sample_rate, buffer_size as usize, parallel_vst3);
 
             log::info!(
@@ -188,7 +187,7 @@ pub(crate) fn restore_session_impl(
                 plugins_restored += 1;
                 let restoring_vst3 = format == crate::plugins::PluginFormat::VST3;
 
-                if let Some(instance) = state.plugin_manager.read().get_instance(&instance_id) {
+                if let Some(instance) = state.plugin_manager.get_instance(&instance_id) {
                     instance.set_bypassed(bypassed);
 
                     if restoring_vst3 {
@@ -230,7 +229,7 @@ pub(crate) fn restore_session_impl(
                     // Wait a short time to let plugin load/initialization stabilise.
                     std::thread::sleep(VST3_STATE_REPLAY_DELAY);
                     for (inst_id, opt_blob, params) in vst3_replays.into_iter() {
-                        if let Some(inst) = plugin_manager.read().get_instance(&inst_id) {
+                        if let Some(inst) = plugin_manager.get_instance(&inst_id) {
                             if let Some(blob) = opt_blob {
                                 // set_state_binary handles COM init where required.
                                 inst.set_state_binary(&blob);
@@ -281,7 +280,7 @@ pub(crate) fn restore_session_impl(
         if monitoring_started_early {
             log::info!("{} Monitoring already started early during VST3 restore", crate::core::threading::thread_prefix("restore/main"));
         } else if !needs_deferred_start {
-            if let Err(e) = state.audio_manager.read().toggle_monitoring(true) {
+            if let Err(e) = state.audio_manager.toggle_monitoring(true) {
                 log::warn!("{} Failed to auto-start monitoring on session restore: {e}", crate::core::threading::thread_prefix("restore/main"));
             }
         } else {

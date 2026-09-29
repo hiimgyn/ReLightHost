@@ -10,11 +10,11 @@ pub(crate) fn shutdown_for_exit(app: &tauri::AppHandle) {
         &state.autosave.last_hash,
     );
 
-    if let Err(e) = state.audio_manager.read().stop() {
+    if let Err(e) = state.audio_manager.stop() {
         log::warn!("Failed to stop audio during shutdown: {e}");
     }
 
-    state.plugin_manager.read().clear();
+    state.plugin_manager.clear();
 }
 
 #[derive(serde::Serialize)]

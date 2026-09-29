@@ -65,7 +65,7 @@ pub fn shutdown_autosave_worker() {
 /// stop the worker.
 pub(crate) fn flush_on_exit(
     plugin_manager: &Arc<crate::plugins::PluginInstanceManager>,
-    preset_manager: &Arc<parking_lot::RwLock<crate::domain::preset::PresetManager>>,
+    preset_manager: &Arc<crate::domain::preset::PresetManager>,
     autosave_last_hash: &Arc<AtomicU64>,
 ) {
     for instance in plugin_manager.get_instances_arc() {
@@ -78,7 +78,7 @@ pub(crate) fn flush_on_exit(
 fn run_autosave_worker(
     rx: Receiver<AutosaveRequest>,
     plugin_manager: Arc<crate::plugins::PluginInstanceManager>,
-    preset_manager: Arc<parking_lot::RwLock<crate::domain::preset::PresetManager>>,
+    preset_manager: Arc<crate::domain::preset::PresetManager>,
     autosave_last_hash: Arc<AtomicU64>,
 ) {
     loop {
@@ -101,7 +101,7 @@ fn run_autosave_worker(
 
 fn save_autosave_snapshot(
     plugin_manager: &Arc<crate::plugins::PluginInstanceManager>,
-    preset_manager: &Arc<parking_lot::RwLock<crate::domain::preset::PresetManager>>,
+    preset_manager: &Arc<crate::domain::preset::PresetManager>,
     autosave_last_hash: &Arc<AtomicU64>,
 ) {
     if RESTORE_IN_PROGRESS.load(Ordering::Acquire) {
@@ -129,7 +129,7 @@ fn save_autosave_snapshot(
         return;
     }
 
-    match preset_manager.read().save_preset_json(&preset.name, &json) {
+    match preset_manager.save_preset_json(&preset.name, &json) {
         Ok(_) => autosave_last_hash.store(hash, Ordering::Release),
         Err(e) => log::warn!("Failed to auto-save plugin chain: {e}"),
     }
@@ -149,7 +149,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("autosave.json");
         let _ = std::fs::remove_file(&file);
-        let presets = Arc::new(parking_lot::RwLock::new(crate::domain::preset::PresetManager::with_dir(dir.clone())));
+        let presets = Arc::new(crate::domain::preset::PresetManager::with_dir(dir.clone()));
         let plugins = Arc::new(crate::plugins::PluginInstanceManager::new());
         let hash = Arc::new(AtomicU64::new(0));
 
@@ -170,7 +170,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("autosave.json");
         let _ = std::fs::remove_file(&file);
-        let presets = Arc::new(parking_lot::RwLock::new(crate::domain::preset::PresetManager::with_dir(dir.clone())));
+        let presets = Arc::new(crate::domain::preset::PresetManager::with_dir(dir.clone()));
         let plugins = Arc::new(crate::plugins::PluginInstanceManager::new());
         let info = crate::plugins::PluginInfo {
             id: "builtin::compressor".into(),

@@ -16,7 +16,7 @@ pub fn setup_main_window(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> 
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     let state = app_handle.state::<crate::AppState>();
-                    if state.config_manager.read().get_minimize_to_tray() {
+                    if state.config_manager.get_minimize_to_tray() {
                         api.prevent_close();
                         if let Some(w) = app_handle.get_webview_window("main") {
                             let _ = w.emit("rh:window-visibility", false);

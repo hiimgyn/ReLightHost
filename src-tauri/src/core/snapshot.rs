@@ -11,7 +11,7 @@ pub fn build_chain_preset_from_manager(
 ) -> Preset {
     // Single lock acquisition; instances and their info stay in chain order,
     // so we can zip by position instead of re-searching by instance_id per item.
-    let instances = plugin_manager.read().get_instances_arc();
+    let instances = plugin_manager.get_instances_arc();
     let chain: Vec<_> = instances.iter().map(|i| i.get_info()).collect();
     let mut preset = Preset::new(name.into(), chain);
 

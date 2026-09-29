@@ -648,14 +648,6 @@ impl PluginInstanceManager {
         }
     }
 
-    /// Compatibility helper for existing call sites expecting RwLock::read.
-    /// Since PluginInstanceManager is internally lock-free and thread-safe,
-    /// this returns &self with zero locking overhead.
-    #[inline(always)]
-    pub fn read(&self) -> &Self {
-        self
-    }
-
     /// Load a plugin and create an instance.
     ///
     /// `sample_rate` / `block_size` are forwarded to the VST3 processor for

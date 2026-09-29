@@ -3,14 +3,13 @@ use log::info;
 
 #[tauri::command]
 pub fn get_custom_scan_paths(state: tauri::State<AppState>) -> Result<Vec<String>, String> {
-    Ok(state.config_manager.read().get_custom_paths())
+    Ok(state.config_manager.get_custom_paths())
 }
 
 #[tauri::command]
 pub fn add_custom_scan_path(state: tauri::State<AppState>, path: String) -> Result<(), String> {
     state
         .config_manager
-        .read()
         .add_custom_path(path)
         .map_err(|e| format!("Failed to add custom path: {}", e))
 }
@@ -19,21 +18,19 @@ pub fn add_custom_scan_path(state: tauri::State<AppState>, path: String) -> Resu
 pub fn remove_custom_scan_path(state: tauri::State<AppState>, path: String) -> Result<(), String> {
     state
         .config_manager
-        .read()
         .remove_custom_path(&path)
         .map_err(|e| format!("Failed to remove custom path: {}", e))
 }
 
 #[tauri::command]
 pub fn get_minimize_to_tray(state: tauri::State<AppState>) -> bool {
-    state.config_manager.read().get_minimize_to_tray()
+    state.config_manager.get_minimize_to_tray()
 }
 
 #[tauri::command]
 pub fn set_minimize_to_tray(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
     state
         .config_manager
-        .read()
         .set_minimize_to_tray(enabled)
         .map_err(|e| format!("Failed to save minimize_to_tray: {}", e))
     .map(|_| info!("Setting updated: minimize_to_tray={enabled}"))
@@ -41,14 +38,13 @@ pub fn set_minimize_to_tray(state: tauri::State<AppState>, enabled: bool) -> Res
 
 #[tauri::command]
 pub fn get_show_app_on_startup(state: tauri::State<AppState>) -> bool {
-    state.config_manager.read().get_show_app_on_startup()
+    state.config_manager.get_show_app_on_startup()
 }
 
 #[tauri::command]
 pub fn set_show_app_on_startup(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
     state
         .config_manager
-        .read()
         .set_show_app_on_startup(enabled)
         .map_err(|e| format!("Failed to save show_app_on_startup: {}", e))?;
 
@@ -67,14 +63,13 @@ pub fn set_show_app_on_startup(state: tauri::State<AppState>, enabled: bool) -> 
 /// `restore_session` or preset load) — not for an already-running session.
 #[tauri::command]
 pub fn get_parallel_vst3_loading(state: tauri::State<AppState>) -> bool {
-    state.config_manager.read().get_parallel_vst3_loading()
+    state.config_manager.get_parallel_vst3_loading()
 }
 
 #[tauri::command]
 pub fn set_parallel_vst3_loading(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
     state
         .config_manager
-        .read()
         .set_parallel_vst3_loading(enabled)
         .map_err(|e| format!("Failed to save parallel_vst3_loading: {}", e))
     .map(|_| info!("Setting updated: parallel_vst3_loading={enabled}"))
@@ -82,7 +77,7 @@ pub fn set_parallel_vst3_loading(state: tauri::State<AppState>, enabled: bool) -
 
 #[tauri::command]
 pub fn get_wasapi_exclusive(state: tauri::State<AppState>) -> bool {
-    state.config_manager.read().get_wasapi_exclusive()
+    state.config_manager.get_wasapi_exclusive()
 }
 
 /// Restarts a running stream so the new mode applies immediately.
@@ -90,10 +85,9 @@ pub fn get_wasapi_exclusive(state: tauri::State<AppState>) -> bool {
 pub fn set_wasapi_exclusive(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
     state
         .config_manager
-        .read()
         .set_wasapi_exclusive(enabled)
         .map_err(|e| format!("Failed to save wasapi_exclusive: {}", e))?;
-    let am = state.audio_manager.read();
+    let am = &state.audio_manager;
     am.set_wasapi_exclusive(enabled);
     if am.get_status().is_monitoring {
         am.toggle_monitoring(false).map_err(|e| e.to_string())?;

@@ -26,7 +26,7 @@ fn create_auto_launch(show_app_on_startup: bool) -> Result<auto_launch::AutoLaun
 }
 
 pub(crate) fn is_startup_enabled_inner(state: &AppState) -> Result<bool, String> {
-    let show_app_on_startup = state.config_manager.read().get_show_app_on_startup();
+    let show_app_on_startup = state.config_manager.get_show_app_on_startup();
     let auto_launch = create_auto_launch(show_app_on_startup)?;
     auto_launch
         .is_enabled()
@@ -34,7 +34,7 @@ pub(crate) fn is_startup_enabled_inner(state: &AppState) -> Result<bool, String>
 }
 
 pub(crate) fn toggle_startup_inner(enable: bool, state: &AppState) -> Result<(), String> {
-    let show_app_on_startup = state.config_manager.read().get_show_app_on_startup();
+    let show_app_on_startup = state.config_manager.get_show_app_on_startup();
     let auto_launch = create_auto_launch(show_app_on_startup)?;
 
     if enable {

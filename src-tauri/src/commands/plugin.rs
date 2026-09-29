@@ -37,10 +37,9 @@ fn wait_for_vst3_restore_ready(state: &AppState) {
 /// Rayon worker threads), so it must not hold the main thread.
 #[tauri::command(async)]
 pub fn scan_plugins(state: tauri::State<'_, AppState>) -> Result<Vec<PluginInfo>, String> {
-    let custom_paths = state.config_manager.read().get_custom_paths();
+    let custom_paths = state.config_manager.get_custom_paths();
     state
         .plugin_scanner
-        .read()
         .scan(&custom_paths)
         .map_err(|e| format!("Failed to scan plugins: {}", e))
 }
@@ -48,12 +47,11 @@ pub fn scan_plugins(state: tauri::State<'_, AppState>) -> Result<Vec<PluginInfo>
 #[tauri::command]
 pub fn load_plugin(state: tauri::State<AppState>, info: PluginInfo) -> Result<String, String> {
     let (rate, block) = {
-        let am = state.audio_manager.read();
+        let am = &state.audio_manager;
         (am.processing_rate(), am.get_config().buffer_size as usize)
     };
     let id = state
         .plugin_manager
-        .read()
         .load_plugin(info, rate, block)
         .map_err(|e| format!("Failed to load plugin: {}", e))?;
     crate::app_events::emit_plugin_chain_changed("load", Some(&id));
@@ -64,7 +62,6 @@ pub fn load_plugin(state: tauri::State<AppState>, info: PluginInfo) -> Result<St
 pub fn remove_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
     state
         .plugin_manager
-        .read()
         .remove_instance(&instance_id)
         .map_err(|e| format!("Failed to remove plugin: {}", e))?;
     crate::app_events::emit_plugin_chain_changed("remove", Some(&instance_id));
@@ -73,12 +70,12 @@ pub fn remove_plugin(state: tauri::State<AppState>, instance_id: String) -> Resu
 
 #[tauri::command]
 pub fn get_plugin_chain(state: tauri::State<AppState>) -> Result<Vec<PluginInstanceInfo>, String> {
-    Ok(state.plugin_manager.read().get_instances())
+    Ok(state.plugin_manager.get_instances())
 }
 
 #[tauri::command]
 pub fn set_plugin_bypass(state: tauri::State<AppState>, instance_id: String, bypass: bool) -> Result<(), String> {
-    if let Some(inst) = state.plugin_manager.read().get_instance(&instance_id) {
+    if let Some(inst) = state.plugin_manager.get_instance(&instance_id) {
         inst.set_bypassed(bypass);
         crate::app_events::emit_plugin_chain_changed("bypass", Some(&instance_id));
         Ok(())
@@ -94,7 +91,7 @@ pub fn set_plugin_parameter(
     param_id: u32,
     value: f64,
 ) -> Result<(), String> {
-    if let Some(inst) = state.plugin_manager.read().get_instance(&instance_id) {
+    if let Some(inst) = state.plugin_manager.get_instance(&instance_id) {
         inst.set_parameter(param_id, value);
         crate::app_events::emit_plugin_chain_changed("parameter_update", Some(&instance_id));
         Ok(())
@@ -105,7 +102,7 @@ pub fn set_plugin_parameter(
 
 #[tauri::command]
 pub fn rename_plugin(state: tauri::State<AppState>, instance_id: String, new_name: String) -> Result<(), String> {
-    if let Some(inst) = state.plugin_manager.read().get_instance(&instance_id) {
+    if let Some(inst) = state.plugin_manager.get_instance(&instance_id) {
         inst.rename(new_name);
         crate::app_events::emit_plugin_chain_changed("rename", Some(&instance_id));
         Ok(())
@@ -119,7 +116,7 @@ pub fn get_plugin_parameters(
     state: tauri::State<AppState>,
     instance_id: String,
 ) -> Result<Vec<crate::plugins::types::PluginParameter>, String> {
-    if let Some(inst) = state.plugin_manager.read().get_instance(&instance_id) {
+    if let Some(inst) = state.plugin_manager.get_instance(&instance_id) {
         Ok(inst.get_info().parameters)
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
@@ -130,7 +127,6 @@ pub fn get_plugin_parameters(
 pub fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to_index: usize) -> Result<(), String> {
     state
         .plugin_manager
-        .read()
         .reorder(from_index, to_index)
         .map_err(|e| format!("Failed to reorder plugin chain: {}", e))?;
     crate::app_events::emit_plugin_chain_changed("reorder", None);
@@ -141,7 +137,6 @@ pub fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to
 pub fn swap_plugin_chain(state: tauri::State<AppState>, first_index: usize, second_index: usize) -> Result<(), String> {
     state
         .plugin_manager
-        .read()
         .swap(first_index, second_index)
         .map_err(|e| format!("Failed to swap plugin chain: {}", e))?;
     crate::app_events::emit_plugin_chain_changed("swap", None);
@@ -151,7 +146,7 @@ pub fn swap_plugin_chain(state: tauri::State<AppState>, first_index: usize, seco
 #[tauri::command]
 pub fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
     let instance_opt = {
-        let manager = state.plugin_manager.read();
+        let manager = &state.plugin_manager;
         manager.get_instance(&instance_id)
     };
     if let Some(instance) = instance_opt {
@@ -185,7 +180,6 @@ pub fn launch_plugins(
         Some(v) if !v.is_empty() => v,
         _ => state
             .plugin_manager
-            .read()
             .get_instances()
             .into_iter()
             .filter(|p| !matches!(p.format, PluginFormat::Builtin) && !p.gui_open)
@@ -208,7 +202,6 @@ pub fn launch_plugins(
     let has_vst3 = ids.iter().any(|id| {
         state
             .plugin_manager
-            .read()
             .get_instance(id)
             .map(|instance| instance.get_info().format == PluginFormat::VST3)
             .unwrap_or(false)
@@ -220,7 +213,7 @@ pub fn launch_plugins(
 
     for id in ids {
         let instance_opt = {
-            let manager = state.plugin_manager.read();
+            let manager = &state.plugin_manager;
             manager.get_instance(&id)
         };
         let Some(instance) = instance_opt else {
@@ -271,7 +264,6 @@ pub fn close_plugins(
         Some(v) if !v.is_empty() => v,
         _ => state
             .plugin_manager
-            .read()
             .get_instances()
             .into_iter()
             .filter(|p| p.gui_open)
@@ -293,7 +285,7 @@ pub fn close_plugins(
 
     for id in ids {
         let instance_opt = {
-            let manager = state.plugin_manager.read();
+            let manager = &state.plugin_manager;
             manager.get_instance(&id)
         };
         let Some(instance) = instance_opt else {
@@ -323,7 +315,7 @@ pub fn close_plugins(
 
 #[tauri::command]
 pub fn get_plugin_crash_statuses(state: tauri::State<AppState>) -> Result<Vec<PluginCrashStatusItem>, String> {
-    let manager = state.plugin_manager.read();
+    let manager = &state.plugin_manager;
     Ok(manager
         .get_crash_statuses()
         .into_iter()
@@ -333,7 +325,7 @@ pub fn get_plugin_crash_statuses(state: tauri::State<AppState>) -> Result<Vec<Pl
 
 #[tauri::command]
 pub fn get_noise_suppressor_vad(state: tauri::State<AppState>, instance_id: String) -> Result<f32, String> {
-    let manager = state.plugin_manager.read();
+    let manager = &state.plugin_manager;
     if let Some(instance) = manager.get_instance(&instance_id) {
         Ok(instance.get_builtin_vad())
     } else {
@@ -346,7 +338,7 @@ pub fn get_plugin_crash_status(
     state: tauri::State<AppState>,
     instance_id: String,
 ) -> Result<crate::plugins::PluginStatus, String> {
-    let manager = state.plugin_manager.read();
+    let manager = &state.plugin_manager;
     if let Some(instance) = manager.get_instance(&instance_id) {
         Ok(instance.get_crash_status())
     } else {
@@ -356,7 +348,7 @@ pub fn get_plugin_crash_status(
 
 #[tauri::command]
 pub fn reset_plugin_crash_protection(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
-    let manager = state.plugin_manager.read();
+    let manager = &state.plugin_manager;
     if let Some(instance) = manager.get_instance(&instance_id) {
         instance.reset_crash_protection();
         Ok(())

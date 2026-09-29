@@ -21,12 +21,12 @@ pub(crate) use core::{app_events, session, timing};
 // Global audio manager
 #[derive(Clone)]
 pub(crate) struct AppState {
-    audio_manager: Arc<RwLock<AudioManager>>,
+    audio_manager: Arc<AudioManager>,
     vu_meter: Arc<audio::VUMeter>,
-    plugin_scanner: Arc<RwLock<PluginScanner>>,
+    plugin_scanner: Arc<PluginScanner>,
     plugin_manager: Arc<PluginInstanceManager>,
-    preset_manager: Arc<RwLock<PresetManager>>,
-    config_manager: Arc<RwLock<ConfigManager>>,
+    preset_manager: Arc<PresetManager>,
+    config_manager: Arc<ConfigManager>,
     sys_info: Arc<RwLock<sysinfo::System>>,
     /// Autosave-related state.
     autosave: AutosaveState,
@@ -62,10 +62,10 @@ pub(crate) use crate::session::restore_session_impl;
 /// Persist current audio config + mute state to session.json.
 /// Called after any audio setting change so the next app launch can restore it.
 pub(crate) fn save_audio_session_to_disk(state: &AppState) {
-    let config = state.audio_manager.read().get_config();
-    let muted  = state.audio_manager.read().is_muted();
-    let loopback_enabled = state.audio_manager.read().is_loopback_enabled();
-    if let Err(e) = state.config_manager.read().save_session(&config, muted, loopback_enabled) {
+    let config = state.audio_manager.get_config();
+    let muted  = state.audio_manager.is_muted();
+    let loopback_enabled = state.audio_manager.is_loopback_enabled();
+    if let Err(e) = state.config_manager.save_session(&config, muted, loopback_enabled) {
         log::warn!("Failed to save audio session: {e}");
     }
 }
@@ -104,19 +104,17 @@ pub fn run() {
 
     let audio_mgr      = AudioManager::new();
     let vu_meter       = audio_mgr.vu_meter();
-    let audio_manager  = Arc::new(RwLock::new(audio_mgr));
-    let plugin_scanner = Arc::new(RwLock::new(PluginScanner::new()));
+    let audio_manager  = Arc::new(audio_mgr);
+    let plugin_scanner = Arc::new(PluginScanner::new());
     let plugin_manager = Arc::new(PluginInstanceManager::new());
-    let preset_manager = Arc::new(RwLock::new(PresetManager::default()));
-    let config_manager = Arc::new(RwLock::new(
-        match ConfigManager::new() {
-            Ok(cm) => cm,
-            Err(e) => {
-                log::error!("Failed to initialize config manager: {}. Using in-memory default.", e);
-                ConfigManager::default()
-            }
+    let preset_manager = Arc::new(PresetManager::default());
+    let config_manager = Arc::new(match ConfigManager::new() {
+        Ok(cm) => cm,
+        Err(e) => {
+            log::error!("Failed to initialize config manager: {}. Using in-memory default.", e);
+            ConfigManager::default()
         }
-    ));
+    });
     let sys_info = Arc::new(RwLock::new({
         use sysinfo::{System, RefreshKind, CpuRefreshKind, MemoryRefreshKind};
         let mut s = System::new_with_specifics(
@@ -145,7 +143,7 @@ pub fn run() {
         },
     };
 
-    audio_manager.read().set_wasapi_exclusive(config_manager.read().get_wasapi_exclusive());
+    audio_manager.set_wasapi_exclusive(config_manager.get_wasapi_exclusive());
 
     crate::core::autosave::init_autosave_worker(&app_state);
 
@@ -155,7 +153,7 @@ pub fn run() {
     //   INPUT node → plugin1 → plugin2 → ... → OUTPUT node
     {
         let pm = Arc::clone(&plugin_manager);
-        audio_manager.read().set_process_callback(move |left, right| {
+        audio_manager.set_process_callback(move |left, right| {
             // Lock-free RCU plugin chain execution: zero lock contention, zero audio dropouts.
             pm.process_chain_stereo(left, right);
         });

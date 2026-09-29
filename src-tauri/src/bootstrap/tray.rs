@@ -78,8 +78,8 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
     use tauri::menu::{IconMenuItem, Menu, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let initial_muted = app.state::<crate::AppState>().audio_manager.read().is_muted();
-    let initial_loopback = app.state::<crate::AppState>().audio_manager.read().is_loopback_enabled();
+    let initial_muted = app.state::<crate::AppState>().audio_manager.is_muted();
+    let initial_loopback = app.state::<crate::AppState>().audio_manager.is_loopback_enabled();
 
     let show_item = IconMenuItem::with_id(
         app, "show", "Show ReLightHost", true,
@@ -156,10 +156,8 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                     }
                     "toggle_mute" => {
                         let state = app.state::<crate::AppState>();
-                        let manager = state.audio_manager.read();
-                        let new_muted = !manager.is_muted();
-                        manager.set_muted(new_muted);
-                        drop(manager);
+                        let new_muted = !state.audio_manager.is_muted();
+                        state.audio_manager.set_muted(new_muted);
 
                         let tray_state = app.state::<crate::TrayState>();
                         sync_audio_tray_state(app, &tray_state, new_muted);
@@ -168,7 +166,7 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                     }
                     "toggle_loopback" => {
                         let state = app.state::<crate::AppState>();
-                        let manager = state.audio_manager.read();
+                        let manager = &state.audio_manager;
                         let new_enabled = !manager.is_loopback_enabled();
                         let _ = manager.set_loopback(new_enabled);
                         if let Some(win) = app.get_webview_window("main") {

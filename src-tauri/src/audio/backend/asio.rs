@@ -32,6 +32,30 @@ static ASIO: LazyLock<Asio> = LazyLock::new(Asio::new);
 /// teardown calls.
 static ASIO_LIFECYCLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Set when the running driver asks to be torn down and rebuilt
+/// (`kAsioResetRequest` — typically after its buffer size was changed in the
+/// driver's own control panel) or reports a new sample rate. Can't be acted
+/// on inside the driver callback; `AudioManager::get_status` (polled by the
+/// UI) restarts the stream. One flag suffices: ASIO loads one driver at a time.
+static RESET_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn on_driver_event(event: asio_sys::AsioDriverEvent) -> bool {
+    use asio_sys::{AsioDriverEvent, AsioMessageSelectors};
+    match event {
+        AsioDriverEvent::Message { selector: AsioMessageSelectors::kAsioResetRequest, .. }
+        | AsioDriverEvent::SampleRateChanged(_) => {
+            RESET_REQUESTED.store(true, Ordering::Release);
+        }
+        _ => {}
+    }
+    false
+}
+
+/// Returns (and clears) a pending driver reset request.
+pub fn take_reset_request() -> bool {
+    RESET_REQUESTED.swap(false, Ordering::AcqRel)
+}
+
 pub struct AsioDeviceInfo {
     pub name: String,
     pub input_channels: usize,
@@ -331,6 +355,7 @@ fn is_valid_power_of_two_buffer_size(hint: i32, min: i32) -> bool {
 pub struct AsioDuplexStream {
     driver: Driver,
     callback_id: asio_sys::BufferCallbackId,
+    event_callback_id: asio_sys::DriverEventCallbackId,
 }
 
 /// Starts a full-duplex ASIO stream on a single driver: reads the stereo
@@ -578,14 +603,17 @@ pub fn start_duplex(
         }
     });
 
+    RESET_REQUESTED.store(false, Ordering::Release);
+    let event_callback_id = driver.add_event_callback(on_driver_event);
     if let Err(e) = driver.start() {
         // Don't leave a stale callback registered on a failed start — it
         // would otherwise sit in asio-sys's global callback list holding
         // pointers into these buffers indefinitely.
         driver.remove_callback(callback_id);
+        driver.remove_event_callback(event_callback_id);
         return Err(anyhow::anyhow!("Failed to start ASIO driver: {e}"));
     }
-    Ok(AsioDuplexStream { driver, callback_id })
+    Ok(AsioDuplexStream { driver, callback_id, event_callback_id })
 }
 
 /// Starts ASIO input capture only (no output side registered) — used for
@@ -677,11 +705,14 @@ pub fn start_input_only(
         }
     });
 
+    RESET_REQUESTED.store(false, Ordering::Release);
+    let event_callback_id = driver.add_event_callback(on_driver_event);
     if let Err(e) = driver.start() {
         driver.remove_callback(callback_id);
+        driver.remove_event_callback(event_callback_id);
         return Err(anyhow::anyhow!("Failed to start ASIO driver: {e}"));
     }
-    Ok(AsioDuplexStream { driver, callback_id })
+    Ok(AsioDuplexStream { driver, callback_id, event_callback_id })
 }
 
 /// Starts ASIO output only (no input side registered) — used for the
@@ -817,11 +848,14 @@ pub fn start_output_only(
         }
     });
 
+    RESET_REQUESTED.store(false, Ordering::Release);
+    let event_callback_id = driver.add_event_callback(on_driver_event);
     if let Err(e) = driver.start() {
         driver.remove_callback(callback_id);
+        driver.remove_event_callback(event_callback_id);
         return Err(anyhow::anyhow!("Failed to start ASIO driver: {e}"));
     }
-    Ok(AsioDuplexStream { driver, callback_id })
+    Ok(AsioDuplexStream { driver, callback_id, event_callback_id })
 }
 
 /// Stops the stream and releases its ASIO buffers. Errors from the
@@ -843,6 +877,7 @@ pub fn stop(stream: AsioDuplexStream) {
         log::warn!("ASIO stop() failed: {e}");
     }
     stream.driver.remove_callback(stream.callback_id);
+    stream.driver.remove_event_callback(stream.event_callback_id);
     if let Err(e) = stream.driver.dispose_buffers() {
         log::warn!("ASIO dispose_buffers() failed: {e}");
     }
@@ -874,6 +909,24 @@ mod tests {
         // unnamed device is not something the UI can list.
         let devices = list_asio_devices();
         assert!(devices.iter().all(|d| !d.name.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+    use asio_sys::{AsioDriverEvent, AsioMessageSelectors};
+
+    #[test]
+    fn reset_and_rate_change_requests_are_latched_once() {
+        let _ = take_reset_request();
+        on_driver_event(AsioDriverEvent::Message { selector: AsioMessageSelectors::kAsioResyncRequest, value: 0 });
+        assert!(!take_reset_request(), "resync is not a reset");
+        on_driver_event(AsioDriverEvent::Message { selector: AsioMessageSelectors::kAsioResetRequest, value: 0 });
+        assert!(take_reset_request());
+        assert!(!take_reset_request(), "consumed");
+        on_driver_event(AsioDriverEvent::SampleRateChanged(44_100.0));
+        assert!(take_reset_request());
     }
 }
 

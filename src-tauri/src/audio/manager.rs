@@ -735,6 +735,16 @@ impl AudioManager {
 
     /// Get current audio status
     pub fn get_status(&self) -> AudioStatus {
+        // ASIO driver asked for a reset (buffer size / rate changed in its
+        // own panel): rebuild the stream so audio recovers without a manual
+        // restart. Runs on the polling command thread, which has COM set up.
+        if asio::take_reset_request() && self.status.read().is_monitoring {
+            log::warn!("{} ASIO driver requested a reset — restarting the stream", crate::core::threading::thread_prefix("audio/monitor"));
+            let _ = self.toggle_monitoring(false);
+            if let Err(e) = self.toggle_monitoring(true) {
+                log::warn!("{} Restart after ASIO reset failed: {e}", crate::core::threading::thread_prefix("audio/monitor"));
+            }
+        }
         if self.stream_failed.swap(false, Ordering::AcqRel) {
             log::warn!("{} Audio device failed — stopping monitoring", crate::core::threading::thread_prefix("audio/monitor"));
             let _ = self.toggle_monitoring(false);

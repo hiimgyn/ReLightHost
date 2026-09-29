@@ -42,7 +42,11 @@ pub fn stop_audio(state: tauri::State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_audio_status(state: tauri::State<AppState>) -> Result<AudioStatus, String> {
-    Ok(state.audio_manager.get_status())
+    let status = state.audio_manager.get_status();
+    // get_status may just have rebuilt the stream after an ASIO reset at a
+    // different rate.
+    sync_chain_to_audio_rate(&state);
+    Ok(status)
 }
 
 #[tauri::command]

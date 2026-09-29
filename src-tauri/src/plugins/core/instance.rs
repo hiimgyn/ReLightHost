@@ -141,7 +141,7 @@ impl PluginInstance {
                 if proc.is_some() {
                     log::info!("{} Built-in processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
                 } else {
-                    log::warn!("{} Unknown built-in ID '{}' for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.path, plugin_info.name);
+                    log::warn!("{} Built-in '{}' ({}) unavailable at {} Hz", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, plugin_info.path, sample_rate);
                 }
                 // Apply default parameter values to the processor so its internal
                 // state matches what the frontend shows from the first frame.
@@ -162,6 +162,14 @@ impl PluginInstance {
             Vec::new()
         };
 
+        let crash_protection = crash_protection::create_shared();
+        if plugin_info.format == PluginFormat::Builtin && builtin_processor.is_none() {
+            crash_protection.lock().status = crash_protection::PluginStatus::Error(format!(
+                "'{}' cannot run at {} Hz (needs 48000 Hz) — passing audio through",
+                plugin_info.name, sample_rate
+            ));
+        }
+
         Ok(Self {
             instance_id,
             plugin_info,
@@ -177,7 +185,7 @@ impl PluginInstance {
             last_state:        RwLock::new(None),
             gui_open:          Arc::new(AtomicBool::new(false)),
             gui_hwnd:          Arc::new(AtomicIsize::new(0)),
-            crash_protection:  crash_protection::create_shared(),
+            crash_protection,
             crash_notice_pending: AtomicBool::new(false),
         })
     }
@@ -235,6 +243,10 @@ impl PluginInstance {
         
         // Check if plugin is in crashed state
         if let Some(mut protection) = self.crash_protection.try_lock() {
+            // Configuration error (no processor could be created): pass through.
+            if matches!(protection.status, crash_protection::PluginStatus::Error(_)) {
+                return;
+            }
             if !protection.is_healthy() && !protection.try_auto_recover() {
                 // Plugin crashed - fill with silence until cooldown expires.
                 left.fill(0.0);
@@ -974,6 +986,21 @@ mod state_tests {
             category: String::new(),
         };
         Arc::new(PluginInstance::new(info, 48_000.0, 512).unwrap())
+    }
+
+    #[test]
+    fn builtin_that_cannot_run_at_this_rate_reports_error_and_passes_audio_through() {
+        let info = PluginInfo {
+            path: crate::plugins::builtin::deep_filter::ID.into(),
+            format: PluginFormat::Builtin,
+            ..compressor().plugin_info.clone()
+        };
+        let inst = PluginInstance::new(info, 44_100.0, 512).unwrap();
+        assert!(matches!(inst.get_crash_status(), crash_protection::PluginStatus::Error(_)));
+        let (mut l, mut r) = (vec![0.25f32; 32], vec![-0.25f32; 32]);
+        inst.process_stereo(&mut l, &mut r);
+        assert_eq!((l[31], r[31]), (0.25, -0.25));
+        assert!(matches!(inst.get_crash_status(), crash_protection::PluginStatus::Error(_)), "status must survive processing");
     }
 
     #[test]

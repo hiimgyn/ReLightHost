@@ -52,6 +52,12 @@ impl CrashProtection {
     /// Attempt automatic recovery after a crash with cooldown/rate limiting.
     /// Returns true when recovery succeeded and processing may resume.
     pub fn try_auto_recover(&mut self) -> bool {
+        // A configuration error (e.g. unsupported sample rate) is not a
+        // transient crash — nothing to recover from until the plugin is
+        // re-created under a working configuration.
+        if matches!(self.status, PluginStatus::Error(_)) {
+            return false;
+        }
         // Do not enter an infinite crash loop for unstable plugins.
         if !self.should_auto_restart() {
             return false;
@@ -177,5 +183,13 @@ mod tests {
         protection.last_crash_time = Some(Instant::now() - Duration::from_secs(3));
         assert!(protection.try_auto_recover());
         assert!(protection.is_healthy());
+    }
+
+    #[test]
+    fn auto_recover_does_not_clear_a_configuration_error() {
+        let mut p = CrashProtection::new();
+        p.status = PluginStatus::Error("requires 48 kHz".into());
+        assert!(!p.try_auto_recover());
+        assert!(matches!(p.status, PluginStatus::Error(_)));
     }
 }

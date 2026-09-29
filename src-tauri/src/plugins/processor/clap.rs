@@ -178,7 +178,59 @@ pub struct ClapPluginGui {
 unsafe extern "C" fn host_get_extension(_h: *const ClapHost, _id: *const c_char) -> *const c_void { std::ptr::null() }
 unsafe extern "C" fn host_request_restart  (_h: *const ClapHost) {}
 unsafe extern "C" fn host_request_process  (_h: *const ClapHost) {}
-unsafe extern "C" fn host_request_callback (_h: *const ClapHost) {}
+unsafe extern "C" fn host_request_callback(h: *const ClapHost) {
+    // host_data is the instance's Arc<MainThreadTarget> (see ClapProcessor::load).
+    let data = if h.is_null() { std::ptr::null() } else { (*h).host_data as *const MainThreadTarget };
+    if data.is_null() {
+        return;
+    }
+    Arc::increment_strong_count(data);
+    Arc::from_raw(data).request();
+}
+
+/// Delivers a plugin's `request_callback` as `on_main_thread` on the app's
+/// main thread (nih-plug, clap-wrapper and others rely on it for parameter
+/// and GUI sync). The mutex serialises that call against the plugin being
+/// destroyed.
+pub(crate) struct MainThreadTarget {
+    plugin: parking_lot::Mutex<*const ClapPlugin>,
+    pending: AtomicBool,
+}
+
+unsafe impl Send for MainThreadTarget {}
+unsafe impl Sync for MainThreadTarget {}
+
+impl MainThreadTarget {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { plugin: parking_lot::Mutex::new(std::ptr::null()), pending: AtomicBool::new(false) })
+    }
+
+    fn attach(&self, plugin: *const ClapPlugin) {
+        *self.plugin.lock() = plugin;
+    }
+
+    /// Call before destroying the plugin; no callback runs after it returns.
+    fn detach(&self) {
+        *self.plugin.lock() = std::ptr::null();
+    }
+
+    fn request(self: Arc<Self>) {
+        // Coalesce: one scheduled call serves every request made before it runs.
+        if self.pending.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        crate::app_events::run_on_main_thread(move || {
+            self.pending.store(false, Ordering::Release);
+            let plugin = self.plugin.lock();
+            if plugin.is_null() {
+                return;
+            }
+            if let Some(f) = unsafe { (**plugin).on_main_thread } {
+                unsafe { f(*plugin) };
+            }
+        });
+    }
+}
 
 // ── Empty event queues (required by CLAP spec; may not be null) ──────────────
 
@@ -256,11 +308,20 @@ impl Drop for EntryRef {
 /// it points to.  Because `CString` stores its bytes on the heap independently,
 /// the pointers stored in `ClapHost` remain valid through any move of this struct.
 struct HostBox {
+    /// `host.host_data` owns one `Arc<MainThreadTarget>` reference (released on drop).
     host  : ClapHost,
     _name : CString,
     _vend : CString,
     _url  : CString,
     _ver  : CString,
+}
+
+impl Drop for HostBox {
+    fn drop(&mut self) {
+        if !self.host.host_data.is_null() {
+            unsafe { drop(Arc::from_raw(self.host.host_data as *const MainThreadTarget)) };
+        }
+    }
 }
 
 // ── State I/O helpers ────────────────────────────────────────────────────────
@@ -388,6 +449,7 @@ pub struct ClapProcessor {
     in_r      : Vec<f32>,
     /// `start_processing` runs lazily on the audio thread.
     processing_started: bool,
+    main_thread: Arc<MainThreadTarget>,
     _host     : Box<HostBox>,     // must outlive `plugin`
     _lib      : libloading::Library, // unloaded LAST
 }
@@ -420,10 +482,11 @@ impl ClapProcessor {
             let url  = CString::new("https://github.com").unwrap();
             let ver  = CString::new(env!("CARGO_PKG_VERSION")).unwrap();
 
+            let main_thread = MainThreadTarget::new();
             let host_box = Box::new(HostBox {
                 host: ClapHost {
                     clap_version     : ClapVersion { major: 1, minor: 0, revision: 0 },
-                    host_data        : std::ptr::null_mut(),
+                    host_data        : Arc::into_raw(Arc::clone(&main_thread)) as *mut c_void,
                     name             : name.as_ptr(),
                     vendor           : vend.as_ptr(),
                     url              : url.as_ptr(),
@@ -475,6 +538,7 @@ impl ClapProcessor {
             if plugin.is_null() {
                 return Err(anyhow!("factory.create() returned null for '{}'", name_str));
             }
+            main_thread.attach(plugin);
 
             // init → activate → start_processing
             if let Some(f) = (*plugin).init {
@@ -512,6 +576,7 @@ impl ClapProcessor {
                 in_l      : vec![0.0; max_frames as usize],
                 in_r      : vec![0.0; max_frames as usize],
                 processing_started: false,
+                main_thread,
                 _host     : host_box,
                 _lib      : lib,
             })
@@ -613,6 +678,7 @@ impl Drop for ClapProcessor {
                 if let Some(f) = (*p).stop_processing { f(p); }
             }
             if let Some(f) = (*p).deactivate      { f(p); }
+            self.main_thread.detach();
             if let Some(f) = (*p).destroy         { f(p); }
             // entry deinit: via `_entry`'s Drop, right after this.
         }
@@ -750,5 +816,29 @@ mod process_tests {
         }
         assert!(started);
         assert_eq!(STARTS.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+mod main_thread_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU32;
+
+    static CALLS: AtomicU32 = AtomicU32::new(0);
+    unsafe extern "C" fn on_main(_: *const ClapPlugin) { CALLS.fetch_add(1, Ordering::SeqCst); }
+
+    #[test]
+    fn request_callback_reaches_on_main_thread_until_the_plugin_is_detached() {
+        let mut plugin: ClapPlugin = unsafe { std::mem::zeroed() };
+        plugin.on_main_thread = Some(on_main);
+        let target = MainThreadTarget::new();
+        target.attach(&plugin);
+
+        Arc::clone(&target).request(); // no app handle in tests → runs inline
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+
+        target.detach();
+        Arc::clone(&target).request();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "no callback after the plugin is gone");
     }
 }

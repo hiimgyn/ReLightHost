@@ -527,9 +527,9 @@ impl PluginInstance {
             if let Some(ref proc) = *guard {
                 let plugin_name = self.plugin_info.name.clone();
                 let gui_hwnd    = self.gui_hwnd.clone();
-                let result = crash_protection::protected_call(|| {
+                let result = crash_protection::protected_call(AssertUnwindSafe(|| {
                     proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd)
-                });
+                }));
                 match result {
                     Ok(Ok(())) => return Ok(()),
                     Ok(Err(e)) => {

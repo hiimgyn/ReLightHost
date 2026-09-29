@@ -999,3 +999,21 @@ html.rh-app-hidden *::after {
   animation: none !important;
   transition: none !important;
 }
+
+/* Plugin card: fade/slide in on mount, dim + shrink slightly when bypassed. */
+.rh-card-enter {
+  animation: rh-card-in 0.32s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+@keyframes rh-card-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+}
+.rh-card-wrap {
+  transition: opacity 0.22s ease-out, transform 0.22s ease-out;
+}
+.rh-card-wrap[data-bypassed="true"] {
+  opacity: 0.65;
+  transform: scale(0.985);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rh-card-enter, .rh-card-wrap { animation: none; transition: none; }
+}

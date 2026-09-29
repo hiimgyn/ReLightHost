@@ -12,8 +12,7 @@ import {
   GripVertical,
   Maximize2,
 } from 'lucide-react';
-import { memo, useState, useEffect, useRef } from 'react';
-import gsap from 'gsap';
+import { memo, useState } from 'react';
 import type { PluginInstanceInfo, PluginStatus } from '../../lib/types';
 import * as tauri from '../../lib/tauri';
 import PluginMetaChips from './PluginMetaChips';
@@ -191,33 +190,14 @@ function PluginCard({
     };
   })();
 
-  const cardRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (cardRef.current) {
-      gsap.fromTo(
-        cardRef.current,
-        { opacity: 0, y: 12, scale: 0.96 },
-        { opacity: 1, y: 0, scale: 1, duration: 0.32, ease: 'power2.out' }
-      );
-    }
-  }, []);
-
-  useEffect(() => {
-    if (cardRef.current) {
-      gsap.to(cardRef.current, {
-        opacity: plugin.bypassed ? 0.65 : 1,
-        scale: plugin.bypassed ? 0.985 : 1,
-        duration: 0.22,
-        ease: 'power2.out',
-      });
-    }
-  }, [plugin.bypassed]);
-
   return (
     <>
     {contextHolder}
-    <div ref={cardRef} style={{ width: '100%', height: '100%', position: 'relative' }}>
+    <div
+      className="rh-card-wrap rh-card-enter"
+      data-bypassed={plugin.bypassed}
+      style={{ width: '100%', height: '100%', position: 'relative' }}
+    >
     <Card
       size="small"
       className="rh-plugin-card"

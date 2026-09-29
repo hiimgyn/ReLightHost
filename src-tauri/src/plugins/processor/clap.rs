@@ -7,7 +7,7 @@
 //!   1. dlopen() the .clap file  (libloading)
 //!   2. entry.init(path)
 //!   3. factory.create(host, plugin_id) → clap_plugin_t*
-//!   4. plugin.init() → activate() → start_processing()
+//!   4. plugin.init() → activate(); start_processing() on the first process call
 //!   5. process() per audio block  (real-time, lock-free input/output arrays)
 //!   6. Drop: stop_processing → deactivate → destroy → entry.deinit
 //!
@@ -303,6 +303,65 @@ unsafe extern "C" fn state_read_cb(
     to_read as i64
 }
 
+// ── Processing helpers ───────────────────────────────────────────────────────
+
+/// `start_processing` is an `[audio-thread]` call in CLAP, so it runs on the
+/// first `process_stereo` rather than in `load`.
+unsafe fn start_processing_once(plugin: *const ClapPlugin, started: &mut bool) {
+    if *started {
+        return;
+    }
+    *started = true;
+    if let Some(f) = (*plugin).start_processing {
+        if !f(plugin) {
+            log::warn!("CLAP start_processing() returned false");
+        }
+    }
+}
+
+/// One `process()` call. The input is copied into `in_l`/`in_r` first:
+/// CLAP only allows input and output to alias when the plugin declares an
+/// in-place pair, and a plugin that writes an output sample before reading
+/// the matching (or a later) input sample would otherwise read its own output.
+unsafe fn process_separate(
+    plugin: *const ClapPlugin,
+    in_l: &mut [f32],
+    in_r: &mut [f32],
+    left: &mut [f32],
+    right: &mut [f32],
+) {
+    let Some(process_fn) = (*plugin).process else { return };
+    let frames = left.len().min(right.len()).min(in_l.len()).min(in_r.len());
+    in_l[..frames].copy_from_slice(&left[..frames]);
+    in_r[..frames].copy_from_slice(&right[..frames]);
+
+    let mut in_ptrs: [*mut f32; 2] = [in_l.as_mut_ptr(), in_r.as_mut_ptr()];
+    let mut out_ptrs: [*mut f32; 2] = [left.as_mut_ptr(), right.as_mut_ptr()];
+    let null64: *mut *mut f64 = std::ptr::null_mut();
+    let in_buf = ClapAudioBuffer {
+        data32: in_ptrs.as_mut_ptr(), data64: null64,
+        channel_count: 2, latency: 0, constant_mask: 0,
+    };
+    let mut out_buf = ClapAudioBuffer {
+        data32: out_ptrs.as_mut_ptr(), data64: null64,
+        channel_count: 2, latency: 0, constant_mask: 0,
+    };
+    let in_evts = ClapInputEvents { ctx: std::ptr::null_mut(), size: Some(evts_size), get: Some(evts_get) };
+    let mut out_evts = ClapOutputEvents { ctx: std::ptr::null_mut(), try_push: Some(evts_try_push) };
+    let proc_data = ClapProcess {
+        steady_time        : -1,
+        frames_count       : frames as u32,
+        transport          : std::ptr::null(),
+        audio_inputs       : &in_buf,
+        audio_outputs      : &mut out_buf,
+        audio_inputs_count : 1,
+        audio_outputs_count: 1,
+        in_events          : &in_evts,
+        out_events         : &mut out_evts,
+    };
+    process_fn(plugin, &proc_data);
+}
+
 // ── Public processor type ────────────────────────────────────────────────────
 
 /// A loaded and activated CLAP plugin instance, ready for audio processing.
@@ -324,6 +383,11 @@ pub struct ClapProcessor {
     /// `process_stereo` must chunk to this size rather than pass the raw
     /// block through (see the identical fix already applied to vst3.rs).
     max_frames: u32,
+    /// Copy of the input for `process_separate` (sized `max_frames`).
+    in_l      : Vec<f32>,
+    in_r      : Vec<f32>,
+    /// `start_processing` runs lazily on the audio thread.
+    processing_started: bool,
     _host     : Box<HostBox>,     // must outlive `plugin`
     _lib      : libloading::Library, // unloaded LAST
 }
@@ -426,11 +490,6 @@ impl ClapProcessor {
                     log::warn!("CLAP activate() returned false for '{}'; continuing", name_str);
                 }
             }
-            if let Some(f) = (*plugin).start_processing {
-                if !f(plugin) {
-                    log::warn!("CLAP start_processing() returned false for '{}'", name_str);
-                }
-            }
 
             // Cache optional extension pointers.
             let get_ext = (*plugin).get_extension;
@@ -450,6 +509,9 @@ impl ClapProcessor {
                 gui_ext,
                 _entry    : entry_ref,
                 max_frames,
+                in_l      : vec![0.0; max_frames as usize],
+                in_r      : vec![0.0; max_frames as usize],
+                processing_started: false,
                 _host     : host_box,
                 _lib      : lib,
             })
@@ -476,43 +538,10 @@ impl ClapProcessor {
     }
 
     fn process_chunk(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let n = left.len().min(right.len());
         unsafe {
-            let process_fn = match (*self.plugin.0).process {
-                Some(f) => f,
-                None    => return,
-            };
-            let frames = left.len().min(right.len()) as u32;
-
-            // Channel pointer arrays — input AND output point to the same
-            // buffers (in-place processing, which CLAP natively supports).
-            let mut ch_ptrs: [*mut f32; 2] = [left.as_mut_ptr(), right.as_mut_ptr()];
-            let null64: *mut *mut f64       = std::ptr::null_mut();
-
-            let in_buf = ClapAudioBuffer {
-                data32: ch_ptrs.as_mut_ptr(), data64: null64,
-                channel_count: 2, latency: 0, constant_mask: 0,
-            };
-            let mut out_buf = ClapAudioBuffer {
-                data32: ch_ptrs.as_mut_ptr(), data64: null64,
-                channel_count: 2, latency: 0, constant_mask: 0,
-            };
-
-            let in_evts  = ClapInputEvents  { ctx: std::ptr::null_mut(), size: Some(evts_size),     get:      Some(evts_get) };
-            let mut out_evts = ClapOutputEvents { ctx: std::ptr::null_mut(), try_push: Some(evts_try_push) };
-
-            let proc_data = ClapProcess {
-                steady_time        : -1,
-                frames_count       : frames,
-                transport          : std::ptr::null(),
-                audio_inputs       : &in_buf,
-                audio_outputs      : &mut out_buf,
-                audio_inputs_count : 1,
-                audio_outputs_count: 1,
-                in_events          : &in_evts,
-                out_events         : &mut out_evts,
-            };
-
-            process_fn(self.plugin.0, &proc_data);
+            start_processing_once(self.plugin.0, &mut self.processing_started);
+            process_separate(self.plugin.0, &mut self.in_l[..n], &mut self.in_r[..n], left, right);
         }
     }
 
@@ -580,7 +609,9 @@ impl Drop for ClapProcessor {
         // `_lib` is dropped AFTER this block (it is declared last in the struct).
         unsafe {
             let p = self.plugin.0;
-            if let Some(f) = (*p).stop_processing { f(p); }
+            if self.processing_started {
+                if let Some(f) = (*p).stop_processing { f(p); }
+            }
             if let Some(f) = (*p).deactivate      { f(p); }
             if let Some(f) = (*p).destroy         { f(p); }
             // entry deinit: via `_entry`'s Drop, right after this.
@@ -667,5 +698,57 @@ mod entry_ref_tests {
         let path = CString::new("C:/Fake/Broken.clap").unwrap();
         assert!(EntryRef::acquire("C:/Fake/Broken.clap", &path, Some(failing_init), None).is_none());
         assert!(EntryRef::acquire("C:/Fake/Broken.clap", &path, Some(failing_init), None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU32;
+
+    /// One-sample delay: out[i] = in[i-1]. Wrong if input and output alias.
+    unsafe extern "C" fn delay_process(_: *const ClapPlugin, p: *const ClapProcess) -> i32 {
+        let p = &*p;
+        let frames = p.frames_count as usize;
+        for ch in 0..2 {
+            let input = *(*p.audio_inputs).data32.add(ch);
+            let output = *(*p.audio_outputs).data32.add(ch);
+            for i in 0..frames {
+                *output.add(i) = if i == 0 { 0.0 } else { *input.add(i - 1) };
+            }
+        }
+        0
+    }
+
+    static STARTS: AtomicU32 = AtomicU32::new(0);
+    unsafe extern "C" fn count_start(_: *const ClapPlugin) -> bool { STARTS.fetch_add(1, Ordering::SeqCst); true }
+
+    fn fake_plugin() -> ClapPlugin {
+        let mut p: ClapPlugin = unsafe { std::mem::zeroed() };
+        p.process = Some(delay_process);
+        p.start_processing = Some(count_start);
+        p
+    }
+
+    #[test]
+    fn plugin_sees_an_unmodified_input_buffer() {
+        let plugin = fake_plugin();
+        let (mut sl, mut sr) = (vec![0.0f32; 8], vec![0.0f32; 8]);
+        let (mut l, mut r) = ([1.0f32, 2.0, 3.0, 4.0], [-1.0f32, -2.0, -3.0, -4.0]);
+        unsafe { process_separate(&plugin, &mut sl, &mut sr, &mut l, &mut r) };
+        assert_eq!(l, [0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(r, [0.0, -1.0, -2.0, -3.0]);
+    }
+
+    #[test]
+    fn start_processing_runs_once_on_the_processing_thread() {
+        let plugin = fake_plugin();
+        let mut started = false;
+        unsafe {
+            start_processing_once(&plugin, &mut started);
+            start_processing_once(&plugin, &mut started);
+        }
+        assert!(started);
+        assert_eq!(STARTS.load(Ordering::SeqCst), 1);
     }
 }

@@ -221,6 +221,7 @@ pub(crate) fn restore_session_impl(
                 match std::thread::Builder::new()
                     .name("vst3-replay".to_string())
                     .spawn(move || {
+                    let finished = crate::core::autosave::RestoreFinishGuard::new(vst3_restore_ready);
                     log::info!(
                         "{} VST3 replay thread started ({} item(s))",
                         crate::core::threading::thread_prefix("restore/replay"),
@@ -242,8 +243,7 @@ pub(crate) fn restore_session_impl(
 
                     // Only emit the startup chain-changed event after VST3 replay
                     // completes so autosave cannot capture a partially restored state.
-                    vst3_restore_ready.store(true, Ordering::Release);
-                    crate::core::autosave::set_restore_in_progress(false);
+                    drop(finished);
                     log::info!("{} VST3 replay thread finished", crate::core::threading::thread_prefix("restore/replay"));
                     crate::app_events::emit_plugin_chain_changed("restore_session_vst3_replay_done", None);
                 }) {

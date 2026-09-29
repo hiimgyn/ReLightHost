@@ -229,6 +229,9 @@ impl Vst2Processor {
         let cap = block_size.max(4096);
         set_host_audio_config(sample_rate, block_size);
 
+        // DLL load + entry point run under the shared library-load lock (see
+        // plugins::core::LIBRARY_LOAD_LOCK); effOpen and later run outside it.
+        let load_guard = crate::plugins::core::LIBRARY_LOAD_LOCK.lock();
         // SAFETY: loading an external DLL from a user-configured plugin path.
         let lib = unsafe { libloading::Library::new(plugin_path) }
             .map_err(|e| anyhow!("Cannot open DLL '{}': {}", plugin_path, e))?;
@@ -240,6 +243,7 @@ impl Vst2Processor {
         ))?;
 
         let effect = unsafe { entry(host_callback) };
+        drop(load_guard);
         if effect.is_null() {
             return Err(anyhow!("VST2: entry point returned null for '{}'", plugin_path));
         }

@@ -460,6 +460,10 @@ impl ClapProcessor {
     /// Load a `.clap` file and initialise the first plugin for audio processing.
     pub fn load(path: &str, sample_rate: f64, block_size: usize) -> Result<Self> {
         unsafe {
+            // DLL load → entry init → factory create run under the shared
+            // library-load lock (see plugins::core::LIBRARY_LOAD_LOCK);
+            // plugin init/activate run outside it.
+            let load_guard = crate::plugins::core::LIBRARY_LOAD_LOCK.lock();
             let lib = libloading::Library::new(path)
                 .map_err(|e| anyhow!("Failed to load CLAP '{}': {}", path, e))?;
 
@@ -539,6 +543,7 @@ impl ClapProcessor {
                 return Err(anyhow!("factory.create() returned null for '{}'", name_str));
             }
             main_thread.attach(plugin);
+            drop(load_guard);
 
             // init → activate → start_processing
             if let Some(f) = (*plugin).init {

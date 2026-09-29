@@ -173,11 +173,9 @@ mod win {
         }
     }
 
-    /// Serializes DLL loading + factory creation across concurrently-loading
-    /// VST3 plugins (see PluginInstanceManager::load_plugins_parallel_results'
-    /// `parallel_vst3` flag). Scope is intentionally narrow — see load()'s
-    /// comment for exactly what's inside vs. outside this lock and why.
-    static FACTORY_CREATE_LOCK: PLMutex<()> = PLMutex::new(());
+    /// See `plugins::core::LIBRARY_LOAD_LOCK` — shared with the scanner and
+    /// the other formats' loaders.
+    use crate::plugins::core::LIBRARY_LOAD_LOCK as FACTORY_CREATE_LOCK;
 
     /// Per-plugin-*path* locks for everything after FACTORY_CREATE_LOCK
     /// releases — `component.initialize()`, bus setup, and controller

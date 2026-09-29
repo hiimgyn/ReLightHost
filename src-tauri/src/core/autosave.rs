@@ -47,6 +47,26 @@ pub fn set_restore_in_progress(active: bool) {
     RESTORE_IN_PROGRESS.store(active, Ordering::Release);
 }
 
+/// Marks the deferred VST3 replay finished when dropped — including when
+/// the replay thread unwinds from a panic, which would otherwise leave
+/// autosave (and GUI launch) blocked for the rest of the session.
+pub(crate) struct RestoreFinishGuard {
+    vst3_restore_ready: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RestoreFinishGuard {
+    pub(crate) fn new(vst3_restore_ready: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self { vst3_restore_ready }
+    }
+}
+
+impl Drop for RestoreFinishGuard {
+    fn drop(&mut self) {
+        self.vst3_restore_ready.store(true, Ordering::Release);
+        set_restore_in_progress(false);
+    }
+}
+
 pub fn request_plugin_chain_autosave() {
     if let Some(tx) = AUTOSAVE_TX.get() {
         let _ = tx.send(AutosaveRequest::ChainChanged);
@@ -161,6 +181,21 @@ mod tests {
         save_autosave_snapshot(&plugins, &presets, &hash);
         assert!(file.exists(), "autosave did not resume after restore finished");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_is_marked_finished_even_if_the_replay_thread_panics() {
+        let _flag = FLAG_LOCK.lock();
+        let ready = Arc::new(AtomicBool::new(false));
+        set_restore_in_progress(true);
+        let guard = RestoreFinishGuard::new(Arc::clone(&ready));
+        let _ = std::thread::spawn(move || {
+            let _guard = guard;
+            panic!("plugin replay blew up");
+        })
+        .join();
+        assert!(ready.load(Ordering::Acquire));
+        assert!(!RESTORE_IN_PROGRESS.load(Ordering::Acquire), "autosave would stay disabled");
     }
 
     #[test]

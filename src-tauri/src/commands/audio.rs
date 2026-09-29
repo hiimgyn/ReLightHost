@@ -15,10 +15,11 @@ pub(crate) fn sync_chain_to_audio_rate(state: &AppState) {
     if !state.startup.vst3_restore_ready.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
-    let (rate, block) = {
-        let am = &state.audio_manager;
-        (am.processing_rate(), am.get_config().buffer_size as usize)
-    };
+    // Only against a running stream: while stopped the rate that will
+    // actually run isn't known yet (an ASIO driver may override it), and
+    // reloading now would just mean reloading again on start.
+    let Some(rate) = state.audio_manager.running_rate() else { return };
+    let block = state.audio_manager.get_config().buffer_size as usize;
     if state.plugin_manager.reprepare_if_rate_changed(rate, block) {
         crate::app_events::emit_plugin_chain_changed("reload", None);
     }

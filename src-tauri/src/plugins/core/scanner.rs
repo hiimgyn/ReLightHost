@@ -830,8 +830,9 @@ fn vi_parse(data: &[u8]) -> Option<(String, String, String)> {
 // ponytail: in-process + serialized; out-of-process scanning (spawn self
 // with --scan-one <path>) is the real isolation if scan crashes persist.
 fn with_code_load_lock<T>(f: impl FnOnce() -> T) -> T {
-    static CODE_LOAD_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-    let _guard = CODE_LOAD_LOCK.lock();
+    // Shared with plugin loading, so a scan (now an async command) never runs
+    // plugin entry code alongside a plugin being loaded into the chain.
+    let _guard = crate::plugins::core::LIBRARY_LOAD_LOCK.lock();
     f()
 }
 

@@ -763,13 +763,18 @@ impl AudioManager {
         status
     }
 
+    /// The running stream's actual sample rate; `None` when not monitoring.
+    pub fn running_rate(&self) -> Option<f64> {
+        match self.effective_rate.load(Ordering::Relaxed) {
+            0 => None,
+            r => Some(r as f64),
+        }
+    }
+
     /// Sample rate plugins must be prepared at: the running stream's actual
     /// rate, or the configured one when nothing is running.
     pub fn processing_rate(&self) -> f64 {
-        match self.effective_rate.load(Ordering::Relaxed) {
-            0 => self.config.read().sample_rate as f64,
-            r => r as f64,
-        }
+        self.running_rate().unwrap_or(self.config.read().sample_rate as f64)
     }
 
     /// Get current audio configuration
@@ -891,6 +896,14 @@ impl Default for AudioManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn running_rate_is_only_known_while_a_stream_runs() {
+        let am = AudioManager::new();
+        assert_eq!(am.running_rate(), None);
+        am.effective_rate.store(44_100, Ordering::Relaxed);
+        assert_eq!(am.running_rate(), Some(44_100.0));
+    }
 
     #[test]
     fn a_failed_stream_is_reported_once_and_monitoring_marked_stopped() {

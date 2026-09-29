@@ -293,6 +293,7 @@ fn preset_load_plan(preset: &crate::domain::preset::Preset) -> Vec<(crate::plugi
                 path:     path.clone(),
                 format,
                 category: p.plugin_category.clone().unwrap_or_default(),
+                sub_index: p.plugin_index,
             };
             Some((info, p))
         })
@@ -354,6 +355,7 @@ mod tests {
             path: crate::plugins::builtin::compressor::ID.into(),
             format: PluginFormat::Builtin,
             category: String::new(),
+            sub_index: 0,
         }
     }
 

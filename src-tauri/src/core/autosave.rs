@@ -215,6 +215,7 @@ mod tests {
             path: crate::plugins::builtin::compressor::ID.into(),
             format: crate::plugins::PluginFormat::Builtin,
             category: String::new(),
+            sub_index: 0,
         };
         plugins.load_plugin(info, 48_000.0, 512).unwrap();
 

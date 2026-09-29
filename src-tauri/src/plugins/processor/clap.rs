@@ -467,6 +467,12 @@ unsafe impl Send for ClapProcessor {}
 impl ClapProcessor {
     /// Load a `.clap` file and initialise the first plugin for audio processing.
     pub fn load(path: &str, sample_rate: f64, block_size: usize) -> Result<Self> {
+        Self::load_index(path, 0, sample_rate, block_size)
+    }
+
+    /// Loads the `index`-th plugin of the file's factory (a `.clap` file can
+    /// contain several plugins).
+    pub fn load_index(path: &str, index: u32, sample_rate: f64, block_size: usize) -> Result<Self> {
         unsafe {
             // DLL load → entry init → factory create run under the shared
             // library-load lock (see plugins::core::LIBRARY_LOAD_LOCK);
@@ -527,14 +533,14 @@ impl ClapProcessor {
 
             let count_fn = (*factory).get_plugin_count
                 .ok_or_else(|| anyhow!("factory has no get_plugin_count in '{}'", path))?;
-            if count_fn(factory) == 0 {
-                return Err(anyhow!("'{}' contains no plugins", path));
+            let count = count_fn(factory);
+            if index >= count {
+                return Err(anyhow!("'{}' has no plugin #{} ({} found)", path, index, count));
             }
 
-            // Grab the first plugin descriptor.
             let desc_fn = (*factory).get_plugin_descriptor
                 .ok_or_else(|| anyhow!("factory has no get_plugin_descriptor"))?;
-            let desc = desc_fn(factory, 0);
+            let desc = desc_fn(factory, index);
             if desc.is_null() {
                 return Err(anyhow!("null plugin descriptor in '{}'", path));
             }
@@ -713,9 +719,9 @@ impl Drop for ClapProcessor {
 
 // ── CLAP metadata reader (used by scanner — loads DLL briefly) ───────────────
 
-/// Read `(name, vendor, version)` from a `.clap` file by briefly loading it.
-/// Returns `None` if the file cannot be interrogated.
-pub fn read_clap_metadata(path: &std::path::Path) -> Option<(String, String, String)> {
+/// Read `(name, vendor, version)` of every plugin in a `.clap` file by
+/// briefly loading it. Returns `None` if the file cannot be interrogated.
+pub fn read_clap_metadata(path: &std::path::Path) -> Option<Vec<(String, String, String)>> {
     unsafe {
         let lib  = libloading::Library::new(path).ok()?;
         let sym  : libloading::Symbol<*const ClapPluginEntry> = lib.get(b"clap_entry\0").ok()?;
@@ -729,33 +735,35 @@ pub fn read_clap_metadata(path: &std::path::Path) -> Option<(String, String, Str
         let path_cs = CString::new(key.as_str()).ok()?;
         let _entry = EntryRef::acquire(&key, &path_cs, entry.init, entry.deinit)?;
 
-        let result = (|| -> Option<(String, String, String)> {
+        let result = (|| -> Option<Vec<(String, String, String)>> {
             let get_factory = entry.get_factory?;
             let factory = get_factory(CLAP_PLUGIN_FACTORY_ID.as_ptr() as *const c_char)
                 as *const ClapPluginFactory;
             if factory.is_null() { return None; }
 
             let count_fn = (*factory).get_plugin_count?;
-            if count_fn(factory) == 0 { return None; }
-
             let desc_fn = (*factory).get_plugin_descriptor?;
-            let desc    = desc_fn(factory, 0);
-            if desc.is_null() { return None; }
+            let mut out = Vec::new();
+            for index in 0..count_fn(factory) {
+                let desc    = desc_fn(factory, index);
+                if desc.is_null() { continue; }
 
-            let rs = |ptr: *const c_char| -> String {
-                if ptr.is_null() { String::new() }
-                else { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
-            };
+                let rs = |ptr: *const c_char| -> String {
+                    if ptr.is_null() { String::new() }
+                    else { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
+                };
 
-            let name    = rs((*desc).name);
-            let vendor  = rs((*desc).vendor);
-            let version = rs((*desc).version);
+                let name    = rs((*desc).name);
+                let vendor  = rs((*desc).vendor);
+                let version = rs((*desc).version);
 
-            let name = if name.is_empty() {
-                path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string()
-            } else { name };
+                let name = if name.is_empty() {
+                    path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string()
+                } else { name };
 
-            Some((name, vendor, version))
+                out.push((name, vendor, version));
+            }
+            (!out.is_empty()).then_some(out)
         })();
 
         result

@@ -8,7 +8,7 @@ use crate::plugins::types::{PluginInfo, PluginFormat};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 
-const SCAN_CACHE_VERSION: u32 = 3;
+const SCAN_CACHE_VERSION: u32 = 4; // 4: one entry per sub-plugin
 
 pub struct PluginScanner {
     scan_paths: Vec<PathBuf>,
@@ -297,16 +297,18 @@ impl PluginScanner {
                     // Check if this is a VST3 bundle (folder named *.vst3 on Windows)
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                         if ext.eq_ignore_ascii_case("vst3") {
-                            if let Some(plugin) = self.scan_vst3_bundle(&path) {
-                                return vec![plugin];
+                            let plugins = self.scan_vst3_bundle(&path);
+                            if !plugins.is_empty() {
+                                return plugins;
                             }
                         }
                     }
                     // Check if a non-.vst3 folder is still a VST3 bundle by structure
                     #[cfg(target_os = "windows")]
                     if path.join("Contents").join("x86_64-win").is_dir() {
-                        if let Some(plugin) = self.scan_vst3_bundle(&path) {
-                            return vec![plugin];
+                        let plugins = self.scan_vst3_bundle(&path);
+                        if !plugins.is_empty() {
+                            return plugins;
                         }
                     }
 
@@ -331,10 +333,7 @@ impl PluginScanner {
                             return Vec::new();
                         }
                     }
-                    if let Some(plugin) = self.scan_file(&path) {
-                        return vec![plugin];
-                    }
-                    Vec::new()
+                    self.scan_file(&path)
                 } else {
                     Vec::new()
                 }
@@ -351,8 +350,10 @@ impl PluginScanner {
     }
 
     /// Scan a VST3 bundle directory (Windows: PluginName.vst3/Contents/x86_64-win/PluginName.dll)
-    fn scan_vst3_bundle(&self, bundle_path: &Path) -> Option<PluginInfo> {
-        let plugin_name = bundle_path.file_stem()?.to_str()?;
+    fn scan_vst3_bundle(&self, bundle_path: &Path) -> Vec<PluginInfo> {
+        let Some(plugin_name) = bundle_path.file_stem().and_then(|s| s.to_str()) else {
+            return Vec::new();
+        };
         let id = format!("vst3::{}", plugin_name);
 
         // On Windows, the DLL lives at Contents/x86_64-win/<PluginName>.dll
@@ -400,34 +401,35 @@ impl PluginScanner {
         //   2. PE VERSIONINFO resource (Windows) — LOAD_LIBRARY_AS_DATAFILE so
         //      DllMain never runs; extracts FileDescription / CompanyName / FileVersion.
         //   3. IPluginFactory2 — loads the DLL as a last resort (executes DllMain).
+        // Only moduleInfo.json lists every class without running plugin
+        // code; the fallbacks describe a single (first) plugin.
+        // ponytail: multi-class VST3s without moduleInfo.json show as one
+        // plugin; enumerate factory classes in read_vst3_dll_info if needed.
         #[cfg(target_os = "windows")]
-        let static_meta = read_vst3_module_info(bundle_path)
-            .or_else(|| if dll_path.exists() { read_vst3_pe_version_info(&dll_path) } else { None });
+        let single_meta = || {
+            if dll_path.exists() { read_vst3_pe_version_info(&dll_path).or_else(|| read_vst3_dll_info(&dll_path)) } else { None }
+        };
         #[cfg(not(target_os = "windows"))]
-        let static_meta = read_vst3_module_info(bundle_path);
+        let single_meta = || if dll_path.exists() { read_vst3_dll_info(&dll_path) } else { None };
 
-        let (name, vendor, version, category) = static_meta
-            .or_else(|| if dll_path.exists() { read_vst3_dll_info(&dll_path) } else { None })
-            .unwrap_or_else(|| (
+        let metas = read_vst3_module_info(bundle_path)
+            .or_else(|| single_meta().map(|m| vec![m]))
+            .unwrap_or_else(|| vec![(
                 plugin_name.to_string(),
                 String::new(),
                 String::new(),
-                    "Effect".to_string(),
-                ));
+                "Effect".to_string(),
+            )]);
 
-        Some(PluginInfo {
-            id,
-            name,
-            vendor,
-            version,
-            path: effective_path,
-            format: PluginFormat::VST3,
-            category,
-        })
+        sub_plugins(&id, effective_path, PluginFormat::VST3, metas)
     }
 
     /// Try to scan a single file as a plugin (VST2 .dll, CLAP .clap)
-    fn scan_file(&self, path: &Path) -> Option<PluginInfo> {
+    fn scan_file(&self, path: &Path) -> Vec<PluginInfo> {
+        self.scan_file_inner(path).unwrap_or_default()
+    }
+
+    fn scan_file_inner(&self, path: &Path) -> Option<Vec<PluginInfo>> {
         let extension = path.extension()?.to_str()?;
         let format = PluginFormat::from_extension(extension)?;
 
@@ -454,40 +456,35 @@ impl PluginScanner {
         // For CLAP, briefly load the DLL to read the plugin descriptor.
         // For single-file VST3 (.vst3 files that are PE DLLs), try VERSIONINFO
         // resource first (no code execution), then IPluginFactory2 as fallback.
-        let (name, vendor, version, category) = if matches!(format, PluginFormat::VST) {
-            let (n, v, ver) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                with_code_load_lock(|| read_vst2_metadata(path))
-            }))
-            .unwrap_or_else(|_| {
-                log::error!("VST2 DLL panicked during scan: {}", path.display());
-                None
-            })
-            .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
-            (n, v, ver, "Effect".to_string())
-        } else if matches!(format, PluginFormat::CLAP) {
-            let (n, v, ver) = with_code_load_lock(|| crate::plugins::processor::clap::read_clap_metadata(path))
-                .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
-            (n, v, ver, "Effect".to_string())
-        } else if matches!(format, PluginFormat::VST3) {
-            #[cfg(target_os = "windows")]
-            let meta = read_vst3_pe_version_info(path)
-                .or_else(|| read_vst3_dll_info(path));
-            #[cfg(not(target_os = "windows"))]
-            let meta = read_vst3_dll_info(path);
-            meta.unwrap_or_else(|| (filename.to_string(), String::new(), String::new(), "Effect".to_string()))
+        let metas: Vec<(String, String, String, String)> = if matches!(format, PluginFormat::CLAP) {
+            with_code_load_lock(|| crate::plugins::processor::clap::read_clap_metadata(path))
+                .map(|all| all.into_iter().map(|(n, v, ver)| (n, v, ver, "Effect".to_string())).collect())
+                .unwrap_or_else(|| vec![(filename.to_string(), String::new(), String::new(), "Effect".to_string())])
         } else {
-            (filename.to_string(), String::new(), String::new(), "Effect".to_string())
+            let single = if matches!(format, PluginFormat::VST) {
+                let (n, v, ver) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    with_code_load_lock(|| read_vst2_metadata(path))
+                }))
+                .unwrap_or_else(|_| {
+                    log::error!("VST2 DLL panicked during scan: {}", path.display());
+                    None
+                })
+                .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
+                (n, v, ver, "Effect".to_string())
+            } else if matches!(format, PluginFormat::VST3) {
+                #[cfg(target_os = "windows")]
+                let meta = read_vst3_pe_version_info(path)
+                    .or_else(|| read_vst3_dll_info(path));
+                #[cfg(not(target_os = "windows"))]
+                let meta = read_vst3_dll_info(path);
+                meta.unwrap_or_else(|| (filename.to_string(), String::new(), String::new(), "Effect".to_string()))
+            } else {
+                (filename.to_string(), String::new(), String::new(), "Effect".to_string())
+            };
+            vec![single]
         };
 
-        Some(PluginInfo {
-            id,
-            name,
-            vendor,
-            version,
-            path: path.to_string_lossy().to_string(),
-            format,
-            category,
-        })
+        Some(sub_plugins(&id, path.to_string_lossy().to_string(), format, metas))
     }
 }
 
@@ -518,6 +515,7 @@ impl PluginScanner {
                 path:     noise_suppressor::ID.to_string(),
                 format:   PluginFormat::Builtin,
                 category: "Noise Reduction".to_string(),
+            sub_index: 0,
             },
             PluginInfo {
                 id:       deep_filter::ID.to_string(),
@@ -527,6 +525,7 @@ impl PluginScanner {
                 path:     deep_filter::ID.to_string(),
                 format:   PluginFormat::Builtin,
                 category: "Noise Reduction".to_string(),
+            sub_index: 0,
             },
             PluginInfo {
                 id:       compressor::ID.to_string(),
@@ -536,6 +535,7 @@ impl PluginScanner {
                 path:     compressor::ID.to_string(),
                 format:   PluginFormat::Builtin,
                 category: "Dynamics".to_string(),
+            sub_index: 0,
             },
             PluginInfo {
                 id:       voice::ID.to_string(),
@@ -545,6 +545,7 @@ impl PluginScanner {
                 path:     voice::ID.to_string(),
                 format:   PluginFormat::Builtin,
                 category: "Voice".to_string(),
+            sub_index: 0,
             },
         ]
     }
@@ -575,7 +576,8 @@ fn parse_vst3_subcategory(subcats: &str) -> String {
 
 /// Try to read `(name, vendor, version, category)` from a VST3 bundle's
 /// `moduleInfo.json` (VST3 SDK ≥ 3.7). No DLL is loaded.
-fn read_vst3_module_info(bundle_path: &Path) -> Option<(String, String, String, String)> {
+/// Every "Audio Module Class" listed in the bundle's moduleInfo.json, in order.
+fn read_vst3_module_info(bundle_path: &Path) -> Option<Vec<(String, String, String, String)>> {
     let candidates = [
         bundle_path.join("Contents").join("moduleInfo.json"),
         bundle_path.join("Contents").join("Resources").join("moduleInfo.json"),
@@ -599,17 +601,21 @@ fn read_vst3_module_info(bundle_path: &Path) -> Option<(String, String, String, 
         .to_string();
 
     let classes = v.get("Classes")?.as_array()?;
+    let mut out = Vec::new();
     for cls in classes {
         let cat = cls.get("Category").and_then(|s| s.as_str()).unwrap_or("");
         if !cat.contains("Audio Module Class") {
             continue;
         }
-        let name = cls
+        let Some(name) = cls
             .get("Name")
             .and_then(|s| s.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(String::from)?;
+            .map(String::from)
+        else {
+            continue;
+        };
         let vendor = cls
             .get("Vendor")
             .and_then(|s| s.as_str())
@@ -628,9 +634,33 @@ fn read_vst3_module_info(bundle_path: &Path) -> Option<(String, String, String, 
             .map(|arr| arr.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join("|"))
             .unwrap_or_default();
         let category = parse_vst3_subcategory(&subcats);
-        return Some((name, vendor, version, category));
+        out.push((name, vendor, version, category));
     }
-    None
+    (!out.is_empty()).then_some(out)
+}
+
+/// One `PluginInfo` per plugin found in a file; ids of sub-plugins after the
+/// first get a `#index` suffix so they stay unique.
+fn sub_plugins(
+    base_id: &str,
+    path: String,
+    format: PluginFormat,
+    metas: Vec<(String, String, String, String)>,
+) -> Vec<PluginInfo> {
+    metas
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, vendor, version, category))| PluginInfo {
+            id: if i == 0 { base_id.to_string() } else { format!("{base_id}#{i}") },
+            name,
+            vendor,
+            version,
+            path: path.clone(),
+            format,
+            category,
+            sub_index: i as u32,
+        })
+        .collect()
 }
 
 // ── PE VERSIONINFO reader (Windows; zero code execution) ─────────────────────
@@ -1064,4 +1094,38 @@ fn read_vst2_metadata(dll_path: &Path) -> Option<(String, String, String)> {
     };
 
     Some((name, vendor, version))
+}
+
+#[cfg(test)]
+mod multi_plugin_tests {
+    use super::*;
+
+    #[test]
+    fn every_audio_class_in_a_vst3_bundle_becomes_its_own_plugin() {
+        let bundle = std::env::temp_dir().join(format!("rh-multi-{}", std::process::id())).join("Suite.vst3");
+        let contents = bundle.join("Contents");
+        std::fs::create_dir_all(&contents).unwrap();
+        std::fs::write(
+            contents.join("moduleInfo.json"),
+            r#"{
+                "Version": "1.2.3",
+                "Factory Info": { "Vendor": "Acme" },
+                "Classes": [
+                    { "Category": "Audio Module Class", "Name": "Suite EQ", "Sub Categories": ["Fx", "EQ"] },
+                    { "Category": "Component Controller Class", "Name": "Suite EQ Controller" },
+                    { "Category": "Audio Module Class", "Name": "Suite Comp", "Sub Categories": ["Fx", "Dynamics"] }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let plugins = PluginScanner::new().scan_vst3_bundle(&bundle);
+        let _ = std::fs::remove_dir_all(bundle.parent().unwrap());
+
+        assert_eq!(plugins.len(), 2);
+        assert_eq!((plugins[0].name.as_str(), plugins[0].sub_index), ("Suite EQ", 0));
+        assert_eq!((plugins[1].name.as_str(), plugins[1].sub_index), ("Suite Comp", 1));
+        assert_ne!(plugins[0].id, plugins[1].id, "ids must be unique per sub-plugin");
+        assert_eq!(plugins[1].vendor, "Acme");
+    }
 }

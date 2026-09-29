@@ -10,6 +10,9 @@ pub struct PluginInfo {
     pub path: String,
     pub format: PluginFormat,
     pub category: String,
+    /// Which plugin inside the file (CLAP / VST3 files can hold several).
+    #[serde(default)]
+    pub sub_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,4 +68,6 @@ pub struct PluginInstanceInfo {
     pub parameters: Vec<PluginParameter>,
     /// True while the native GUI window is open.
     pub gui_open: bool,
+    #[serde(default)]
+    pub sub_index: u32,
 }

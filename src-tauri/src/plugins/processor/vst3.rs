@@ -262,6 +262,12 @@ mod win {
 
     impl Vst3Processor {
         pub fn load(plugin_path: &str, sample_rate: f64, block_size: usize) -> Result<Self> {
+            Self::load_class(plugin_path, 0, sample_rate, block_size)
+        }
+
+        /// Loads the `class_index`-th "Audio Module Class" in the file (a VST3
+        /// module can contain several plugins).
+        pub fn load_class(plugin_path: &str, class_index: u32, sample_rate: f64, block_size: usize) -> Result<Self> {
             // Some plugins call COM APIs during load/initialize.
             ensure_com_initialized();
 
@@ -305,22 +311,23 @@ mod win {
                         .ok_or_else(|| anyhow!("Failed to wrap IPluginFactory"))?
                 };
 
-                // Find the Audio Module Class CID
+                // Find the class_index-th Audio Module Class CID
                 let n = unsafe { factory.countClasses() };
-                let mut audio_cid: Option<vst3::Steinberg::TUID> = None;
+                let mut audio_cids: Vec<vst3::Steinberg::TUID> = Vec::new();
                 for i in 0..n {
                     let mut ci: PClassInfo = unsafe { std::mem::zeroed() };
                     if unsafe { factory.getClassInfo(i, &mut ci) } == kResultOk {
                         let cat: &[u8] = unsafe {
                             std::slice::from_raw_parts(ci.category.as_ptr() as *const u8, ci.category.len())
                         };
-                        if cat.starts_with(b"Audio Module Class") && audio_cid.is_none() {
-                            audio_cid = Some(ci.cid);
+                        if cat.starts_with(b"Audio Module Class") {
+                            audio_cids.push(ci.cid);
                         }
                     }
                 }
-                let cid = audio_cid
-                    .ok_or_else(|| anyhow!("'{}': no Audio Module Class found", plugin_path))?;
+                let cid = *audio_cids.get(class_index as usize).ok_or_else(|| {
+                    anyhow!("'{}': no Audio Module Class #{} ({} found)", plugin_path, class_index, audio_cids.len())
+                })?;
 
                 // createInstance  IComponent (with FUnknown fallback)
                 log::debug!("{} createInstance (IComponent) for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);

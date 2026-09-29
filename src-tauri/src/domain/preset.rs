@@ -24,6 +24,9 @@ pub struct PresetPlugin {
     pub plugin_path: Option<String>,
     pub plugin_format: Option<PluginFormat>,
     pub plugin_category: Option<String>,
+    /// Which plugin inside a multi-plugin CLAP/VST3 file.
+    #[serde(default)]
+    pub plugin_index: u32,
     pub bypassed: bool,
     pub parameters: Vec<PresetParameter>,
     /// VST3 binary state blob (from IComponent::getState)
@@ -84,6 +87,7 @@ impl Preset {
                 plugin_path: Some(instance.path),
                 plugin_format: Some(instance.format),
                 plugin_category: Some(instance.category),
+                plugin_index: instance.sub_index,
                 bypassed: instance.bypassed,
                 parameters: instance
                     .parameters
@@ -249,6 +253,7 @@ mod tests {
             plugin_path: None,
             plugin_format: None,
             plugin_category: None,
+            plugin_index: 0,
             bypassed: false,
             parameters: vec![],
             vst3_state: state,

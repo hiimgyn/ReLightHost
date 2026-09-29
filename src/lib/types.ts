@@ -45,6 +45,8 @@ export interface PluginInfo {
   path: string;
   format: PluginFormat;
   category: string;
+  /** Which plugin inside a multi-plugin CLAP/VST3 file. */
+  sub_index?: number;
 }
 
 export interface PluginParameter {
@@ -76,6 +78,7 @@ export interface PluginInstanceInfo {
   parameters: PluginParameter[];
   /** True while the native GUI window is open */
   gui_open: boolean;
+  sub_index?: number;
 }
 
 export interface SystemStats {

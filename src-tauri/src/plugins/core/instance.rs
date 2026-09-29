@@ -90,7 +90,7 @@ impl PluginInstance {
             // the marker right back below — only a crash leaves it stuck for
             // take_unclean_exit_plugins() to find on next launch.
             crate::core::crash_marker::mark_active(&plugin_info.path);
-            match Vst3Processor::load(&plugin_info.path, sample_rate, block_size) {
+            match Vst3Processor::load_class(&plugin_info.path, plugin_info.sub_index, sample_rate, block_size) {
                 Ok(proc) => {
                     log::info!("{} VST3 processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
                     Some(proc)
@@ -121,7 +121,7 @@ impl PluginInstance {
         };
 
         let clap_processor = if plugin_info.format == PluginFormat::CLAP {
-            match ClapProcessor::load(&plugin_info.path, sample_rate, block_size) {
+            match ClapProcessor::load_index(&plugin_info.path, plugin_info.sub_index, sample_rate, block_size) {
                 Ok(proc) => {
                     log::info!("{} CLAP processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
                     Some(proc)
@@ -393,6 +393,7 @@ impl PluginInstance {
             bypassed: self.is_bypassed(),
             parameters: self.parameters.read().clone(),
             gui_open: self.gui_open.load(Ordering::Acquire),
+            sub_index: self.plugin_info.sub_index,
         }
     }
 
@@ -1067,6 +1068,7 @@ mod state_tests {
             path: crate::plugins::builtin::compressor::ID.into(),
             format: PluginFormat::Builtin,
             category: String::new(),
+            sub_index: 0,
         };
         Arc::new(PluginInstance::new(info, 48_000.0, 512).unwrap())
     }

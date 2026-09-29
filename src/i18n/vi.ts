@@ -208,6 +208,7 @@ export const vi: TranslationSchema = {
     selectAsioDevice: 'Chọn thiết bị ASIO',
     streamLost: 'Mất kết nối thiết bị âm thanh',
     restartAudio: 'Khởi động lại audio',
+    streamRestored: 'Đã kết nối lại thiết bị âm thanh',
   },
   appSettings: {
     title: 'Cài đặt Ứng dụng',

@@ -208,6 +208,7 @@ export interface TranslationSchema {
     selectAsioDevice: string;
     streamLost: string;
     restartAudio: string;
+    streamRestored: string;
   };
   appSettings: {
     title: string;

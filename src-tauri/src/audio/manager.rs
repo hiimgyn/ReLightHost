@@ -212,6 +212,8 @@ pub struct AudioManager {
     /// Set by a WASAPI capture/render thread when its device fails; picked
     /// up (and monitoring stopped) by `get_status`, which the UI polls.
     stream_failed: Arc<AtomicBool>,
+    /// Last automatic reconnect attempt after a device loss.
+    last_reconnect: Mutex<Option<Instant>>,
 }
 
 impl AudioManager {
@@ -233,6 +235,7 @@ impl AudioManager {
             effective_rate:   AtomicU32::new(0),
             wasapi_exclusive: AtomicBool::new(false),
             stream_failed:    Arc::new(AtomicBool::new(false)),
+            last_reconnect:   Mutex::new(None),
         }
     }
 
@@ -328,7 +331,11 @@ impl AudioManager {
             *self.exclusive_mode_active.write() = false;
             *self.wasapi_fallback_reason.write() = None;
             self.effective_rate.store(0, Ordering::Relaxed);
-            self.status.write().is_monitoring = false;
+            {
+                let mut status = self.status.write();
+                status.is_monitoring = false;
+                status.stream_error = None;
+            }
             log::info!("{} Input monitoring stopped", crate::core::threading::thread_prefix("audio/monitor"));
             return Ok(());
         }
@@ -708,6 +715,25 @@ impl AudioManager {
         self.wasapi_exclusive.store(enabled, Ordering::Relaxed);
     }
 
+    /// Whether the devices the user configured are present again. A missing
+    /// configured device would make `toggle_monitoring` fall back to the
+    /// system default — right for a manual start, wrong for an automatic
+    /// reconnect (it would silently move the user to another mic/output).
+    /// ASIO legs never report a loss, so ASIO ids don't gate this.
+    fn configured_devices_present(&self) -> bool {
+        let config = self.config.read().clone();
+        let input_ok = match config.input_device_id.as_deref() {
+            Some(id) if !id.starts_with("asio_") => AudioDevice::find_input_device(id, &[]).is_some(),
+            Some(_) => true,
+            None => AudioDevice::default_input_device_id().is_some(),
+        };
+        let output_ok = match config.output_device_id.as_deref() {
+            Some(id) if !id.starts_with("asio_") => AudioDevice::find_output_device(id, &[]).is_some(),
+            _ => true,
+        };
+        input_ok && output_ok
+    }
+
     /// Set output mute state.
     pub fn set_muted(&self, muted: bool) {
         self.muted.store(muted, Ordering::Relaxed);
@@ -750,6 +776,30 @@ impl AudioManager {
             let _ = self.toggle_monitoring(false);
             self.status.write().stream_error =
                 Some("The audio device stopped responding (unplugged or lost). Monitoring was stopped.".into());
+            // First reconnect attempt no sooner than 3 s from now.
+            *self.last_reconnect.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        }
+
+        // Device came back (re-plugged)? Try to resume — at most every 3 s,
+        // and only after a loss, never against a stop the user made.
+        let (lost, running) = {
+            let status = self.status.read();
+            (status.stream_error.is_some(), status.is_monitoring)
+        };
+        let now = Instant::now();
+        let mut last = self.last_reconnect.lock().unwrap_or_else(|e| e.into_inner());
+        if should_try_reconnect(lost, running, *last, now) && self.configured_devices_present() {
+            *last = Some(now);
+            drop(last);
+            match self.toggle_monitoring(true) {
+                Ok(()) => log::info!("{} Audio device reconnected — monitoring resumed", crate::core::threading::thread_prefix("audio/monitor")),
+                Err(_) => {
+                    // Still gone; toggle_monitoring(true) failing leaves nothing
+                    // running, keep reporting the loss.
+                    self.status.write().stream_error =
+                        Some("The audio device stopped responding (unplugged or lost). Monitoring was stopped.".into());
+                }
+            }
         }
         let dsp_load = f32::from_bits(self.dsp_load_u32.load(Ordering::Relaxed));
         self.status.write().cpu_usage = dsp_load;
@@ -887,6 +937,11 @@ impl AudioManager {
     }
 }
 
+/// After a device loss (and only while nothing runs), retry at most every 3 s.
+fn should_try_reconnect(lost: bool, running: bool, last_attempt: Option<Instant>, now: Instant) -> bool {
+    lost && !running && last_attempt.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(3))
+}
+
 impl Default for AudioManager {
     fn default() -> Self {
         Self::new()
@@ -896,6 +951,24 @@ impl Default for AudioManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_is_attempted_only_after_a_loss_and_at_most_every_three_seconds() {
+        let t0 = Instant::now();
+        assert!(!should_try_reconnect(false, false, None, t0), "no loss");
+        assert!(!should_try_reconnect(true, true, None, t0), "already running");
+        assert!(should_try_reconnect(true, false, None, t0));
+        assert!(!should_try_reconnect(true, false, Some(t0), t0 + std::time::Duration::from_secs(1)));
+        assert!(should_try_reconnect(true, false, Some(t0), t0 + std::time::Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn stopping_monitoring_by_hand_clears_a_device_loss() {
+        let am = AudioManager::new();
+        am.status.write().stream_error = Some("lost".into());
+        am.toggle_monitoring(false).unwrap();
+        assert!(am.get_status().stream_error.is_none(), "would otherwise auto-restart what the user stopped");
+    }
 
     #[test]
     fn running_rate_is_only_known_while_a_stream_runs() {

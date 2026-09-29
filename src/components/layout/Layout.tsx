@@ -28,20 +28,26 @@ function AppShell({ children, isDark }: { children: ReactNode; isDark: boolean }
     fetchStatus: s.fetchStatus,
     toggleMonitoring: s.toggleMonitoring,
   })));
-  const { notification } = AntApp.useApp();
+  const { notification, message } = AntApp.useApp();
   const { t } = useTranslation();
   const shownStreamError = useRef<string | null>(null);
 
   // Device unplugged / lost: the backend stopped monitoring — say so once,
-  // with a one-click restart.
+  // with a one-click restart. The backend also retries by itself once the
+  // device is back; when the error clears, drop the notice.
   useEffect(() => {
     const err = status.stream_error ?? null;
-    if (!err || err === shownStreamError.current) {
-      shownStreamError.current = err;
+    const key = 'stream-error';
+    if (!err) {
+      if (shownStreamError.current) {
+        notification.destroy(key);
+        if (status.is_monitoring) message.success(t('audioSettings.streamRestored'));
+      }
+      shownStreamError.current = null;
       return;
     }
+    if (err === shownStreamError.current) return;
     shownStreamError.current = err;
-    const key = 'stream-error';
     notification.error({
       key,
       title: t('audioSettings.streamLost'),
@@ -64,7 +70,7 @@ function AppShell({ children, isDark }: { children: ReactNode; isDark: boolean }
         </Button>
       ),
     });
-  }, [status.stream_error, notification, t, toggleMonitoring, fetchStatus]);
+  }, [status.stream_error, status.is_monitoring, notification, message, t, toggleMonitoring, fetchStatus]);
   const pluginChain = usePluginStore((s) => s.pluginChain);
 
   useEffect(() => {

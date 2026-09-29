@@ -208,6 +208,7 @@ export const en: TranslationSchema = {
     selectAsioDevice: 'Select ASIO device',
     streamLost: 'Audio device lost',
     restartAudio: 'Restart audio',
+    streamRestored: 'Audio device reconnected',
   },
   appSettings: {
     title: 'Application Settings',

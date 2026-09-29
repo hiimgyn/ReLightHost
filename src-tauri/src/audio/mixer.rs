@@ -46,7 +46,7 @@ impl BacklogTrimmer {
     }
 
     /// Call right before popping `block` frames. Returns frames dropped.
-    pub fn before_pop(&mut self, cons: &mut ringbuf::HeapCons<StereoFrame>, block: usize) -> usize {
+    pub fn before_pop<T>(&mut self, cons: &mut ringbuf::HeapCons<T>, block: usize) -> usize {
         use ringbuf::traits::{Consumer, Observer};
         self.min_seen = self.min_seen.min(cons.occupied_len());
         self.elapsed += block;
@@ -197,6 +197,17 @@ mod tests {
         }
         trimmer.before_pop(&mut cons, 100);
         assert_eq!(cons.occupied_len(), 100, "excess backlog should be trimmed to one block");
+    }
+
+    #[test]
+    fn trimmer_works_on_any_frame_type() {
+        let (mut prod, mut cons) = HeapRb::<[f32; 4]>::new(64).split();
+        for i in 0..40 {
+            prod.try_push([i as f32; 4]).unwrap();
+        }
+        let mut trimmer = BacklogTrimmer::new(8);
+        assert_eq!(trimmer.before_pop(&mut cons, 8), 32);
+        assert_eq!(cons.occupied_len(), 8);
     }
 
     #[test]

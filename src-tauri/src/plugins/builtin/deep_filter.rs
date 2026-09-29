@@ -15,16 +15,14 @@ const HOP_SIZE: usize = 480; // 10ms frame at 48kHz
 const RB_CAPACITY: usize = 48000; // 1 second buffer
 
 pub struct DeepFilterProcessor {
-    prod_to_worker_l: HeapProd<f32>,
-    prod_to_worker_r: HeapProd<f32>,
-    cons_from_worker_l: HeapCons<f32>,
-    cons_from_worker_r: HeapCons<f32>,
-    /// The exact dry sample the worker fed into the model for each enhanced
-    /// sample, pushed in lockstep with `cons_from_worker_*` so the two are
-    /// always a matched pair — see the mixing comment in `process_stereo`
-    /// for why this replaced trying to time-align `dry_l`/`dry_r` by hand.
-    cons_dry_aligned_l: HeapCons<f32>,
-    cons_dry_aligned_r: HeapCons<f32>,
+    prod_to_worker: HeapProd<[f32; 2]>,
+    /// Worker output, one frame per sample: `[clean_l, clean_r, dry_l, dry_r]`
+    /// — the enhanced sample together with the exact dry sample the model was
+    /// fed for it, so wet/dry mixing stays in phase (see `process_stereo`).
+    cons_from_worker: HeapCons<[f32; 4]>,
+    /// Keeps worker-output backlog (from late inference hops) from turning
+    /// into permanent extra latency.
+    trimmer: crate::audio::mixer::BacklogTrimmer,
 
     /// Immediate (near-zero-latency) copy of the incoming signal, used only
     /// as the dry-only fallback while the worker hasn't produced anything
@@ -58,23 +56,8 @@ impl DeepFilterProcessor {
 
         // Set up lock-free SPSC ring buffers connecting the real-time audio thread
         // to the background neural network inference worker thread.
-        let rb_in_l = HeapRb::<f32>::new(RB_CAPACITY);
-        let (prod_to_worker_l, mut cons_to_worker_l) = rb_in_l.split();
-
-        let rb_in_r = HeapRb::<f32>::new(RB_CAPACITY);
-        let (prod_to_worker_r, mut cons_to_worker_r) = rb_in_r.split();
-
-        let rb_out_l = HeapRb::<f32>::new(RB_CAPACITY);
-        let (mut prod_from_worker_l, cons_from_worker_l) = rb_out_l.split();
-
-        let rb_out_r = HeapRb::<f32>::new(RB_CAPACITY);
-        let (mut prod_from_worker_r, cons_from_worker_r) = rb_out_r.split();
-
-        let rb_dry_l = HeapRb::<f32>::new(RB_CAPACITY);
-        let (mut prod_dry_aligned_l, cons_dry_aligned_l) = rb_dry_l.split();
-
-        let rb_dry_r = HeapRb::<f32>::new(RB_CAPACITY);
-        let (mut prod_dry_aligned_r, cons_dry_aligned_r) = rb_dry_r.split();
+        let (prod_to_worker, mut cons_to_worker) = HeapRb::<[f32; 2]>::new(RB_CAPACITY).split();
+        let (mut prod_from_worker, cons_from_worker) = HeapRb::<[f32; 4]>::new(RB_CAPACITY).split();
 
         let running = Arc::new(AtomicBool::new(true));
         let worker_running = Arc::clone(&running);
@@ -129,10 +112,11 @@ impl DeepFilterProcessor {
                     model.post_filter = current_post > 0.0;
 
                     // When a complete HOP_SIZE (480 samples = 10ms) is ready in both channels, process it
-                    if cons_to_worker_l.occupied_len() >= HOP_SIZE && cons_to_worker_r.occupied_len() >= HOP_SIZE {
+                    if cons_to_worker.occupied_len() >= HOP_SIZE {
                         for i in 0..HOP_SIZE {
-                            noisy[[0, i]] = cons_to_worker_l.try_pop().unwrap_or(0.0);
-                            noisy[[1, i]] = cons_to_worker_r.try_pop().unwrap_or(0.0);
+                            let [l, r] = cons_to_worker.try_pop().unwrap_or([0.0, 0.0]);
+                            noisy[[0, i]] = l;
+                            noisy[[1, i]] = r;
                         }
 
                         match model.process(noisy.view(), enh.view_mut()) {
@@ -142,22 +126,14 @@ impl DeepFilterProcessor {
                                 worker_last_vad.store(vad.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 
                                 for i in 0..HOP_SIZE {
-                                    let _ = prod_from_worker_l.try_push(enh[[0, i]]);
-                                    let _ = prod_from_worker_r.try_push(enh[[1, i]]);
-                                    // Pushed in the same iteration as the enhanced
-                                    // sample above so the two ring buffers can
-                                    // only ever be read back as a matched pair.
-                                    let _ = prod_dry_aligned_l.try_push(noisy[[0, i]]);
-                                    let _ = prod_dry_aligned_r.try_push(noisy[[1, i]]);
+                                    let _ = prod_from_worker.try_push([enh[[0, i]], enh[[1, i]], noisy[[0, i]], noisy[[1, i]]]);
                                 }
                             }
                             Err(e) => {
                                 log::warn!("DeepFilterNet inference error: {e}");
                                 for i in 0..HOP_SIZE {
-                                    let _ = prod_from_worker_l.try_push(noisy[[0, i]]);
-                                    let _ = prod_from_worker_r.try_push(noisy[[1, i]]);
-                                    let _ = prod_dry_aligned_l.try_push(noisy[[0, i]]);
-                                    let _ = prod_dry_aligned_r.try_push(noisy[[1, i]]);
+                                    let (l, r) = (noisy[[0, i]], noisy[[1, i]]);
+                                    let _ = prod_from_worker.try_push([l, r, l, r]);
                                 }
                             }
                         }
@@ -177,12 +153,9 @@ impl DeepFilterProcessor {
         };
 
         Some(Self {
-            prod_to_worker_l,
-            prod_to_worker_r,
-            cons_from_worker_l,
-            cons_from_worker_r,
-            cons_dry_aligned_l,
-            cons_dry_aligned_r,
+            prod_to_worker,
+            cons_from_worker,
+            trimmer: crate::audio::mixer::BacklogTrimmer::new(48_000),
             dry_l: VecDeque::with_capacity(RB_CAPACITY),
             dry_r: VecDeque::with_capacity(RB_CAPACITY),
 
@@ -219,8 +192,7 @@ impl BuiltinProcessor for DeepFilterProcessor {
 
         // Push raw incoming audio into worker ring buffer & keep dry copies
         for i in 0..n {
-            let _ = self.prod_to_worker_l.try_push(left[i]);
-            let _ = self.prod_to_worker_r.try_push(right[i]);
+            let _ = self.prod_to_worker.try_push([left[i], right[i]]);
             self.dry_l.push_back(left[i]);
             self.dry_r.push_back(right[i]);
         }
@@ -248,19 +220,14 @@ impl BuiltinProcessor for DeepFilterProcessor {
         // — a starved block plays back at most the dry proportion the user
         // dialed in (0 at the default mix=1.0, i.e. true silence instead of
         // a raw noise leak).
+        self.trimmer.before_pop(&mut self.cons_from_worker, n);
         for i in 0..n {
             let immediate_dry_l = self.dry_l.pop_front().unwrap_or(left[i]);
             let immediate_dry_r = self.dry_r.pop_front().unwrap_or(right[i]);
 
-            let aligned = (
-                self.cons_from_worker_l.try_pop(),
-                self.cons_from_worker_r.try_pop(),
-                self.cons_dry_aligned_l.try_pop(),
-                self.cons_dry_aligned_r.try_pop(),
-            );
-            let (dry_s_l, clean_l, dry_s_r, clean_r) = match aligned {
-                (Some(wl), Some(wr), Some(dl), Some(dr)) => (dl, wl, dr, wr),
-                _ => (immediate_dry_l, 0.0, immediate_dry_r, 0.0),
+            let (dry_s_l, clean_l, dry_s_r, clean_r) = match self.cons_from_worker.try_pop() {
+                Some([wl, wr, dl, dr]) => (dl, wl, dr, wr),
+                None => (immediate_dry_l, 0.0, immediate_dry_r, 0.0),
             };
             left[i] = (dry_s_l * (1.0 - mix) + clean_l * mix) * gain;
             right[i] = (dry_s_r * (1.0 - mix) + clean_r * mix) * gain;

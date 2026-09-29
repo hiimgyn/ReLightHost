@@ -68,8 +68,17 @@ pub fn get_system_stats(state: tauri::State<'_, AppState>) -> Result<SystemStats
     }
 }
 
+/// Only web links — the OS shell would happily "open" a local path or
+/// file:// URL (i.e. run it) if one ever reached this command.
+fn is_allowed_external_url(url: &str) -> bool {
+    url.starts_with("https://")
+}
+
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
+    if !is_allowed_external_url(&url) {
+        return Err(format!("Refusing to open non-https URL: {url}"));
+    }
     webbrowser::open(&url).map_err(|e| format!("Failed to open external URL: {e}"))?;
     Ok(())
 }
@@ -113,4 +122,17 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
 pub fn quit_app(app: tauri::AppHandle) {
     shutdown_for_exit(&app);
     app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_allowed_external_url;
+
+    #[test]
+    fn only_https_urls_may_be_opened() {
+        assert!(is_allowed_external_url("https://github.com/HiimGyn/ReLightHost"));
+        assert!(!is_allowed_external_url("http://example.com"));
+        assert!(!is_allowed_external_url("file:///C:/Windows/System32/calc.exe"));
+        assert!(!is_allowed_external_url(r"C:\Windows\System32\calc.exe"));
+    }
 }

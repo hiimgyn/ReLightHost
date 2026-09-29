@@ -17,7 +17,7 @@ use anyhow::{anyhow, Result};
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicIsize};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
 // ── Raw VST 2.4 ABI ──────────────────────────────────────────────────────────
 
@@ -79,13 +79,30 @@ type PluginEntryPoint = unsafe extern "C" fn(
     callback: extern "C" fn(*mut AEffect, i32, i32, isize, *mut c_void, f32) -> isize,
 ) -> *mut AEffect;
 
-/// Minimal host callback: plugins query `audioMasterVersion` (opcode 1) during
-/// init to confirm VST 2.4 support; every other opcode this host doesn't act
-/// on can safely return 0.
+/// Sample rate / block size reported through the host callback. Process-wide
+/// rather than per `AEffect`: every plugin in the chain runs at the same
+/// rate and block size.
+static HOST_SAMPLE_RATE: AtomicU32 = AtomicU32::new(48_000);
+static HOST_BLOCK_SIZE: AtomicU32 = AtomicU32::new(512);
+
+fn set_host_audio_config(sample_rate: f64, block_size: usize) {
+    HOST_SAMPLE_RATE.store(sample_rate as u32, Ordering::Relaxed);
+    HOST_BLOCK_SIZE.store(block_size as u32, Ordering::Relaxed);
+}
+
+/// Minimal host callback: `audioMasterVersion` (1) confirms VST 2.4 support;
+/// `audioMasterGetSampleRate` (16) / `audioMasterGetBlockSize` (17) are
+/// answered because some plugins read them instead of waiting for
+/// `effSetSampleRate`. Every other opcode can safely return 0.
 extern "C" fn host_callback(
     _effect: *mut AEffect, opcode: i32, _index: i32, _value: isize, _ptr: *mut c_void, _opt: f32,
 ) -> isize {
-    if opcode == 1 { 2400 } else { 0 }
+    match opcode {
+        1 => 2400,
+        16 => HOST_SAMPLE_RATE.load(Ordering::Relaxed) as isize,
+        17 => HOST_BLOCK_SIZE.load(Ordering::Relaxed) as isize,
+        _ => 0,
+    }
 }
 
 /// Owns a loaded plugin's `AEffect*` and the DLL keeping it mapped.
@@ -210,6 +227,7 @@ impl Vst2Processor {
     /// legacy `main` entry point (pre-2.4 plugins) if the symbol is absent.
     pub fn load(plugin_path: &str, sample_rate: f64, block_size: usize) -> Result<Self> {
         let cap = block_size.max(4096);
+        set_host_audio_config(sample_rate, block_size);
 
         // SAFETY: loading an external DLL from a user-configured plugin path.
         let lib = unsafe { libloading::Library::new(plugin_path) }
@@ -295,10 +313,11 @@ impl Vst2Processor {
         self.in_r[..n].copy_from_slice(&right[..n]);
 
         // try_lock: non-blocking so the audio callback never stalls. If the
-        // GUI thread or a state save/restore holds the lock, this block is
-        // skipped (out_l/out_r keep whatever they held from the last
-        // successful process() call, same as before this rewrite).
-        if let Ok(plugin) = self.plugin.try_lock() {
+        // GUI thread or a state save/restore holds the lock, pass this chunk
+        // through dry — copying out_l/out_r here would replay the previous
+        // chunk's output (an audible repeat).
+        let Ok(plugin) = self.plugin.try_lock() else { return };
+        {
             let out_ch = plugin.num_outputs().clamp(1, 2) as usize;
             let in_ptrs:  [*const f32; 2] = [self.in_l.as_ptr(),      self.in_r.as_ptr()];
             let out_ptrs: [*mut   f32; 2] = [self.out_l.as_mut_ptr(), self.out_r.as_mut_ptr()];
@@ -348,5 +367,18 @@ impl Vst2Processor {
         crate::plugins::gui::vst2::open_vst2_gui(
             Arc::clone(&self.plugin), plugin_name, gui_flag, gui_hwnd,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_callback_reports_current_sample_rate_and_block_size() {
+        set_host_audio_config(44_100.0, 256);
+        assert_eq!(host_callback(ptr::null_mut(), 16, 0, 0, ptr::null_mut(), 0.0), 44_100);
+        assert_eq!(host_callback(ptr::null_mut(), 17, 0, 0, ptr::null_mut(), 0.0), 256);
+        assert_eq!(host_callback(ptr::null_mut(), 1, 0, 0, ptr::null_mut(), 0.0), 2400);
     }
 }

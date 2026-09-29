@@ -610,6 +610,11 @@ mod win {
             }
         }
 
+        /// Latency the plugin reports (IAudioProcessor::getLatencySamples).
+        pub fn latency_samples(&self) -> u32 {
+            unsafe { self.audio_proc.getLatencySamples() }
+        }
+
         /// Set a parameter via IEditController::setParamNormalized.
         ///
         /// `normalized` must be in [0.0, 1.0].  No-op if no controller is available.
@@ -776,6 +781,7 @@ impl Vst3Processor {
         Err(anyhow::anyhow!("VST3 audio processing is only supported on Windows"))
     }
     pub fn process_stereo(&mut self, _left: &mut [f32], _right: &mut [f32]) {}
+    pub fn latency_samples(&self) -> u32 { 0 }
     pub fn get_state(&self) -> Vec<u8> { Vec::new() }
     pub fn set_state(&self, _data: &[u8]) {}
 }

@@ -31,6 +31,9 @@ pub trait BuiltinProcessor: Send {
     /// Voice-activity probability from the last processed frame (0.0 – 1.0).
     /// Only meaningful for `NoiseSuppressor` and `DeepFilterProcessor`; returns 0.0 for all others.
     fn get_vad(&self) -> f32 { 0.0 }
+
+    /// Delay this processor adds, in samples at its sample rate.
+    fn latency_samples(&self) -> u32 { 0 }
 }
 
 // ── Factory ───────────────────────────────────────────────────────────────────

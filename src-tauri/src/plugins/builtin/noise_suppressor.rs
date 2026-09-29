@@ -155,6 +155,9 @@ impl BuiltinProcessor for NoiseSuppressor {
     }
 
     fn get_vad(&self) -> f32 { self.last_vad }
+
+    /// Output lags input by one RNNoise frame (it only emits whole frames).
+    fn latency_samples(&self) -> u32 { FRAME_SIZE as u32 }
 }
 
 impl Default for NoiseSuppressor {

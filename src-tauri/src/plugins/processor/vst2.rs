@@ -346,6 +346,11 @@ impl Vst2Processor {
         right[..n].copy_from_slice(&self.out_r[..n]);
     }
 
+    /// Latency the plugin reports (`AEffect::initialDelay`).
+    pub fn latency_samples(&self) -> u32 {
+        self.plugin.lock().map(|p| unsafe { (*p.effect).initial_delay.max(0) as u32 }).unwrap_or(0)
+    }
+
     /// Snapshot the plugin preset as raw bytes.
     pub fn get_state(&mut self) -> Vec<u8> {
         self.plugin.lock().ok()

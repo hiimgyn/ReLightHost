@@ -194,7 +194,7 @@ function MiniMeter({ value, color, width = 60 }: { value: number; color: string;
 }
 
 function Footer({ status, pluginCount, isDark }: {
-  status: { sample_rate: number; buffer_size: number; latency_ms: number };
+  status: { sample_rate: number; buffer_size: number; latency_ms: number; plugin_latency_ms?: number };
   pluginCount: number;
   isDark: boolean;
 }) {
@@ -257,9 +257,14 @@ function Footer({ status, pluginCount, isDark }: {
           {status.buffer_size} smp
         </Text>
         {sep}
-        <Text style={{ fontSize: 11, color: token.colorTextTertiary }}>
-          {status.latency_ms.toFixed(1)} ms
-        </Text>
+        <Tooltip title={t('footer.latencyTooltip', {
+          buffer: status.latency_ms.toFixed(1),
+          plugins: (status.plugin_latency_ms ?? 0).toFixed(1),
+        })}>
+          <Text style={{ fontSize: 11, color: token.colorTextTertiary, cursor: 'default' }}>
+            {(status.latency_ms + (status.plugin_latency_ms ?? 0)).toFixed(1)} ms
+          </Text>
+        </Tooltip>
         {sep}
         <Text style={{ fontSize: 11, color: token.colorTextTertiary }}>
           {t('footer.pluginsCount', { count: pluginCount, plural: pluginCount !== 1 ? 's' : '' })}

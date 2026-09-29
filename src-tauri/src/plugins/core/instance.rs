@@ -243,6 +243,22 @@ impl PluginInstance {
         self.scope.around(left, right, |left, right| self.process_inner(left, right));
     }
 
+    /// Delay this plugin adds to the chain, in samples (0 when bypassed —
+    /// bypass passes audio straight through).
+    pub fn latency_samples(&self) -> u32 {
+        if self.is_bypassed() {
+            return 0;
+        }
+        let t = STATE_LOCK_TIMEOUT;
+        let reported = match self.plugin_info.format {
+            PluginFormat::VST3 => self.vst3_processor.try_lock_for(t).and_then(|g| g.as_ref().map(|p| p.latency_samples())),
+            PluginFormat::VST => self.vst2_processor.try_lock_for(t).and_then(|g| g.as_ref().map(|p| p.latency_samples())),
+            PluginFormat::CLAP => self.clap_processor.try_lock_for(t).and_then(|g| g.as_ref().map(|p| p.latency_samples())),
+            PluginFormat::Builtin => self.builtin_processor.try_lock_for(t).and_then(|g| g.as_ref().map(|p| p.latency_samples())),
+        };
+        reported.unwrap_or(0)
+    }
+
     /// (input, output) peak per 10 ms window, oldest first (≈2 s).
     pub fn scope_snapshot(&self) -> Vec<(f32, f32)> {
         self.scope.snapshot()
@@ -854,6 +870,11 @@ impl PluginInstanceManager {
         Ok(())
     }
 
+    /// Total delay the chain adds, in samples (plugins run in series).
+    pub fn chain_latency_samples(&self) -> u32 {
+        self.instances.load().iter().map(|i| i.latency_samples()).sum()
+    }
+
     /// Get all instances
     pub fn get_instances(&self) -> Vec<PluginInstanceInfo> {
         self.instances
@@ -1075,6 +1096,20 @@ mod state_tests {
         assert_eq!(snap.len(), 1);
         assert!((snap[0].0 - 0.1).abs() < 1e-3, "pre {}", snap[0].0);
         assert!((snap[0].1 - 0.398).abs() < 0.01, "post {}", snap[0].1);
+    }
+
+    #[test]
+    fn chain_latency_sums_active_plugins_and_skips_bypassed_ones() {
+        let manager = PluginInstanceManager::new();
+        let ns = PluginInfo {
+            path: crate::plugins::builtin::noise_suppressor::ID.into(),
+            ..compressor().plugin_info.clone()
+        };
+        let ns_id = manager.load_plugin(ns, 48_000.0, 512).unwrap();
+        manager.load_plugin(compressor().plugin_info.clone(), 48_000.0, 512).unwrap();
+        assert_eq!(manager.chain_latency_samples(), 480);
+        manager.get_instance(&ns_id).unwrap().set_bypassed(true);
+        assert_eq!(manager.chain_latency_samples(), 0);
     }
 
     #[test]

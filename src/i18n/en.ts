@@ -335,5 +335,6 @@ export const en: TranslationSchema = {
     ramTooltip: 'RAM: {used} MB used',
     openGithub: 'Open GitHub repository',
     pluginsCount: '{count} plugin{plural}',
+    latencyTooltip: 'Buffer {buffer} ms + plugins {plugins} ms',
   },
 };

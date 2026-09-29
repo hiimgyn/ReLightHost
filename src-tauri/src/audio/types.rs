@@ -26,6 +26,9 @@ pub struct AudioStatus {
     /// Set when a running stream died (device unplugged / lost); monitoring
     /// was stopped because of it. Cleared when monitoring starts again.
     pub stream_error: Option<String>,
+    /// Delay the plugin chain adds on top of `latency_ms` (filled in by the
+    /// status command, which can see the chain).
+    pub plugin_latency_ms: f32,
 }
 
 impl Default for AudioStatus {
@@ -45,6 +48,7 @@ impl Default for AudioStatus {
             exclusive_mode_active: false,
             wasapi_fallback_reason: None,
             stream_error: None,
+            plugin_latency_ms: 0.0,
         }
     }
 }

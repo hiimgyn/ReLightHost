@@ -335,5 +335,6 @@ export interface TranslationSchema {
     ramTooltip: string;
     openGithub: string;
     pluginsCount: string;
+    latencyTooltip: string;
   };
 }

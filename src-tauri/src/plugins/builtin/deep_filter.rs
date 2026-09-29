@@ -259,6 +259,11 @@ impl BuiltinProcessor for DeepFilterProcessor {
         }
     }
 
+    /// One hop of input buffering plus the STFT window overlap of the
+    /// low-latency model (no conv/DF lookahead) ≈ 20 ms at 48 kHz. Inference
+    /// hiccups can add more; BacklogTrimmer takes that back out.
+    fn latency_samples(&self) -> u32 { (HOP_SIZE * 2) as u32 }
+
     fn get_vad(&self) -> f32 {
         f32::from_bits(self.last_vad_bits.load(Ordering::Relaxed))
     }

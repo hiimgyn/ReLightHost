@@ -335,5 +335,6 @@ export const vi: TranslationSchema = {
     ramTooltip: 'RAM: {used} MB đang dùng',
     openGithub: 'Mở kho mã nguồn GitHub',
     pluginsCount: '{count} plugin',
+    latencyTooltip: 'Buffer {buffer} ms + plugin {plugins} ms',
   },
 };

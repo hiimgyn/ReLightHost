@@ -9,6 +9,8 @@ export interface AudioStatus {
   latency_ms: number;
   /** Set when the running device failed and monitoring was stopped. */
   stream_error?: string | null;
+  /** Delay the plugin chain adds on top of latency_ms. */
+  plugin_latency_ms?: number;
 }
 
 export interface AudioConfig {

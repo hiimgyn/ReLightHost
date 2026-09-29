@@ -23,6 +23,13 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 const CLAP_PLUGIN_FACTORY_ID : &[u8] = b"clap.plugin-factory\0";
 const CLAP_EXT_STATE         : &[u8] = b"clap.state\0";
 const CLAP_EXT_GUI           : &[u8] = b"clap.gui\0";
+const CLAP_EXT_LATENCY       : &[u8] = b"clap.latency\0";
+
+/// `clap_plugin_latency_t`.
+#[repr(C)]
+struct ClapPluginLatency {
+    get: Option<unsafe extern "C" fn(*const ClapPlugin) -> u32>,
+}
 pub  const CLAP_WINDOW_API_WIN32 : &[u8] = b"win32\0";
 
 // ── Raw CLAP C ABI structs ────────────────────────────────────────────────────
@@ -434,6 +441,7 @@ pub struct ClapProcessor {
     plugin    : RawPlugin,
     state_ext : Option<*const ClapPluginState>,
     gui_ext   : Option<*const ClapPluginGui>,
+    latency_ext: Option<*const ClapPluginLatency>,
     /// Counted `clap_entry` use; dropped after the plugin is destroyed and
     /// before the library.
     _entry    : EntryRef,
@@ -566,6 +574,10 @@ impl ClapProcessor {
                 let p = f(plugin, CLAP_EXT_STATE.as_ptr() as *const c_char);
                 if p.is_null() { None } else { Some(p as *const ClapPluginState) }
             });
+            let latency_ext = get_ext.and_then(|f| {
+                let p = f(plugin, CLAP_EXT_LATENCY.as_ptr() as *const c_char);
+                if p.is_null() { None } else { Some(p as *const ClapPluginLatency) }
+            });
             let gui_ext = get_ext.and_then(|f| {
                 let p = f(plugin, CLAP_EXT_GUI.as_ptr() as *const c_char);
                 if p.is_null() { None } else { Some(p as *const ClapPluginGui) }
@@ -576,6 +588,7 @@ impl ClapProcessor {
                 plugin    : RawPlugin(plugin),
                 state_ext,
                 gui_ext,
+                latency_ext,
                 _entry    : entry_ref,
                 max_frames,
                 in_l      : vec![0.0; max_frames as usize],
@@ -612,6 +625,14 @@ impl ClapProcessor {
         unsafe {
             start_processing_once(self.plugin.0, &mut self.processing_started);
             process_separate(self.plugin.0, &mut self.in_l[..n], &mut self.in_r[..n], left, right);
+        }
+    }
+
+    /// Latency the plugin reports (CLAP `latency` extension).
+    pub fn latency_samples(&self) -> u32 {
+        match self.latency_ext {
+            Some(ext) => unsafe { (*ext).get.map(|f| f(self.plugin.0)).unwrap_or(0) },
+            None => 0,
         }
     }
 

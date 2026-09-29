@@ -1,0 +1,54 @@
+name: Check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Lint + unit tests on every push/PR. Release builds live in release.yml.
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: latest
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Typecheck frontend
+        run: pnpm exec tsc --noEmit
+
+      # tauri::generate_context! embeds ../dist, so it must exist for cargo.
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Skipped: tests that need real audio hardware / the MMCSS service,
+      # which CI runners don't have.
+      - name: Unit tests
+        working-directory: src-tauri
+        run: cargo test --lib -- --skip enum_tests --skip mmcss::tests

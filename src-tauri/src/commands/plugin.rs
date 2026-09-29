@@ -33,8 +33,10 @@ fn wait_for_vst3_restore_ready(state: &AppState) {
     log::warn!("VST3 restore replay did not finish within the wait timeout; opening GUI anyway");
 }
 
-#[tauri::command]
-pub fn scan_plugins(state: tauri::State<AppState>) -> Result<Vec<PluginInfo>, String> {
+/// `async`: a scan walks the disk and briefly loads plugin DLLs (already on
+/// Rayon worker threads), so it must not hold the main thread.
+#[tauri::command(async)]
+pub fn scan_plugins(state: tauri::State<'_, AppState>) -> Result<Vec<PluginInfo>, String> {
     let custom_paths = state.config_manager.read().get_custom_paths();
     state
         .plugin_scanner
@@ -258,9 +260,11 @@ pub fn launch_plugins(
     })
 }
 
-#[tauri::command]
+/// `async`: waits up to GUI_CLOSE_TIMEOUT per plugin for its GUI thread to
+/// exit — only posts WM_CLOSE and polls, no thread affinity.
+#[tauri::command(async)]
 pub fn close_plugins(
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     instance_ids: Option<Vec<String>>,
 ) -> Result<LaunchPluginsResult, String> {
     let ids: Vec<String> = match instance_ids {

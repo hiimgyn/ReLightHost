@@ -32,8 +32,8 @@ pub struct UpdateInfo {
     notes: Option<String>,
 }
 
-#[tauri::command]
-pub fn get_system_stats(state: tauri::State<AppState>) -> Result<SystemStats, String> {
+#[tauri::command(async)]
+pub fn get_system_stats(state: tauri::State<'_, AppState>) -> Result<SystemStats, String> {
     use sysinfo::{Pid, ProcessRefreshKind};
     let pid = Pid::from_u32(std::process::id());
     let mut sys = state.sys_info.write();

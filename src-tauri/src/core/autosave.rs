@@ -59,6 +59,22 @@ pub fn shutdown_autosave_worker() {
     }
 }
 
+/// Exit path: close every plugin GUI (so VST3 state is readable and the
+/// latest GUI edits are in it), write the snapshot synchronously — a change
+/// still inside the worker's debounce window would otherwise be lost — then
+/// stop the worker.
+pub(crate) fn flush_on_exit(
+    plugin_manager: &Arc<crate::plugins::PluginInstanceManager>,
+    preset_manager: &Arc<parking_lot::RwLock<crate::domain::preset::PresetManager>>,
+    autosave_last_hash: &Arc<AtomicU64>,
+) {
+    for instance in plugin_manager.get_instances_arc() {
+        instance.request_close_gui(crate::timing::GUI_CLOSE_TIMEOUT);
+    }
+    save_autosave_snapshot(plugin_manager, preset_manager, autosave_last_hash);
+    shutdown_autosave_worker();
+}
+
 fn run_autosave_worker(
     rx: Receiver<AutosaveRequest>,
     plugin_manager: Arc<crate::plugins::PluginInstanceManager>,
@@ -91,6 +107,9 @@ fn save_autosave_snapshot(
     if RESTORE_IN_PROGRESS.load(Ordering::Acquire) {
         return;
     }
+    // The worker and the exit flush both write through the same tmp file.
+    static SAVE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _save = SAVE_LOCK.lock();
     let preset = build_chain_preset_from_manager(plugin_manager, "autosave");
     let hash = preset_hash_bytes(&preset);
 
@@ -116,8 +135,12 @@ fn save_autosave_snapshot(
 mod tests {
     use super::*;
 
+    /// Both tests touch the process-wide RESTORE_IN_PROGRESS flag.
+    static FLAG_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     #[test]
     fn snapshot_is_skipped_while_restore_is_in_progress() {
+        let _flag = FLAG_LOCK.lock();
         let dir = std::env::temp_dir().join(format!("rh-autosave-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("autosave.json");
@@ -133,6 +156,33 @@ mod tests {
         set_restore_in_progress(false);
         save_autosave_snapshot(&plugins, &presets, &hash);
         assert!(file.exists(), "autosave did not resume after restore finished");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flush_on_exit_writes_the_current_chain_immediately() {
+        let _flag = FLAG_LOCK.lock();
+        let dir = std::env::temp_dir().join(format!("rh-autosave-flush-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("autosave.json");
+        let _ = std::fs::remove_file(&file);
+        let presets = Arc::new(parking_lot::RwLock::new(crate::domain::preset::PresetManager::with_dir(dir.clone())));
+        let plugins = Arc::new(crate::plugins::PluginInstanceManager::new());
+        let info = crate::plugins::PluginInfo {
+            id: "builtin::compressor".into(),
+            name: "Compressor".into(),
+            vendor: String::new(),
+            version: String::new(),
+            path: crate::plugins::builtin::compressor::ID.into(),
+            format: crate::plugins::PluginFormat::Builtin,
+            category: String::new(),
+        };
+        plugins.load_plugin(info, 48_000.0, 512).unwrap();
+
+        flush_on_exit(&plugins, &presets, &Arc::new(AtomicU64::new(0)));
+
+        let saved = std::fs::read_to_string(&file).expect("no autosave written on exit");
+        assert!(saved.contains("builtin::compressor"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

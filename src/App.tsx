@@ -168,6 +168,32 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Warn if a VST3 plugin was active during an unclean exit ──────────────
+  // A native crash never runs any of our own code, so this is the app's
+  // only way to attribute "it disappeared last time" to a specific plugin —
+  // see crash_marker.rs on the Rust side. Purely informational: nothing is
+  // skipped or blocked automatically.
+  useEffect(() => {
+    const checkCrashWarning = async () => {
+      try {
+        const paths = await invoke<string[]>('get_startup_crash_warning');
+        if (paths.length === 0) return;
+        const names = paths.map((p) => p.split(/[\\/]/).pop() || p);
+        notificationApi.open({
+          key: 'unclean-exit-warning',
+          message: 'ReLightHost closed unexpectedly last time',
+          description: `This plugin was loaded when it happened: ${names.join(', ')}. If the app keeps disappearing, try removing it from the chain.`,
+          duration: 0,
+        });
+      } catch (error) {
+        console.warn('Startup crash-warning check failed:', error);
+      }
+    };
+
+    checkCrashWarning();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Window visibility synchronization ────────────────────────────────────
   useEffect(() => {
     return initWindowVisibilitySync();

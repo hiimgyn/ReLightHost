@@ -1,7 +1,5 @@
-//! Same manual check as test_sandbox_gui.rs but through the plain
-//! in-process Vst3Processor — used to tell whether a blank editor is a
-//! sandbox regression or a pre-existing issue. Throwaway, not built by
-//! default. Run with: cargo run --example test_inprocess_gui
+//! Manual check for opening a VST3 plugin's GUI in-process. Throwaway,
+//! not built by default. Run with: cargo run --example test_inprocess_gui
 
 use app_lib::plugins::processor::vst3::Vst3Processor;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -23,7 +21,7 @@ fn main() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    println!("Opening GUI (same params as the sandboxed host: sync_component_state=false, restored_state_blob=None)...");
+    println!("Opening GUI (sync_component_state=false, restored_state_blob=None)...");
     let gui_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
     let gui_hwnd: Arc<AtomicIsize> = Arc::new(AtomicIsize::new(0));
     proc.open_gui("In-process VST3", gui_flag.clone(), gui_hwnd.clone(), false, None)

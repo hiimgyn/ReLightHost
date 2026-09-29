@@ -93,13 +93,6 @@ export interface PluginCrashStatusItem {
   status: PluginStatus;
 }
 
-/** VST3 isolated-process (sandbox) hosting status for a plugin, keyed by path. */
-export interface Vst3SandboxStatus {
-  sandboxed: boolean;
-  forced: boolean;
-  crash_count: number;
-}
-
 export interface PluginChainChangedEvent {
   reason: string;
   instance_id: string | null;

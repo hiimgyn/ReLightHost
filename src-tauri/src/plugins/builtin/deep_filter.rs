@@ -19,7 +19,16 @@ pub struct DeepFilterProcessor {
     prod_to_worker_r: HeapProd<f32>,
     cons_from_worker_l: HeapCons<f32>,
     cons_from_worker_r: HeapCons<f32>,
+    /// The exact dry sample the worker fed into the model for each enhanced
+    /// sample, pushed in lockstep with `cons_from_worker_*` so the two are
+    /// always a matched pair — see the mixing comment in `process_stereo`
+    /// for why this replaced trying to time-align `dry_l`/`dry_r` by hand.
+    cons_dry_aligned_l: HeapCons<f32>,
+    cons_dry_aligned_r: HeapCons<f32>,
 
+    /// Immediate (near-zero-latency) copy of the incoming signal, used only
+    /// as the dry-only fallback while the worker hasn't produced anything
+    /// aligned yet (startup warmup or a transient underrun).
     dry_l: VecDeque<f32>,
     dry_r: VecDeque<f32>,
 
@@ -61,6 +70,12 @@ impl DeepFilterProcessor {
         let rb_out_r = HeapRb::<f32>::new(RB_CAPACITY);
         let (mut prod_from_worker_r, cons_from_worker_r) = rb_out_r.split();
 
+        let rb_dry_l = HeapRb::<f32>::new(RB_CAPACITY);
+        let (mut prod_dry_aligned_l, cons_dry_aligned_l) = rb_dry_l.split();
+
+        let rb_dry_r = HeapRb::<f32>::new(RB_CAPACITY);
+        let (mut prod_dry_aligned_r, cons_dry_aligned_r) = rb_dry_r.split();
+
         let running = Arc::new(AtomicBool::new(true));
         let worker_running = Arc::clone(&running);
 
@@ -97,7 +112,12 @@ impl DeepFilterProcessor {
                     }
                 };
 
-                let mut raw_buf = vec![0.0f32; 2 * HOP_SIZE];
+                // Reused across every hop — no heap allocation in the 10ms
+                // inference loop. `noisy` used to be rebuilt each hop via
+                // `Array2::from_shape_vec(.., raw_buf.clone())`, cloning a
+                // fresh Vec (and allocating a new Array2) 100x/sec; writing
+                // straight into a persistent buffer removes that entirely.
+                let mut noisy = Array2::zeros((2, HOP_SIZE));
                 let mut enh = Array2::zeros((2, HOP_SIZE));
 
                 while worker_running.load(Ordering::Relaxed) {
@@ -110,31 +130,34 @@ impl DeepFilterProcessor {
 
                     // When a complete HOP_SIZE (480 samples = 10ms) is ready in both channels, process it
                     if cons_to_worker_l.occupied_len() >= HOP_SIZE && cons_to_worker_r.occupied_len() >= HOP_SIZE {
-                        for sample in raw_buf[..HOP_SIZE].iter_mut() {
-                            *sample = cons_to_worker_l.try_pop().unwrap_or(0.0);
-                        }
-                        for sample in raw_buf[HOP_SIZE..2 * HOP_SIZE].iter_mut() {
-                            *sample = cons_to_worker_r.try_pop().unwrap_or(0.0);
+                        for i in 0..HOP_SIZE {
+                            noisy[[0, i]] = cons_to_worker_l.try_pop().unwrap_or(0.0);
+                            noisy[[1, i]] = cons_to_worker_r.try_pop().unwrap_or(0.0);
                         }
 
-                        if let Ok(noisy) = Array2::from_shape_vec((2, HOP_SIZE), raw_buf.clone()) {
-                            match model.process(noisy.view(), enh.view_mut()) {
-                                Ok(snr) => {
-                                    // Map SNR in dB (approx -15 to +25 dB) to VAD confidence [0.0, 1.0]
-                                    let vad = 1.0 / (1.0 + (-(snr + 5.0) / 4.0).exp());
-                                    worker_last_vad.store(vad.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+                        match model.process(noisy.view(), enh.view_mut()) {
+                            Ok(snr) => {
+                                // Map SNR in dB (approx -15 to +25 dB) to VAD confidence [0.0, 1.0]
+                                let vad = 1.0 / (1.0 + (-(snr + 5.0) / 4.0).exp());
+                                worker_last_vad.store(vad.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 
-                                    for i in 0..HOP_SIZE {
-                                        let _ = prod_from_worker_l.try_push(enh[[0, i]]);
-                                        let _ = prod_from_worker_r.try_push(enh[[1, i]]);
-                                    }
+                                for i in 0..HOP_SIZE {
+                                    let _ = prod_from_worker_l.try_push(enh[[0, i]]);
+                                    let _ = prod_from_worker_r.try_push(enh[[1, i]]);
+                                    // Pushed in the same iteration as the enhanced
+                                    // sample above so the two ring buffers can
+                                    // only ever be read back as a matched pair.
+                                    let _ = prod_dry_aligned_l.try_push(noisy[[0, i]]);
+                                    let _ = prod_dry_aligned_r.try_push(noisy[[1, i]]);
                                 }
-                                Err(e) => {
-                                    log::warn!("DeepFilterNet inference error: {e}");
-                                    for i in 0..HOP_SIZE {
-                                        let _ = prod_from_worker_l.try_push(raw_buf[i]);
-                                        let _ = prod_from_worker_r.try_push(raw_buf[HOP_SIZE + i]);
-                                    }
+                            }
+                            Err(e) => {
+                                log::warn!("DeepFilterNet inference error: {e}");
+                                for i in 0..HOP_SIZE {
+                                    let _ = prod_from_worker_l.try_push(noisy[[0, i]]);
+                                    let _ = prod_from_worker_r.try_push(noisy[[1, i]]);
+                                    let _ = prod_dry_aligned_l.try_push(noisy[[0, i]]);
+                                    let _ = prod_dry_aligned_r.try_push(noisy[[1, i]]);
                                 }
                             }
                         }
@@ -158,6 +181,8 @@ impl DeepFilterProcessor {
             prod_to_worker_r,
             cons_from_worker_l,
             cons_from_worker_r,
+            cons_dry_aligned_l,
+            cons_dry_aligned_r,
             dry_l: VecDeque::with_capacity(RB_CAPACITY),
             dry_r: VecDeque::with_capacity(RB_CAPACITY),
 
@@ -200,19 +225,45 @@ impl BuiltinProcessor for DeepFilterProcessor {
             self.dry_r.push_back(right[i]);
         }
 
-        // Pop available enhanced frames from worker
+        // Pop available enhanced frames from worker.
+        //
+        // The worker has real, unavoidable pipeline latency (hop batching +
+        // the model's own lookahead), so its output is legitimately empty
+        // for the first several blocks after start, and can briefly starve
+        // again any time the inference thread falls behind real-time.
+        //
+        // The clean sample and its *aligned* dry counterpart (the exact
+        // input sample the worker fed the model to produce it) are always
+        // popped together — `cons_dry_aligned_*` is filled by the worker in
+        // the same loop iteration as `cons_from_worker_*` (see the worker
+        // above), so the two can never drift apart. Mixing against this
+        // aligned pair (instead of "whatever dry sample is at the front of
+        // the queue right now") is what keeps wet/dry blending in phase at
+        // any `mix` other than 0 or 1 — mixing a wet sample against a dry
+        // sample from a different point in time is audible as comb-filtering.
+        //
+        // When nothing aligned is ready yet (warmup/underrun), fall back to
+        // the immediate (near-zero-latency) `dry_l`/`dry_r` queue. Missing
+        // "clean" audio is silence, not dry, so it's treated as 0 in the mix
+        // — a starved block plays back at most the dry proportion the user
+        // dialed in (0 at the default mix=1.0, i.e. true silence instead of
+        // a raw noise leak).
         for i in 0..n {
-            let dry_s_l = self.dry_l.pop_front().unwrap_or(left[i]);
-            let dry_s_r = self.dry_r.pop_front().unwrap_or(right[i]);
+            let immediate_dry_l = self.dry_l.pop_front().unwrap_or(left[i]);
+            let immediate_dry_r = self.dry_r.pop_front().unwrap_or(right[i]);
 
-            if let (Some(clean_l), Some(clean_r)) = (self.cons_from_worker_l.try_pop(), self.cons_from_worker_r.try_pop()) {
-                left[i] = (dry_s_l * (1.0 - mix) + clean_l * mix) * gain;
-                right[i] = (dry_s_r * (1.0 - mix) + clean_r * mix) * gain;
-            } else {
-                // Latency warmup or worker catching up: pass through dry audio (zero clicks or silence)
-                left[i] = dry_s_l * gain;
-                right[i] = dry_s_r * gain;
-            }
+            let aligned = (
+                self.cons_from_worker_l.try_pop(),
+                self.cons_from_worker_r.try_pop(),
+                self.cons_dry_aligned_l.try_pop(),
+                self.cons_dry_aligned_r.try_pop(),
+            );
+            let (dry_s_l, clean_l, dry_s_r, clean_r) = match aligned {
+                (Some(wl), Some(wr), Some(dl), Some(dr)) => (dl, wl, dr, wr),
+                _ => (immediate_dry_l, 0.0, immediate_dry_r, 0.0),
+            };
+            left[i] = (dry_s_l * (1.0 - mix) + clean_l * mix) * gain;
+            right[i] = (dry_s_r * (1.0 - mix) + clean_r * mix) * gain;
         }
     }
 

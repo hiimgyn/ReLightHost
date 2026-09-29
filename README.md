@@ -156,7 +156,7 @@ $env:CPAL_ASIO_DIR = "C:\ASIO_SDK"
 
 | Format | Extension | Hosting | GUI | Notes |
 |---|---|---|---|---|
-| VST3 | `.vst3` | `vst3-rs` (COM/vtable bindings) | Native when supported | Binary state persistence; repeatedly-crashing plugins are auto-sandboxed in a child process on later loads |
+| VST3 | `.vst3` | `vst3-rs` (COM/vtable bindings) | Native when supported | Binary state persistence |
 | VST2 | `.dll` | Raw FFI, no crate | Plugin-provided, native window | Chunk-based state persistence (`effGetChunk`/`effSetChunk`) |
 | CLAP | `.clap` | Raw FFI, no crate | Plugin-provided | Native plugin format support |
 | Built-in | - | Native Rust DSP | React UI | Bundled processors shipped with the app |
@@ -184,7 +184,6 @@ A plugin crashing the whole app is the worst failure mode for a live audio host,
 
 - **Panic protection** — Rust-side panics inside a plugin call are caught and turned into a bypass instead of taking the process down.
 - **Per-block safety** — the plugin chain never blocks the real-time audio callback waiting on a plugin; a busy or slow plugin is skipped for that block rather than causing an underrun.
-- **VST3 sandboxing** — a native crash (access violation, heap corruption) in a plugin's own compiled code can't be caught in-process at all. ReLightHost tracks crash history per VST3 plugin across app restarts, and once a plugin crosses the crash threshold it's loaded inside a dedicated `vst3_sandbox_host.exe` child process instead — audio and GUI both keep working exactly as before, but a crash there only takes down that child, not the app.
 
 ---
 
@@ -230,7 +229,6 @@ ReLightHost/
 └── src-tauri/                  # Backend (Rust)
     ├── src/
     │   ├── lib.rs               # App state, commands, tray setup
-    │   ├── bin/                 # vst3_sandbox_host.exe — sandboxed VST3 child process
     │   ├── bootstrap/           # Window and tray bootstrapping
     │   ├── commands/            # IPC commands
     │   ├── core/                # Session, autosave, timing, threading
@@ -238,7 +236,6 @@ ReLightHost/
     │   └── plugins/
     │       ├── core/             # Scanner, instance manager, crash protection
     │       ├── processor/        # VST3 / VST2 / CLAP hosting (raw FFI)
-    │       │   └── vst3_sandbox/ # Out-of-process VST3 host: protocol + registry
     │       ├── gui/               # Native plugin editor window embedding
     │       └── builtin/          # Compressor, noise suppressor, Voice Designer
     └── icons/tray/               # Tray menu icons

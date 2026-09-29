@@ -159,21 +159,6 @@ export async function resetPluginCrashProtection(instanceId: string): Promise<vo
   return invoke('reset_plugin_crash_protection', { instanceId });
 }
 
-// VST3 sandbox (isolated-process hosting) commands — keyed by plugin file
-// path, since the sandbox registry persists across app restarts and outlives
-// any single instance. See vst3_sandbox::registry on the Rust side.
-export async function getVst3SandboxStatus(pluginPath: string): Promise<import('./types').Vst3SandboxStatus> {
-  return invoke('get_vst3_sandbox_status', { pluginPath });
-}
-
-export async function setVst3ForcedSandbox(pluginPath: string, forced: boolean): Promise<void> {
-  return invoke('set_vst3_forced_sandbox', { pluginPath, forced });
-}
-
-export async function resetVst3SandboxCrashCount(pluginPath: string): Promise<void> {
-  return invoke('reset_vst3_sandbox_crash_count', { pluginPath });
-}
-
 export async function getNoiseSuppressorVad(instanceId: string): Promise<number> {
   return invoke('get_noise_suppressor_vad', { instanceId });
 }

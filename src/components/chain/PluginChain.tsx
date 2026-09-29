@@ -121,6 +121,8 @@ export default function PluginChain() {
     swapChain,
     fetchChain,
     fetchCrashStatuses,
+    bumpRestoreProgress,
+    setRestoreTargetCount,
     isChainInitializing,
   } = usePluginStore(useShallow((s) => ({
     pluginChain: s.pluginChain,
@@ -131,6 +133,8 @@ export default function PluginChain() {
     swapChain: s.swapChain,
     fetchChain: s.fetchChain,
     fetchCrashStatuses: s.fetchCrashStatuses,
+    bumpRestoreProgress: s.bumpRestoreProgress,
+    setRestoreTargetCount: s.setRestoreTargetCount,
     isChainInitializing: s.isChainInitializing,
   })));
   const {
@@ -195,8 +199,26 @@ export default function PluginChain() {
 
   useEffect(() => {
     const unlistenPromise = listen<PluginChainChangedEvent>('plugin-chain-changed', (event) => {
-      if (draggingRef.current) return;
       const reason = event.payload?.reason;
+      // Fired once, right before a batch restore's load phase starts, so the
+      // frontend knows the target count *before* waiting on it instead of
+      // only once restore_session's promise resolves (i.e. once there's
+      // nothing left to show progress for). instance_id doubles as the count
+      // here — restore_total has no real plugin instance to attach it to.
+      if (reason === 'restore_total') {
+        const total = Number(event.payload?.instance_id);
+        if (Number.isFinite(total) && total > 0) setRestoreTargetCount(total);
+        return;
+      }
+      // Fired per-plugin *during* a batch restore, before any of them are
+      // actually in the chain the other reasons below refetch — counted for
+      // live progress instead (see bumpRestoreProgress), never as a reason
+      // to refetch a chain that hasn't changed yet.
+      if (reason === 'restore_progress') {
+        bumpRestoreProgress();
+        return;
+      }
+      if (draggingRef.current) return;
       if (reason === 'parameter' || reason === 'parameter_update' || reason?.startsWith('parameter')) {
         return;
       }
@@ -210,7 +232,7 @@ export default function PluginChain() {
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [fetchChain, fetchCrashStatuses, draggingRef]);
+  }, [fetchChain, fetchCrashStatuses, bumpRestoreProgress, setRestoreTargetCount, draggingRef]);
 
   useVisibleInterval(() => {
     fetchCrashStatuses();

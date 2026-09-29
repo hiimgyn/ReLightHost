@@ -700,7 +700,8 @@ body {
   color: var(--rh-text) !important;
 }
 
-.plugin-library-tabs .ant-tabs-tab {
+.plugin-library-tabs .ant-tabs-tab,
+.app-settings-tabs .ant-tabs-tab {
   padding: 8px 14px !important;
 }
 

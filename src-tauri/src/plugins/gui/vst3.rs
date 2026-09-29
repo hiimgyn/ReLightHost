@@ -35,7 +35,7 @@ pub mod win {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED};
+    use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows_sys::Win32::Graphics::Gdi::{RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE};
 
     type OnSizeCallback = Box<dyn Fn(i32, i32)>;
@@ -50,19 +50,17 @@ pub mod win {
             Self::with_apartment(COINIT_APARTMENTTHREADED as u32)
         }
 
-        /// EXPERIMENTAL: join the process-wide MTA instead of a fresh STA.
-        /// Hypothesis under test — the GUI thread (createView/onSize) and the
-        /// vst3-attach thread (attached()) each get their OWN STA apartment
-        /// via CoInitializeEx(APARTMENTTHREADED). If a plugin's editor creates
-        /// real COM objects (DirectWrite/Direct2D factories, not just the
-        /// vtable-only IPlugView) inside attached() and then something on the
-        /// GUI thread touches them later (onSize, WM_PAINT), that's a
-        /// cross-apartment COM call without marshaling — undefined behavior
-        /// that can silently fail to render or corrupt the heap. MTA has no
-        /// such per-thread exclusivity, so this removes the apartment
-        /// mismatch between the two threads for real COM objects.
+        /// The attach thread calls `attached()` on the same `IPlugView` the GUI
+        /// thread created via `createView()`. That view (and any real COM
+        /// objects it creates internally, e.g. WIC/DirectWrite factories) was
+        /// born in the GUI thread's STA — joining a *different* apartment
+        /// (MTA was tried here previously) here makes every such call an
+        /// unmarshaled cross-apartment call, which is undefined behavior and
+        /// was observed to hang `attached()` indefinitely (never returns,
+        /// window stays blank). Joining the same apartment kind removes the
+        /// mismatch.
         fn new_attach_thread() -> Self {
-            Self::with_apartment(COINIT_MULTITHREADED as u32)
+            Self::new()
         }
 
         fn with_apartment(coinit: u32) -> Self {
@@ -730,8 +728,8 @@ pub mod win {
                                 // thread — unlike the GUI message-loop thread — had no
                                 // COM apartment at all, which crashed those plugins
                                 // with STATUS_ACCESS_VIOLATION inside attached().
-                                // EXPERIMENTAL: MTA instead of a second, separate STA —
-                                // see ComScope::new_attach_thread's doc comment.
+                                // Same apartment kind as the GUI thread — see
+                                // ComScope::new_attach_thread's doc comment.
                                 let _com = ComScope::new_attach_thread();
 
                                 // Publish Win32 TID before doing any work so WM_CLOSE

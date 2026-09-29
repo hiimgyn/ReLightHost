@@ -104,10 +104,11 @@ export default function Header() {
     reloadDeviceConfig: s.reloadDeviceConfig,
     toggleMonitoring: s.toggleMonitoring,
   })));
-  const { isChainInitializing, pluginChain, restoreTargetCount } = usePluginStore(useShallow((s) => ({
+  const { isChainInitializing, pluginChain, restoreTargetCount, restoreProgressCount } = usePluginStore(useShallow((s) => ({
     isChainInitializing: s.isChainInitializing,
     pluginChain: s.pluginChain,
     restoreTargetCount: s.restoreTargetCount,
+    restoreProgressCount: s.restoreProgressCount,
   })));
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
@@ -116,9 +117,12 @@ export default function Header() {
   const [isTogglingEngine, setIsTogglingEngine] = useState(false);
 
   const isEngineReady = status.is_monitoring && !isChainInitializing;
+  // Backend plugins land in the chain as one batch at the very end of a
+  // restore, so `pluginChain.length` alone would sit at 0 for the whole
+  // load; `restoreProgressCount` (per-plugin backend events) moves live.
   const restoredCount = restoreTargetCount == null
     ? pluginChain.length
-    : Math.min(pluginChain.length, restoreTargetCount);
+    : Math.min(Math.max(pluginChain.length, restoreProgressCount), restoreTargetCount);
   const engineLabel = status.is_monitoring
     ? (isChainInitializing
       ? (restoreTargetCount != null

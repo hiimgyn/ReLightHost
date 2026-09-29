@@ -1,4 +1,4 @@
-import { Card, Button, Space, Tooltip, theme, message, Input, Popover, Switch, Divider } from 'antd';
+import { Card, Button, Space, Tooltip, theme, message, Input } from 'antd';
 import {
   X,
   Power,
@@ -10,15 +10,12 @@ import {
   Pencil,
   Check,
   GripVertical,
-  ShieldCheck,
-  Shield,
   Maximize2,
 } from 'lucide-react';
 import { memo, useState, useEffect, useRef } from 'react';
 import gsap from 'gsap';
-import type { PluginInstanceInfo, PluginStatus, Vst3SandboxStatus } from '../../lib/types';
+import type { PluginInstanceInfo, PluginStatus } from '../../lib/types';
 import * as tauri from '../../lib/tauri';
-import { usePluginStore } from '../../stores/pluginStore';
 import PluginMetaChips from './PluginMetaChips';
 import BuiltinPluginGuiSwitch from './BuiltinPluginGuiSwitch';
 import { usePluginRename } from './usePluginRename';
@@ -56,9 +53,6 @@ function PluginCard({
   const [showBuiltinGui, setShowBuiltinGui] = useState(false);
   const [isBypassBusy, setIsBypassBusy] = useState(false);
   const [isRemovingBusy, setIsRemovingBusy] = useState(false);
-  const reloadPlugin = usePluginStore((s) => s.reloadPlugin);
-  const [sandboxInfo, setSandboxInfo] = useState<Vst3SandboxStatus | null>(null);
-  const [sandboxBusy, setSandboxBusy] = useState(false);
 
   const { isLaunching, handleLaunch } = usePluginLaunch({
     instanceId: plugin.instance_id,
@@ -97,55 +91,6 @@ function PluginCard({
       messageApi.error(t('card.resetFailed', { error: String(err) }));
     } finally {
       setCheckingStatus(false);
-    }
-  };
-
-  const isVst3 = plugin.format === 'vst3';
-
-  const fetchSandboxInfo = async () => {
-    try {
-      setSandboxInfo(await tauri.getVst3SandboxStatus(plugin.path));
-    } catch (err) {
-      console.debug('PluginCard: getVst3SandboxStatus failed', err);
-    }
-  };
-
-  // Fetch once on mount so the shield icon reflects real status without
-  // requiring the user to open the popover first.
-  useEffect(() => {
-    if (isVst3) void fetchSandboxInfo();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plugin.path]);
-
-  const handleSandboxPopoverOpenChange = async (open: boolean) => {
-    if (!open || !isVst3) return;
-    await fetchSandboxInfo();
-  };
-
-  const handleToggleForcedSandbox = async (forced: boolean) => {
-    setSandboxBusy(true);
-    try {
-      await tauri.setVst3ForcedSandbox(plugin.path, forced);
-      await reloadPlugin(plugin.instance_id);
-      await fetchSandboxInfo();
-      messageApi.success(forced ? t('card.sandboxForcedOn') : t('card.sandboxForcedOff'));
-    } catch (err) {
-      messageApi.error(t('card.sandboxToggleFailed', { error: String(err) }));
-    } finally {
-      setSandboxBusy(false);
-    }
-  };
-
-  const handleResetSandboxCrashCount = async () => {
-    setSandboxBusy(true);
-    try {
-      await tauri.resetVst3SandboxCrashCount(plugin.path);
-      await fetchSandboxInfo();
-      messageApi.success(t('card.sandboxCrashCountReset'));
-    } catch (err) {
-      messageApi.error(t('card.sandboxToggleFailed', { error: String(err) }));
-    } finally {
-      setSandboxBusy(false);
     }
   };
 
@@ -489,8 +434,7 @@ function PluginCard({
             </div>
           )}
 
-          {/* Right group: launch + isolated (sandbox) toggle — grouped
-              together since both are per-instance session controls. */}
+          {/* Right group: launch control. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: isCrashed ? 0 : 'auto' }}>
           {!isCrashed && (
             <Tooltip title={launchButtonProps.tooltip}>
@@ -513,90 +457,10 @@ function PluginCard({
               />
             </Tooltip>
           )}
-          {isVst3 && (
-            <Popover
-              trigger="click"
-              placement="topRight"
-              onOpenChange={(open) => { void handleSandboxPopoverOpenChange(open); }}
-              content={
-                <div style={{ width: 260, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <span style={{ fontSize: 12.5 }}>
-                    {sandboxInfo?.forced
-                      ? t('card.sandboxDescForced')
-                      : sandboxInfo?.sandboxed
-                      ? t('card.sandboxDescAuto', { count: sandboxInfo.crash_count })
-                      : t('card.sandboxDescOff')}
-                  </span>
-                  <span style={{ fontSize: 11, color: token.colorTextTertiary }}>
-                    {t('card.sandboxCrashCount', { count: sandboxInfo?.crash_count ?? 0 })}
-                  </span>
-                  <Divider style={{ margin: '4px 0' }} />
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ fontSize: 12.5 }}>{t('card.sandboxForceLabel')}</span>
-                    <Switch
-                      size="small"
-                      checked={sandboxInfo?.forced ?? false}
-                      loading={sandboxBusy}
-                      disabled={isControlLocked}
-                      onChange={(checked) => { void handleToggleForcedSandbox(checked); }}
-                    />
-                  </div>
-                  <Button
-                    size="small"
-                    onClick={() => { void handleResetSandboxCrashCount(); }}
-                    loading={sandboxBusy}
-                    disabled={isControlLocked || !sandboxInfo?.crash_count}
-                  >
-                    {t('card.sandboxResetCount')}
-                  </Button>
-                </div>
-              }
-              title={t('card.sandboxTitle')}
-            >
-              <Tooltip title={t('card.sandboxTooltip')}>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={sandboxInfo?.sandboxed
-                    ? <ShieldCheck size={15} strokeWidth={2} style={{ color: token.colorSuccess }} />
-                    : <Shield size={15} strokeWidth={2} />}
-                  disabled={isControlLocked}
-                  className="btn-icon"
-                  style={{ minWidth: 28, width: 28, height: 28 }}
-                />
-              </Tooltip>
-            </Popover>
-          )}
           </div>
         </div>
       </div>
     </Card>
-
-    {/* Reload overlay — covers the card while a sandbox toggle recreates the
-        plugin instance in place, so a multi-second VST3 reload reads as
-        "busy here" instead of an unexplained freeze. */}
-    {sandboxBusy && (
-      <div
-        style={{
-          position: 'absolute',
-          inset: 0,
-          borderRadius: 12,
-          background: 'rgba(10, 12, 20, 0.72)',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 6,
-          zIndex: 5,
-          animation: 'rh-fade-up 200ms ease-out',
-        }}
-      >
-        <Loader2 size={18} className="animate-spin" style={{ color: token.colorPrimary }} />
-        <span style={{ fontSize: 10, fontWeight: 600, color: token.colorTextSecondary, textAlign: 'center', padding: '0 10px' }}>
-          {t('card.sandboxReloading')}
-        </span>
-      </div>
-    )}
     </div>
 
     <BuiltinPluginGuiSwitch

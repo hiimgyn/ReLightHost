@@ -118,39 +118,8 @@ pub(crate) fn restore_session_impl(
             let sample_rate = state.audio_manager.processing_rate();
             let buffer_size = config.buffer_size;
 
-            let mut infos: Vec<PluginInfo> = Vec::new();
-            type PluginRestoreRow = (
-                bool,
-                crate::plugins::PluginFormat,
-                String,
-                Option<Vec<u8>>,
-                Vec<crate::domain::preset::PresetParameter>,
-            );
-            let mut restore_rows: Vec<PluginRestoreRow> = Vec::new();
-
-            for plugin_preset in &preset.plugin_chain {
-                let (Some(path), Some(format)) =
-                    (plugin_preset.plugin_path.as_ref(), plugin_preset.plugin_format)
-                else {
-                    continue;
-                };
-                infos.push(PluginInfo {
-                    id:       plugin_preset.plugin_id.clone(),
-                    name:     plugin_preset.plugin_name.clone(),
-                    vendor:   plugin_preset.plugin_vendor.clone().unwrap_or_default(),
-                    version:  plugin_preset.plugin_version.clone().unwrap_or_default(),
-                    path:     path.clone(),
-                    format,
-                    category: plugin_preset.plugin_category.clone().unwrap_or_default(),
-                });
-                restore_rows.push((
-                    plugin_preset.bypassed,
-                    format,
-                    plugin_preset.plugin_name.clone(),
-                    plugin_preset.vst3_state.clone(),
-                    plugin_preset.parameters.clone(),
-                ));
-            }
+            let plan = preset_load_plan(&preset);
+            let infos: Vec<PluginInfo> = plan.iter().map(|(info, _)| info.clone()).collect();
 
             // The frontend needs the total *before* the (potentially
             // multi-second, e.g. a plugin loading its own ML model)  load
@@ -173,37 +142,23 @@ pub(crate) fn restore_session_impl(
                 plugin_restore_t0.elapsed().as_millis()
             );
 
-            for ((bypassed, format, plugin_name, vst3_state, parameters), res) in
-                restore_rows.into_iter().zip(results)
-            {
+            for ((info, saved), res) in plan.iter().zip(results) {
                 let instance_id = match res {
                     Ok(id) => id,
                     Err(e) => {
-                        log::warn!("{} Session restore — skipped plugin '{plugin_name}': {e}", crate::core::threading::thread_prefix("restore/load"));
+                        log::warn!("{} Session restore — skipped plugin '{}': {e}", crate::core::threading::thread_prefix("restore/load"), info.name);
                         continue;
                     }
                 };
 
                 plugins_restored += 1;
-                let restoring_vst3 = format == crate::plugins::PluginFormat::VST3;
-
                 if let Some(instance) = state.plugin_manager.get_instance(&instance_id) {
-                    instance.set_bypassed(bypassed);
-
-                    if restoring_vst3 {
-                        vst3_replays.push((
-                            instance_id.clone(),
-                            vst3_state.clone(),
-                            parameters.clone(),
-                        ));
-                        log::debug!("{} Deferred VST3 state for '{}', will replay after load", crate::core::threading::thread_prefix("restore/load"), plugin_name);
+                    instance.set_bypassed(saved.bypassed);
+                    if info.format == crate::plugins::PluginFormat::VST3 {
+                        vst3_replays.push((instance_id.clone(), saved.vst3_state.clone(), saved.parameters.clone()));
+                        log::debug!("{} Deferred VST3 state for '{}', will replay after load", crate::core::threading::thread_prefix("restore/load"), info.name);
                     } else {
-                        if let Some(ref blob) = vst3_state {
-                            instance.set_state_binary(blob);
-                        }
-                        for p in &parameters {
-                            instance.set_parameter(p.id, p.value);
-                        }
+                        apply_saved_settings(&instance, saved);
                     }
                 }
             }
@@ -318,4 +273,107 @@ pub(crate) fn restore_session_impl(
         _ => 0,
     };
     Ok(crate::SessionRestoreResult { audio_restored, plugins_restored, needs_deferred_start, deferred_start_ms })
+}
+
+/// The plugins a preset can load (entries without a path/format are
+/// skipped), each paired with its saved settings.
+fn preset_load_plan(preset: &crate::domain::preset::Preset) -> Vec<(crate::plugins::PluginInfo, &crate::domain::preset::PresetPlugin)> {
+    preset
+        .plugin_chain
+        .iter()
+        .filter_map(|p| {
+            let (Some(path), Some(format)) = (p.plugin_path.as_ref(), p.plugin_format) else {
+                return None;
+            };
+            let info = crate::plugins::PluginInfo {
+                id:       p.plugin_id.clone(),
+                name:     p.plugin_name.clone(),
+                vendor:   p.plugin_vendor.clone().unwrap_or_default(),
+                version:  p.plugin_version.clone().unwrap_or_default(),
+                path:     path.clone(),
+                format,
+                category: p.plugin_category.clone().unwrap_or_default(),
+            };
+            Some((info, p))
+        })
+        .collect()
+}
+
+/// Binary state, then parameters (parameters win where both set a value).
+fn apply_saved_settings(instance: &crate::plugins::core::instance::PluginInstance, saved: &crate::domain::preset::PresetPlugin) {
+    if let Some(ref blob) = saved.vst3_state {
+        instance.set_state_binary(blob);
+    }
+    for p in &saved.parameters {
+        instance.set_parameter(p.id, p.value);
+    }
+}
+
+/// Replaces the whole chain with `preset`'s plugins and applies their
+/// saved bypass, state and parameters right away (user-initiated preset
+/// load; session restore defers VST3 state instead). Returns how many
+/// plugins loaded.
+// ponytail: clears first, so audio passes through dry while the preset
+// loads; build-then-swap if that gap turns out to matter.
+pub(crate) fn load_preset_into_chain(
+    plugin_manager: &crate::plugins::PluginInstanceManager,
+    preset: &crate::domain::preset::Preset,
+    sample_rate: f64,
+    block_size: usize,
+    parallel_vst3: bool,
+) -> usize {
+    let plan = preset_load_plan(preset);
+    let infos = plan.iter().map(|(info, _)| info.clone()).collect();
+    plugin_manager.clear();
+    let results = plugin_manager.load_plugins_parallel_results(infos, sample_rate, block_size, parallel_vst3);
+    let mut loaded = 0;
+    for ((info, saved), res) in plan.iter().zip(results) {
+        match res.ok().and_then(|id| plugin_manager.get_instance(&id)) {
+            Some(instance) => {
+                instance.set_bypassed(saved.bypassed);
+                apply_saved_settings(&instance, saved);
+                loaded += 1;
+            }
+            None => log::warn!("Preset load skipped plugin '{}'", info.name),
+        }
+    }
+    loaded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::{PluginFormat, PluginInfo, PluginInstanceManager};
+
+    fn compressor() -> PluginInfo {
+        PluginInfo {
+            id: "builtin::compressor".into(),
+            name: "Compressor".into(),
+            vendor: String::new(),
+            version: String::new(),
+            path: crate::plugins::builtin::compressor::ID.into(),
+            format: PluginFormat::Builtin,
+            category: String::new(),
+        }
+    }
+
+    #[test]
+    fn loading_a_preset_replaces_the_chain_and_applies_its_settings() {
+        let source = Arc::new(PluginInstanceManager::new());
+        let id = source.load_plugin(compressor(), 48_000.0, 512).unwrap();
+        let inst = source.get_instance(&id).unwrap();
+        inst.set_parameter(4, 12.0);
+        inst.set_bypassed(true);
+        let preset = crate::core::snapshot::build_chain_preset_from_manager(&source, "p");
+
+        let target = PluginInstanceManager::new();
+        target.load_plugin(compressor(), 48_000.0, 512).unwrap();
+        target.load_plugin(compressor(), 48_000.0, 512).unwrap();
+
+        assert_eq!(load_preset_into_chain(&target, &preset, 48_000.0, 512, false), 1);
+        let chain = target.get_instances();
+        assert_eq!(chain.len(), 1);
+        assert!(chain[0].bypassed);
+        assert_eq!(chain[0].parameters.iter().find(|p| p.id == 4).unwrap().value, 12.0);
+    }
 }

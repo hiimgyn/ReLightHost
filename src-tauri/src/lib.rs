@@ -226,6 +226,10 @@ pub fn run() {
             commands::system::quit_app,
             commands::session::restore_session,
             commands::session::get_startup_crash_warning,
+            commands::session::list_presets,
+            commands::session::save_preset,
+            commands::session::load_preset,
+            commands::session::delete_preset,
             commands::system::check_for_update,
             commands::system::install_update,
         ])

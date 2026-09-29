@@ -156,17 +156,55 @@ impl PresetManager {
         Ok(path)
     }
 
+    /// User preset names become file names: allow Unicode letters/digits,
+    /// space and `-_().` only (no separators, no `..` traversal), at most 64
+    /// chars, and not the reserved autosave name.
+    pub fn validate_name(name: &str) -> Result<()> {
+        let trimmed = name.trim();
+        let ok = !trimmed.is_empty()
+            && trimmed.chars().count() <= 64
+            && !trimmed.contains("..")
+            && trimmed.chars().all(|c| c.is_alphanumeric() || " -_().".contains(c))
+            && !trimmed.eq_ignore_ascii_case(AUTO_SAVE_PRESET_NAME);
+        if ok { Ok(()) } else { Err(anyhow::anyhow!("Invalid preset name: {name:?}")) }
+    }
+
+    /// Names of saved user presets (the autosave excluded), sorted.
+    pub fn list_user_presets(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(&self.presets_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let path = e.path();
+                (path.extension()? == "json").then_some(())?;
+                let stem = path.file_stem()?.to_str()?.to_string();
+                (!stem.eq_ignore_ascii_case(AUTO_SAVE_PRESET_NAME)).then(|| stem.replace('_', " "))
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    pub fn delete_preset(&self, name: &str) -> Result<()> {
+        Self::validate_name(name)?;
+        fs::remove_file(self.path_for(name))?;
+        Ok(())
+    }
+
+    fn path_for(&self, name: &str) -> PathBuf {
+        self.presets_dir.join(format!("{}.json", name.trim().replace(' ', "_")))
+    }
+
     /// Writes an already-serialized preset (see `Preset::to_json`).
     pub fn save_preset_json(&self, name: &str, json: &[u8]) -> Result<PathBuf> {
-        let path = self.presets_dir.join(format!("{}.json", name.replace(' ', "_")));
+        let path = self.path_for(name);
         write_atomic(&path, json)?;
         Ok(path)
     }
 
     pub fn load_preset(&self, name: &str) -> Result<Preset> {
-        let filename = format!("{}.json", name.replace(' ', "_"));
-        let path = self.presets_dir.join(filename);
-        
+        let path = self.path_for(name);
         if !path.exists() {
             return Err(anyhow::anyhow!("Preset not found: {}", name));
         }
@@ -215,6 +253,30 @@ mod tests {
             parameters: vec![],
             vst3_state: state,
         }
+    }
+
+    #[test]
+    fn preset_names_are_validated() {
+        assert!(PresetManager::validate_name("Giọng nói - Stream (2)").is_ok());
+        for bad in ["", "   ", "../evil", "a/b", r"a", "autosave", "AutoSave", "x:y", &"n".repeat(65)] {
+            assert!(PresetManager::validate_name(bad).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    #[test]
+    fn user_presets_are_listed_and_deleted_by_name() {
+        let dir = std::env::temp_dir().join(format!("rh-preset-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pm = PresetManager::with_dir(dir.clone());
+        for name in ["autosave", "Vocal Chain", "Game"] {
+            pm.save_preset_json(name, b"{}").unwrap();
+        }
+        std::fs::write(dir.join("junk.json.tmp"), b"").unwrap();
+        assert_eq!(pm.list_user_presets(), vec!["Game".to_string(), "Vocal Chain".to_string()]);
+        pm.delete_preset("Vocal Chain").unwrap();
+        assert_eq!(pm.list_user_presets(), vec!["Game".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

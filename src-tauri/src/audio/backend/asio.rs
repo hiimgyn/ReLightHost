@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Once};
 use asio_sys::{Asio, AsioSampleType, BufferPreference, CallbackInfo, Driver};
 use ringbuf::{HeapProd, HeapCons, traits::Producer};
-use crate::audio::mixer::{MixerState, StereoFrame, pop_frames, process_block, main_output_gate_open};
+use crate::audio::mixer::{BacklogTrimmer, MixerState, StereoFrame, pop_frames, process_block, main_output_gate_open};
 
 /// The ASIO SDK only ever allows one loaded driver per process (loading a
 /// second driver tears down the first via `removeCurrentDriver()`, which
@@ -722,6 +722,7 @@ pub fn start_output_only(
         48_000.0
     });
     let mmcss_once = Once::new();
+    let mut trimmer = BacklogTrimmer::new(sample_rate as usize);
     let mut left_buf = vec![0.0f32; buffer_size];
     let mut right_buf = vec![0.0f32; buffer_size];
     let output_is_asio = mixer.output_is_asio;
@@ -740,6 +741,7 @@ pub fn start_output_only(
         // A `try_pop()` miss here means the upstream producer (WASAPI
         // capture, or whatever feeds this ring buffer) hasn't kept up —
         // count it as an underrun rather than silently playing 0.0.
+        trimmer.before_pop(&mut consumer, buffer_size);
         let underruns = pop_frames(&mut consumer, &mut left_buf, &mut right_buf);
         if underruns > 0 {
             mixer.underrun_count.fetch_add(underruns, Ordering::Relaxed);

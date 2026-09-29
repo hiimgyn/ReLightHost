@@ -16,7 +16,7 @@ use windows::core::PCWSTR;
 use ringbuf::{HeapProd, HeapCons, traits::Producer};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Once};
-use crate::audio::mixer::{MixerState, StereoFrame, pop_frames, process_block, main_output_gate_open};
+use crate::audio::mixer::{BacklogTrimmer, MixerState, StereoFrame, pop_frames, process_block, main_output_gate_open};
 
 /// Decodes a COM-allocated wide string and frees the CoTaskMem allocation
 /// the caller owns — `IMMDevice::GetId` and `PropVariantToStringAlloc` both
@@ -689,6 +689,7 @@ pub fn start_render(
             return;
         }
 
+        let mut trimmer = BacklogTrimmer::new(sample_rate as usize);
         let mut left_buf = vec![0.0f32; buffer_frames as usize];
         let mut right_buf = vec![0.0f32; buffer_frames as usize];
         let mmcss_once = Once::new();
@@ -726,6 +727,7 @@ pub fn start_render(
             // A `try_pop()` miss here means the upstream producer hasn't
             // kept up — count it as an underrun rather than silently
             // playing 0.0.
+            trimmer.before_pop(&mut consumer, frames);
             let underruns = pop_frames(&mut consumer, &mut left_buf[..frames], &mut right_buf[..frames]);
             if underruns > 0 {
                 mixer.underrun_count.fetch_add(underruns, Ordering::Relaxed);

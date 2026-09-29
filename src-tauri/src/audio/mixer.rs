@@ -23,6 +23,43 @@ pub fn pop_frames(cons: &mut ringbuf::HeapCons<StereoFrame>, left: &mut [f32], r
     underruns
 }
 
+/// Bounds the latency a ring buffer between two legs can accumulate.
+///
+/// The backlog captured before the output leg starts, plus clock drift
+/// between two devices, otherwise stays as permanent latency (up to the
+/// ring's full capacity). Tracks the *minimum* occupancy seen over a window
+/// — the latency that is truly excess, regardless of how bursty the
+/// producer is — and trims the oldest frames so that minimum becomes one
+/// consumer block.
+// ponytail: drops frames (one small click per trim) instead of resampling;
+// add an adaptive resampler if drift trims turn out to be audible.
+pub struct BacklogTrimmer {
+    window: usize,
+    elapsed: usize,
+    min_seen: usize,
+}
+
+impl BacklogTrimmer {
+    /// `window` in frames — e.g. one second's worth.
+    pub fn new(window: usize) -> Self {
+        Self { window: window.max(1), elapsed: 0, min_seen: usize::MAX }
+    }
+
+    /// Call right before popping `block` frames. Returns frames dropped.
+    pub fn before_pop(&mut self, cons: &mut ringbuf::HeapCons<StereoFrame>, block: usize) -> usize {
+        use ringbuf::traits::{Consumer, Observer};
+        self.min_seen = self.min_seen.min(cons.occupied_len());
+        self.elapsed += block;
+        if self.elapsed < self.window {
+            return 0;
+        }
+        let excess = self.min_seen.saturating_sub(block);
+        self.elapsed = 0;
+        self.min_seen = usize::MAX;
+        if excess > 0 { cons.skip(excess) } else { 0 }
+    }
+}
+
 pub type AudioProcessFn = Box<dyn Fn(&mut [f32], &mut [f32]) + Send + 'static>;
 
 pub struct MixerState {
@@ -132,6 +169,50 @@ mod tests {
         let (mut l, mut r) = ([0.0f32; 1], [0.0f32; 1]);
         assert_eq!(pop_frames(&mut cons, &mut l, &mut r), 0);
         assert_eq!((l[0], r[0]), (0.2, -0.2));
+    }
+
+    use ringbuf::{HeapRb, traits::{Observer, Producer, Split}};
+
+    fn fill(prod: &mut ringbuf::HeapProd<StereoFrame>, n: usize, start: usize) {
+        for i in start..start + n {
+            prod.try_push([i as f32, -(i as f32)]).unwrap();
+        }
+    }
+
+    #[test]
+    fn trimmer_drops_a_steady_backlog_down_to_one_block() {
+        let (mut prod, mut cons) = HeapRb::<StereoFrame>::new(4096).split();
+        let mut trimmer = BacklogTrimmer::new(1000);
+        let (mut l, mut r) = ([0.0f32; 100], [0.0f32; 100]);
+        fill(&mut prod, 1000, 0); // 1000-frame backlog, then producer keeps pace
+        let mut next = 1000;
+        for _ in 0..10 {
+            trimmer.before_pop(&mut cons, 100);
+            pop_frames(&mut cons, &mut l, &mut r);
+            fill(&mut prod, 100, next);
+            next += 100;
+        }
+        trimmer.before_pop(&mut cons, 100);
+        assert_eq!(cons.occupied_len(), 100, "excess backlog should be trimmed to one block");
+    }
+
+    #[test]
+    fn trimmer_leaves_a_bursty_producer_alone() {
+        // Producer delivers 480-frame bursts, consumer pulls 64: occupancy
+        // swings high but regularly drops near zero — no excess latency.
+        let (mut prod, mut cons) = HeapRb::<StereoFrame>::new(4096).split();
+        let mut trimmer = BacklogTrimmer::new(1000);
+        let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
+        let (mut produced, mut consumed) = (0usize, 0usize);
+        for _ in 0..200 {
+            if produced < consumed + 64 {
+                fill(&mut prod, 480, produced);
+                produced += 480;
+            }
+            trimmer.before_pop(&mut cons, 64);
+            assert_eq!(pop_frames(&mut cons, &mut l, &mut r), 0, "trimmer caused an underrun");
+            consumed += 64;
+        }
     }
 
     #[test]

@@ -196,6 +196,60 @@ struct RawPlugin(*const ClapPlugin);
 unsafe impl Send for RawPlugin {}
 unsafe impl Sync for RawPlugin {}
 
+// ── clap_entry init/deinit reference counting ────────────────────────────────
+
+type EntryInitFn = unsafe extern "C" fn(*const c_char) -> bool;
+type EntryDeinitFn = unsafe extern "C" fn();
+
+/// Live users of each `.clap` file's `clap_entry` (instances + scanner).
+/// `init`/`deinit` are per *library*, not per instance: a second instance
+/// of the same plugin (or a scan while it is loaded) must not re-init, and
+/// removing one instance must not `deinit` the library under the other —
+/// plugins built before CLAP 1.2 don't ref-count this themselves.
+static ENTRY_REFS: parking_lot::Mutex<Option<std::collections::HashMap<String, u32>>> =
+    parking_lot::Mutex::new(None);
+
+/// One counted use of a library's `clap_entry`; `deinit` runs when the last
+/// one drops.
+pub(crate) struct EntryRef {
+    key: String,
+    deinit: Option<EntryDeinitFn>,
+}
+
+impl EntryRef {
+    /// Calls `init` only for the first user of `key`. `None` if it failed.
+    fn acquire(key: &str, path: &CStr, init: Option<EntryInitFn>, deinit: Option<EntryDeinitFn>) -> Option<Self> {
+        let mut guard = ENTRY_REFS.lock();
+        let refs = guard.get_or_insert_with(Default::default);
+        let count = refs.get(key).copied().unwrap_or(0);
+        if count == 0 {
+            if let Some(f) = init {
+                if !unsafe { f(path.as_ptr()) } {
+                    return None;
+                }
+            }
+        }
+        refs.insert(key.to_string(), count + 1);
+        Some(Self { key: key.to_string(), deinit })
+    }
+}
+
+impl Drop for EntryRef {
+    fn drop(&mut self) {
+        let mut guard = ENTRY_REFS.lock();
+        let refs = guard.get_or_insert_with(Default::default);
+        match refs.get_mut(&self.key) {
+            Some(n) if *n > 1 => *n -= 1,
+            _ => {
+                refs.remove(&self.key);
+                if let Some(f) = self.deinit {
+                    unsafe { f() };
+                }
+            }
+        }
+    }
+}
+
 // ── Stable host memory ───────────────────────────────────────────────────────
 
 /// Box-allocated struct that holds the `ClapHost` vtable AND the C-string data
@@ -260,7 +314,9 @@ pub struct ClapProcessor {
     plugin    : RawPlugin,
     state_ext : Option<*const ClapPluginState>,
     gui_ext   : Option<*const ClapPluginGui>,
-    deinit_fn : Option<unsafe extern "C" fn()>,
+    /// Counted `clap_entry` use; dropped after the plugin is destroyed and
+    /// before the library.
+    _entry    : EntryRef,
     /// `max_frames_count` negotiated with the plugin via `activate()`. The
     /// CLAP host contract forbids calling `process()` with more frames than
     /// this — the audio callback's actual block size can exceed it at
@@ -316,14 +372,10 @@ impl ClapProcessor {
                 _name: name, _vend: vend, _url: url, _ver: ver,
             });
 
-            // Initialise entry.
+            // Initialise entry (only if no other user of this file already did).
             let path_cs = CString::new(path).unwrap_or_default();
-            if let Some(init_fn) = entry.init {
-                if !init_fn(path_cs.as_ptr()) {
-                    return Err(anyhow!("clap_entry.init() failed for '{}'", path));
-                }
-            }
-            let deinit_fn = entry.deinit;
+            let entry_ref = EntryRef::acquire(path, &path_cs, entry.init, entry.deinit)
+                .ok_or_else(|| anyhow!("clap_entry.init() failed for '{}'", path))?;
 
             // Get the plugin factory.
             let get_factory = entry.get_factory
@@ -396,7 +448,7 @@ impl ClapProcessor {
                 plugin    : RawPlugin(plugin),
                 state_ext,
                 gui_ext,
-                deinit_fn,
+                _entry    : entry_ref,
                 max_frames,
                 _host     : host_box,
                 _lib      : lib,
@@ -531,7 +583,7 @@ impl Drop for ClapProcessor {
             if let Some(f) = (*p).stop_processing { f(p); }
             if let Some(f) = (*p).deactivate      { f(p); }
             if let Some(f) = (*p).destroy         { f(p); }
-            if let Some(f) = self.deinit_fn       { f();  }
+            // entry deinit: via `_entry`'s Drop, right after this.
         }
     }
 }
@@ -548,11 +600,11 @@ pub fn read_clap_metadata(path: &std::path::Path) -> Option<(String, String, Str
 
         if entry.clap_version.major != 1 { return None; }
 
-        // init — required before calling get_factory
-        let path_cs = CString::new(path.to_string_lossy().as_ref()).ok()?;
-        if let Some(f) = entry.init {
-            if !f(path_cs.as_ptr()) { return None; }
-        }
+        // init — required before calling get_factory; shared with any live
+        // instance of this plugin (see EntryRef).
+        let key = path.to_string_lossy().into_owned();
+        let path_cs = CString::new(key.as_str()).ok()?;
+        let _entry = EntryRef::acquire(&key, &path_cs, entry.init, entry.deinit)?;
 
         let result = (|| -> Option<(String, String, String)> {
             let get_factory = entry.get_factory?;
@@ -583,8 +635,37 @@ pub fn read_clap_metadata(path: &std::path::Path) -> Option<(String, String, Str
             Some((name, vendor, version))
         })();
 
-        // Always deinit after reading metadata.
-        if let Some(f) = entry.deinit { f(); }
         result
+    }
+}
+
+#[cfg(test)]
+mod entry_ref_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU32;
+
+    static INITS: AtomicU32 = AtomicU32::new(0);
+    static DEINITS: AtomicU32 = AtomicU32::new(0);
+    unsafe extern "C" fn fake_init(_: *const c_char) -> bool { INITS.fetch_add(1, Ordering::SeqCst); true }
+    unsafe extern "C" fn fake_deinit() { DEINITS.fetch_add(1, Ordering::SeqCst); }
+    unsafe extern "C" fn failing_init(_: *const c_char) -> bool { false }
+
+    #[test]
+    fn entry_is_initialised_once_and_deinitialised_after_the_last_user() {
+        let path = CString::new("C:/Fake/Shared.clap").unwrap();
+        let a = EntryRef::acquire("C:/Fake/Shared.clap", &path, Some(fake_init), Some(fake_deinit)).unwrap();
+        let b = EntryRef::acquire("C:/Fake/Shared.clap", &path, Some(fake_init), Some(fake_deinit)).unwrap();
+        assert_eq!(INITS.load(Ordering::SeqCst), 1);
+        drop(a);
+        assert_eq!(DEINITS.load(Ordering::SeqCst), 0, "second instance still alive");
+        drop(b);
+        assert_eq!(DEINITS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn failed_init_is_not_counted() {
+        let path = CString::new("C:/Fake/Broken.clap").unwrap();
+        assert!(EntryRef::acquire("C:/Fake/Broken.clap", &path, Some(failing_init), None).is_none());
+        assert!(EntryRef::acquire("C:/Fake/Broken.clap", &path, Some(failing_init), None).is_none());
     }
 }

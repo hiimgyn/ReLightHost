@@ -170,6 +170,43 @@ unsafe fn write_asio_sample(ptr: *mut c_void, frame: usize, format: AsioSampleFo
     }
 }
 
+/// Rate the driver ends up running at: `requested` if it already runs there
+/// or accepted a switch to it, otherwise its own `current` rate.
+fn choose_rate(current: f64, requested: f64, switched: bool) -> f64 {
+    if (current - requested).abs() < 1.0 || switched { requested } else { current }
+}
+
+/// Asks `driver` to run at `requested` (the ASIO SDK never does this on its
+/// own — without it the device keeps whatever rate it was last set to) and
+/// returns the rate it actually runs at.
+fn ensure_rate(driver: &Driver, requested: f64, driver_name: &str) -> f64 {
+    let current = driver.sample_rate().unwrap_or(requested);
+    let switched = (current - requested).abs() >= 1.0
+        && driver.can_sample_rate(requested).unwrap_or(false)
+        && driver.set_sample_rate(requested).is_ok();
+    let rate = choose_rate(current, requested, switched);
+    if (rate - requested).abs() >= 1.0 {
+        log::warn!("ASIO driver '{driver_name}' cannot run at {requested} Hz; using its current {rate} Hz");
+    }
+    rate
+}
+
+/// Resolves the rate an ASIO driver will run at before any stream starts,
+/// so a WASAPI leg bridged to it can be opened at the same rate. Returns
+/// `requested` unchanged if the driver can't be loaded right now.
+pub fn negotiate_sample_rate(driver_name: &str, requested: f64) -> f64 {
+    let _lifecycle_guard = ASIO_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if ASIO.loaded_driver().is_some() {
+        return requested;
+    }
+    match ASIO.load_driver(driver_name) {
+        Ok(driver) => ensure_rate(&driver, requested, driver_name),
+        Err(_) => requested,
+    }
+}
+
 /// Validates a caller-supplied buffer-size hint against what `driver`
 /// actually supports. `asio-sys`'s `create_buffers` (which
 /// `prepare_input_stream`/`prepare_output_stream` call into) only checks the
@@ -329,6 +366,7 @@ pub fn start_duplex(
     in_offset: usize,
     out_offset: usize,
     buffer_size_hint: Option<i32>,
+    sample_rate: f64,
     mixer: MixerState,
     mut virt_producer: Option<HeapProd<StereoFrame>>,
 ) -> anyhow::Result<AsioDuplexStream> {
@@ -364,6 +402,7 @@ pub fn start_duplex(
     // call (see the two-step construction comment below), so they share one
     // validated (or `None`-if-invalid) buffer size rather than each risking
     // its own inconsistent fallback.
+    ensure_rate(&driver, sample_rate, driver_name);
     let buffer_size_hint = validate_buffer_size_hint(&driver, buffer_size_hint, driver_name);
 
     // asio-sys's `prepare_input_stream`/`prepare_output_stream` always
@@ -564,6 +603,7 @@ pub fn start_input_only(
     driver_name: &str,
     offset: usize,
     buffer_size_hint: Option<i32>,
+    sample_rate: f64,
     mut producer: HeapProd<StereoFrame>,
 ) -> anyhow::Result<AsioDuplexStream> {
     // See `ASIO_LIFECYCLE_LOCK`'s doc comment — held for this whole setup path.
@@ -583,6 +623,7 @@ pub fn start_input_only(
 
     // See `start_duplex`'s identical comment on why the hint is validated
     // against the driver's actual range/step before use.
+    ensure_rate(&driver, sample_rate, driver_name);
     let buffer_size_hint = validate_buffer_size_hint(&driver, buffer_size_hint, driver_name);
 
     // See `start_duplex`'s identical comment on why enough channels to
@@ -655,6 +696,7 @@ pub fn start_output_only(
     driver_name: &str,
     offset: usize,
     buffer_size_hint: Option<i32>,
+    sample_rate: f64,
     mut consumer: HeapCons<StereoFrame>,
     mixer: MixerState,
     mut virt_producer: Option<HeapProd<StereoFrame>>,
@@ -676,6 +718,7 @@ pub fn start_output_only(
 
     // See `start_duplex`'s identical comment on why the hint is validated
     // against the driver's actual range/step before use.
+    ensure_rate(&driver, sample_rate, driver_name);
     let buffer_size_hint = validate_buffer_size_hint(&driver, buffer_size_hint, driver_name);
 
     let channels = offset + 2;
@@ -855,6 +898,13 @@ mod duplex_tests {
 #[cfg(test)]
 mod format_tests {
     use super::*;
+
+    #[test]
+    fn rate_choice_keeps_requested_when_already_there_or_settable() {
+        assert_eq!(choose_rate(48_000.0, 48_000.0, false), 48_000.0);
+        assert_eq!(choose_rate(44_100.0, 48_000.0, true), 48_000.0);
+        assert_eq!(choose_rate(44_100.0, 48_000.0, false), 44_100.0, "unsupported → driver's own rate");
+    }
 
     #[test]
     fn resolves_only_int32_and_float32_lsb() {

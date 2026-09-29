@@ -45,11 +45,14 @@ pub fn scan_plugins(state: tauri::State<AppState>) -> Result<Vec<PluginInfo>, St
 
 #[tauri::command]
 pub fn load_plugin(state: tauri::State<AppState>, info: PluginInfo) -> Result<String, String> {
-    let config = state.audio_manager.read().get_config();
+    let (rate, block) = {
+        let am = state.audio_manager.read();
+        (am.processing_rate(), am.get_config().buffer_size as usize)
+    };
     let id = state
         .plugin_manager
         .read()
-        .load_plugin(info, config.sample_rate as f64, config.buffer_size as usize)
+        .load_plugin(info, rate, block)
         .map_err(|e| format!("Failed to load plugin: {}", e))?;
     crate::app_events::emit_plugin_chain_changed("load", Some(&id));
     Ok(id)

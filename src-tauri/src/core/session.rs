@@ -113,7 +113,9 @@ pub(crate) fn restore_session_impl(
             // Collect VST3 blobs + params to replay after load phase completes
             let mut vst3_replays: Vec<(String, Option<Vec<u8>>, Vec<crate::domain::preset::PresetParameter>)> = Vec::new();
 
-            let sample_rate = config.sample_rate as f64;
+            // The stream may already be running (early start) at a rate an
+            // ASIO driver chose over the configured one.
+            let sample_rate = state.audio_manager.read().processing_rate();
             let buffer_size = config.buffer_size;
 
             let mut infos: Vec<PluginInfo> = Vec::new();
@@ -293,6 +295,9 @@ pub(crate) fn restore_session_impl(
     // No deferred VST3 replay pending (none needed, or its thread failed to
     // spawn) → the chain is complete now; save it once.
     if state.startup.vst3_restore_ready.load(Ordering::Acquire) {
+        // Monitoring may have started after the plugins loaded, at a rate
+        // an ASIO driver chose — bring the chain in line before saving it.
+        crate::commands::audio::sync_chain_to_audio_rate(state);
         crate::core::autosave::set_restore_in_progress(false);
         crate::core::autosave::request_plugin_chain_autosave();
     }

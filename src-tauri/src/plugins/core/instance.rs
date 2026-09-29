@@ -633,6 +633,10 @@ fn wait_until_unshared<T>(arc: &Arc<T>) {
 pub struct PluginInstanceManager {
     instances: ArcSwap<Vec<Arc<PluginInstance>>>,
     modify_lock: Mutex<()>,
+    /// Sample rate the current chain was created with (None = no plugin
+    /// loaded yet). Block size isn't tracked: every processor already
+    /// chunks to the max block it was prepared with.
+    prepared_rate: Mutex<Option<f64>>,
 }
 
 impl PluginInstanceManager {
@@ -640,6 +644,7 @@ impl PluginInstanceManager {
         Self {
             instances: ArcSwap::from_pointee(Vec::new()),
             modify_lock: Mutex::new(()),
+            prepared_rate: Mutex::new(None),
         }
     }
 
@@ -660,6 +665,7 @@ impl PluginInstanceManager {
         let instance = Arc::new(PluginInstance::new(plugin_info, sample_rate, block_size)?);
         let instance_id = instance.instance_id().to_string();
         let _guard = self.modify_lock.lock();
+        *self.prepared_rate.lock() = Some(sample_rate);
         let current = self.instances.load();
         let mut list = (**current).clone();
         list.push(instance);
@@ -708,6 +714,7 @@ impl PluginInstanceManager {
         if n == 0 {
             return Vec::new();
         }
+        *self.prepared_rate.lock() = Some(sample_rate);
         if n == 1 {
             let info = infos.into_iter().next().unwrap();
             let name = info.name.clone();
@@ -895,6 +902,65 @@ impl PluginInstanceManager {
         }
     }
 
+    /// Re-creates every plugin at `sample_rate` when the chain was prepared
+    /// at a different one — plugins bake the rate in at load (VST3
+    /// `setupProcessing`, VST2 `effSetSampleRate`, CLAP `activate`, built-in
+    /// coefficients). Keeps order, bypass, display name, parameters and
+    /// binary state. Returns whether a reload happened.
+    ///
+    /// Plugins are created one at a time on the calling thread (same as a
+    /// sequential session restore); a plugin that fails to load at the new
+    /// rate is dropped from the chain with a warning.
+    // ponytail: full reload rather than per-format re-setup — one code path
+    // that is correct for all four formats; add in-place re-setup if reload
+    // time on large chains becomes a complaint.
+    pub fn reprepare_if_rate_changed(&self, sample_rate: f64, block_size: usize) -> bool {
+        let _guard = self.modify_lock.lock();
+        {
+            let mut prepared = self.prepared_rate.lock();
+            if self.instances.load().is_empty() {
+                *prepared = Some(sample_rate);
+                return false;
+            }
+            if *prepared == Some(sample_rate) {
+                return false;
+            }
+            *prepared = Some(sample_rate);
+        }
+
+        let old_list = self.instances.load_full();
+        let mut new_list = Vec::with_capacity(old_list.len());
+        for old in old_list.iter() {
+            old.request_close_gui(crate::timing::GUI_CLOSE_TIMEOUT);
+            let state = old.get_state_binary();
+            let fresh = match PluginInstance::new(old.plugin_info.clone(), sample_rate, block_size) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::warn!("Reload at {sample_rate} Hz dropped '{}': {e}", old.plugin_info.name);
+                    continue;
+                }
+            };
+            fresh.set_bypassed(old.is_bypassed());
+            *fresh.display_name.write() = old.display_name.read().clone();
+            let params = old.parameters.read().clone();
+            *fresh.parameters.write() = params.clone();
+            for p in &params {
+                fresh.set_parameter(p.id, p.value);
+            }
+            if !state.is_empty() {
+                fresh.set_state_binary(&state);
+            }
+            new_list.push(Arc::new(fresh));
+        }
+
+        let old = self.instances.swap(Arc::new(new_list));
+        drop(old_list);
+        wait_until_unshared(&old);
+        drop(old);
+        log::info!("Plugin chain reloaded at {sample_rate} Hz");
+        true
+    }
+
     /// Clear all instances
     pub fn clear(&self) {
         let old = {
@@ -1048,6 +1114,28 @@ mod state_tests {
         held_rx.recv().unwrap();
         run();
         reader.join().unwrap();
+    }
+
+    #[test]
+    fn reprepare_reloads_the_chain_at_a_new_rate_keeping_user_settings() {
+        let manager = PluginInstanceManager::new();
+        let old_id = manager.load_plugin(compressor().plugin_info.clone(), 48_000.0, 512).unwrap();
+        let old = manager.get_instance(&old_id).unwrap();
+        old.set_parameter(4, 12.0);
+        old.set_bypassed(true);
+        old.rename("Vocal comp".into());
+        drop(old);
+
+        assert!(!manager.reprepare_if_rate_changed(48_000.0, 512), "same rate must not reload");
+        assert!(manager.reprepare_if_rate_changed(44_100.0, 512));
+
+        let chain = manager.get_instances();
+        assert_eq!(chain.len(), 1);
+        assert_ne!(chain[0].instance_id, old_id);
+        assert!(chain[0].bypassed);
+        assert_eq!(chain[0].name, "Vocal comp");
+        assert_eq!(chain[0].parameters.iter().find(|p| p.id == 4).unwrap().value, 12.0);
+        assert!(!manager.reprepare_if_rate_changed(44_100.0, 512));
     }
 
     #[test]

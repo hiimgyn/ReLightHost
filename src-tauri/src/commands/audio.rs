@@ -7,6 +7,23 @@ use crate::AppState;
 
 static TEST_SOUND_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 
+/// Reloads the plugin chain if the running stream's sample rate differs
+/// from the one the plugins were created at (config change, or an ASIO
+/// driver that refused the configured rate). Skipped while a session
+/// restore is still replaying VST3 state onto the current instances.
+pub(crate) fn sync_chain_to_audio_rate(state: &AppState) {
+    if !state.startup.vst3_restore_ready.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let (rate, block) = {
+        let am = state.audio_manager.read();
+        (am.processing_rate(), am.get_config().buffer_size as usize)
+    };
+    if state.plugin_manager.reprepare_if_rate_changed(rate, block) {
+        crate::app_events::emit_plugin_chain_changed("reload", None);
+    }
+}
+
 #[tauri::command]
 pub fn start_audio(state: tauri::State<AppState>) -> Result<(), String> {
     state
@@ -47,6 +64,7 @@ pub fn set_output_device(state: tauri::State<AppState>, device_id: Option<String
         .read()
         .set_output_device(device_id)
         .map_err(|e| format!("Failed to set output device: {}", e))?;
+    sync_chain_to_audio_rate(&state);
     crate::save_audio_session_to_disk(&state);
     Ok(())
 }
@@ -58,6 +76,7 @@ pub fn set_input_device(state: tauri::State<AppState>, device_id: Option<String>
         .read()
         .set_input_device(device_id)
         .map_err(|e| format!("Failed to set input device: {}", e))?;
+    sync_chain_to_audio_rate(&state);
     crate::save_audio_session_to_disk(&state);
     Ok(())
 }
@@ -102,6 +121,7 @@ pub fn set_sample_rate(state: tauri::State<AppState>, rate: u32) -> Result<(), S
         .read()
         .set_sample_rate(rate)
         .map_err(|e| format!("Failed to set sample rate: {}", e))?;
+    sync_chain_to_audio_rate(&state);
     crate::save_audio_session_to_disk(&state);
     Ok(())
 }
@@ -123,7 +143,11 @@ pub fn toggle_monitoring(state: tauri::State<AppState>, enabled: bool) -> Result
         .audio_manager
         .read()
         .toggle_monitoring(enabled)
-        .map_err(|e| format!("Failed to toggle monitoring: {}", e))
+        .map_err(|e| format!("Failed to toggle monitoring: {}", e))?;
+    if enabled {
+        sync_chain_to_audio_rate(&state);
+    }
+    Ok(())
 }
 
 #[tauri::command]

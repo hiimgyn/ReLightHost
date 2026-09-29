@@ -204,6 +204,9 @@ pub struct AudioManager {
     /// Set when a WASAPI leg fell back from exclusive to shared mode.
     /// Updated only at `toggle_monitoring` time.
     wasapi_fallback_reason: Arc<RwLock<Option<String>>>,
+    /// Rate the running stream actually uses (an ASIO driver may refuse the
+    /// configured one); 0 when not monitoring.
+    effective_rate: AtomicU32,
 }
 
 impl AudioManager {
@@ -222,6 +225,7 @@ impl AudioManager {
             underrun_count:   Arc::new(AtomicU64::new(0)),
             exclusive_mode_active: Arc::new(RwLock::new(false)),
             wasapi_fallback_reason: Arc::new(RwLock::new(None)),
+            effective_rate:   AtomicU32::new(0),
         }
     }
 
@@ -315,6 +319,7 @@ impl AudioManager {
             }
             *self.exclusive_mode_active.write() = false;
             *self.wasapi_fallback_reason.write() = None;
+            self.effective_rate.store(0, Ordering::Relaxed);
             self.status.write().is_monitoring = false;
             log::info!("{} Input monitoring stopped", crate::core::threading::thread_prefix("audio/monitor"));
             return Ok(());
@@ -377,6 +382,16 @@ impl AudioManager {
             asio::list_asio_devices()
         } else {
             Vec::new()
+        };
+
+        // Every leg runs at one rate. An ASIO driver may refuse the configured
+        // rate, in which case its rate wins and WASAPI legs are opened at it
+        // too (shared mode converts) — two legs at different rates would
+        // over/underrun the bridge ring buffer continuously.
+        let asio_leg = if input_is_asio { in_asio_name } else if output_is_asio { out_asio_name } else { None };
+        let rate = match asio_leg {
+            Some(name) => asio::negotiate_sample_rate(name, config.sample_rate as f64).round() as u32,
+            None => config.sample_rate,
         };
 
         // -----------------------------------------------------------------
@@ -478,6 +493,7 @@ impl AudioManager {
                 in_offset,
                 out_offset,
                 Some(config.buffer_size as i32),
+                rate as f64,
                 mixer_state,
                 virt_producer,
             ).map_err(|e| anyhow::anyhow!("Failed to start ASIO full-duplex stream: {e}"))?;
@@ -509,13 +525,13 @@ impl AudioManager {
                 let in_channels = asio_devices.iter()
                     .find(|d| d.name == name).map(|d| d.input_channels).unwrap_or(2);
                 let in_offset = if in_channels >= 2 { config.input_channel_offset.min(in_channels - 2) } else { 0 };
-                let stream = asio::start_input_only(name, in_offset, Some(config.buffer_size as i32), producer)
+                let stream = asio::start_input_only(name, in_offset, Some(config.buffer_size as i32), rate as f64, producer)
                     .map_err(|e| anyhow::anyhow!("Failed to start ASIO input '{name}': {e}"))?;
                 asio_guard = Some(AsioGuard(Some(stream)));
                 PendingBridgedInput::Asio
             } else {
                 let raw = input_id.strip_prefix("in_").unwrap_or(&input_id);
-                let (stream, result) = wasapi::start_capture(raw, config.buffer_size, config.sample_rate, producer)
+                let (stream, result) = wasapi::start_capture(raw, config.buffer_size, rate, producer)
                     .map_err(|e| anyhow::anyhow!("Failed to start WASAPI input '{raw}': {e}"))?;
                 input_wasapi_result = Some(result);
                 PendingBridgedInput::Wasapi(stream)
@@ -540,7 +556,7 @@ impl AudioManager {
                     let out_channels = asio_devices.iter()
                         .find(|d| d.name == name).map(|d| d.output_channels).unwrap_or(2);
                     let out_offset = if out_channels >= 2 { config.output_channel_offset.min(out_channels - 2) } else { 0 };
-                    match asio::start_output_only(name, out_offset, Some(config.buffer_size as i32), consumer, mixer_state, virt_producer) {
+                    match asio::start_output_only(name, out_offset, Some(config.buffer_size as i32), rate as f64, consumer, mixer_state, virt_producer) {
                         Ok(stream) => {
                             asio_guard = Some(AsioGuard(Some(stream)));
                             Some(PendingBridgedOutput::Asio)
@@ -553,7 +569,7 @@ impl AudioManager {
                 }
                 Some(ref id) => {
                     let raw = id.strip_prefix("out_").unwrap_or(id.as_str());
-                    match wasapi::start_render(raw, config.buffer_size, config.sample_rate, consumer, mixer_state, virt_producer) {
+                    match wasapi::start_render(raw, config.buffer_size, rate, consumer, mixer_state, virt_producer) {
                         Ok((stream, result)) => {
                             output_wasapi_result = Some(result);
                             Some(PendingBridgedOutput::Wasapi(stream))
@@ -599,7 +615,7 @@ impl AudioManager {
                     // smear the real one's count.
                     underrun_count: Arc::new(AtomicU64::new(0)),
                 };
-                match wasapi::start_render(&id, config.buffer_size, config.sample_rate, consumer, passthrough_mixer, None) {
+                match wasapi::start_render(&id, config.buffer_size, rate, consumer, passthrough_mixer, None) {
                     Ok((stream, _result)) => Some(stream),
                     Err(e) => {
                         log::warn!("{} Failed to start virtual output stream: {e}; continuing without it", crate::core::threading::thread_prefix("audio/monitor"));
@@ -657,11 +673,17 @@ impl AudioManager {
 
         let has_virt = virtual_output.is_some();
         *monitoring_guard = Some(MonitoringStreams { backend, virtual_output });
-        self.status.write().is_monitoring = true;
+        self.effective_rate.store(rate, Ordering::Relaxed);
+        {
+            let mut status = self.status.write();
+            status.is_monitoring = true;
+            status.sample_rate = rate;
+            status.latency_ms = (config.buffer_size as f32 / rate as f32) * 1000.0;
+        }
         log::info!(
             "{} Input monitoring started ({}Hz, {} samples{})",
             crate::core::threading::thread_prefix("audio/monitor"),
-            config.sample_rate,
+            rate,
             config.buffer_size,
             if has_virt { " + hardware out" } else { "" },
         );
@@ -705,6 +727,15 @@ impl AudioManager {
         status.exclusive_mode_active = *self.exclusive_mode_active.read();
         status.wasapi_fallback_reason = self.wasapi_fallback_reason.read().clone();
         status
+    }
+
+    /// Sample rate plugins must be prepared at: the running stream's actual
+    /// rate, or the configured one when nothing is running.
+    pub fn processing_rate(&self) -> f64 {
+        match self.effective_rate.load(Ordering::Relaxed) {
+            0 => self.config.read().sample_rate as f64,
+            r => r as f64,
+        }
     }
 
     /// Get current audio configuration

@@ -149,7 +149,7 @@ impl ConfigManager {
 
     fn save_config(&self, config: &AppConfig) -> Result<()> {
         let content = serde_json::to_string_pretty(config)?;
-        fs::write(&self.config_path, content)?;
+        crate::domain::preset::write_atomic(&self.config_path, content.as_bytes())?;
         Ok(())
     }
 
@@ -186,7 +186,7 @@ impl ConfigManager {
     pub fn save_session(&self, audio: &AudioConfig, muted: bool, loopback_enabled: bool) -> Result<()> {
         let state = SessionState { audio: audio.clone(), muted, loopback_enabled };
         let content = serde_json::to_string_pretty(&state)?;
-        fs::write(self.session_path(), content)?;
+        crate::domain::preset::write_atomic(&self.session_path(), content.as_bytes())?;
         Ok(())
     }
 

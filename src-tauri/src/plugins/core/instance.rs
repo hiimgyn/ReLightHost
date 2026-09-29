@@ -13,6 +13,10 @@ use crate::plugins::crash_protection::{self, SharedCrashProtection};
 use anyhow::{Error, Result};
 use rayon::prelude::*;
 
+/// Upper bound a non-audio caller waits for a processor mutex the audio
+/// callback holds for the duration of one block.
+const STATE_LOCK_TIMEOUT: Duration = Duration::from_millis(50);
+
 /// Represents a loaded plugin instance with an optional real audio processor.
 ///
 /// Mirrors LightHost's per-node model in AudioProcessorGraph:
@@ -41,6 +45,11 @@ pub struct PluginInstance {
     /// can sync the controller from the exact restored bytes instead of asking
     /// the live component to reserialize itself during editor startup.
     vst3_restored_state: Arc<RwLock<Option<Vec<u8>>>>,
+    /// Last state blob successfully read from (or written to) the plugin.
+    /// Returned by `get_state_binary` when a live read isn't possible right
+    /// now (processor busy, VST3 GUI session holding `com_access_lock`) so an
+    /// autosave never overwrites real state with nothing.
+    last_state:     RwLock<Option<Vec<u8>>>,
     /// Track if GUI window is currently open (prevents multiple windows)
     gui_open:       Arc<AtomicBool>,
     /// HWND (as isize) of the open GUI window; 0 when none.
@@ -162,6 +171,7 @@ impl PluginInstance {
             builtin_processor: Mutex::new(builtin_processor),
             vst3_gui_state_sync_pending: Arc::new(AtomicBool::new(true)),
             vst3_restored_state: Arc::new(RwLock::new(None)),
+            last_state:        RwLock::new(None),
             gui_open:          Arc::new(AtomicBool::new(false)),
             gui_hwnd:          Arc::new(AtomicIsize::new(0)),
             crash_protection:  crash_protection::create_shared(),
@@ -269,45 +279,60 @@ impl PluginInstance {
     }
 
     /// Serialize plugin state as raw bytes (mirrors LightHost's `getStateInformation`).
+    ///
+    /// Never called from the audio thread, so it may wait briefly for the
+    /// processor mutex the audio callback holds for one block. When a live
+    /// read still isn't possible (busy, or a VST3 GUI session holding
+    /// `com_access_lock`), returns the last known state instead of nothing.
     pub fn get_state_binary(&self) -> Vec<u8> {
-        if let Some(guard) = self.vst3_processor.try_lock() {
-            if let Some(ref proc) = *guard {
-                return proc.get_state();
+        let live = match self.plugin_info.format {
+            PluginFormat::VST3 => self.vst3_processor.try_lock_for(STATE_LOCK_TIMEOUT)
+                .and_then(|g| g.as_ref().map(|p| p.get_state())),
+            PluginFormat::VST => self.vst2_processor.try_lock_for(STATE_LOCK_TIMEOUT)
+                .and_then(|mut g| g.as_mut().map(|p| p.get_state())),
+            PluginFormat::CLAP => self.clap_processor.try_lock_for(STATE_LOCK_TIMEOUT)
+                .and_then(|g| g.as_ref().map(|p| p.get_state())),
+            PluginFormat::Builtin => None,
+        };
+        match live {
+            Some(state) if !state.is_empty() => {
+                *self.last_state.write() = Some(state.clone());
+                state
             }
+            _ => self.last_state.read().clone().unwrap_or_default(),
         }
-        if let Some(mut guard) = self.vst2_processor.try_lock() {
-            if let Some(ref mut proc) = *guard {
-                return proc.get_state();
-            }
-        }
-        if let Some(guard) = self.clap_processor.try_lock() {
-            if let Some(ref proc) = *guard {
-                return proc.get_state();
-            }
-        }
-        Vec::new()
     }
 
     /// Restore plugin state from raw bytes (mirrors LightHost's `setStateInformation`).
     pub fn set_state_binary(&self, data: &[u8]) {
-        if let Some(guard) = self.vst3_processor.try_lock() {
-            if let Some(ref proc) = *guard {
-                *self.vst3_restored_state.write() = Some(data.to_vec());
-                self.vst3_gui_state_sync_pending.store(true, Ordering::Release);
-                proc.set_state(data);
-                return;
-            }
+        if !data.is_empty() {
+            *self.last_state.write() = Some(data.to_vec());
         }
-        if let Some(mut guard) = self.vst2_processor.try_lock() {
-            if let Some(ref mut proc) = *guard {
-                proc.set_state(data);
-                return;
+        match self.plugin_info.format {
+            PluginFormat::VST3 => {
+                if let Some(guard) = self.vst3_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
+                    if let Some(ref proc) = *guard {
+                        *self.vst3_restored_state.write() = Some(data.to_vec());
+                        self.vst3_gui_state_sync_pending.store(true, Ordering::Release);
+                        proc.set_state(data);
+                    }
+                }
             }
-        }
-        if let Some(guard) = self.clap_processor.try_lock() {
-            if let Some(ref proc) = *guard {
-                proc.set_state(data);
+            PluginFormat::VST => {
+                if let Some(mut guard) = self.vst2_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
+                    if let Some(ref mut proc) = *guard {
+                        proc.set_state(data);
+                    }
+                }
             }
+            PluginFormat::CLAP => {
+                if let Some(guard) = self.clap_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
+                    if let Some(ref proc) = *guard {
+                        proc.set_state(data);
+                    }
+                }
+            }
+            PluginFormat::Builtin => {}
         }
     }
 
@@ -356,14 +381,14 @@ impl PluginInstance {
             }
         };
         // Forward normalized value to the actual VST3 edit controller.
-        // Use try_lock so this is safe to call from any thread without blocking.
-        if let Some(guard) = self.vst3_processor.try_lock() {
+        // Never called from the audio thread; waits at most one block for it.
+        if let Some(guard) = self.vst3_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
             if let Some(ref proc) = *guard {
                 proc.set_param_normalized(param_id, normalized);
             }
         }
         // Built-ins receive the raw (clamped) value; internal unit conversion is per-processor.
-        if let Some(mut guard) = self.builtin_processor.try_lock() {
+        if let Some(mut guard) = self.builtin_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
             if let Some(ref mut proc) = *guard {
                 // Re-read raw value from the now-updated parameters list.
                 let raw = self.parameters.read()
@@ -903,6 +928,54 @@ mod uuid {
             let id = COUNTER.fetch_add(1, Ordering::SeqCst);
             format!("{:016x}", id)
         }
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    fn compressor() -> Arc<PluginInstance> {
+        let info = PluginInfo {
+            id: "builtin::compressor".into(),
+            name: "Compressor".into(),
+            vendor: String::new(),
+            version: String::new(),
+            path: crate::plugins::builtin::compressor::ID.into(),
+            format: PluginFormat::Builtin,
+            category: String::new(),
+        };
+        Arc::new(PluginInstance::new(info, 48_000.0, 512).unwrap())
+    }
+
+    #[test]
+    fn get_state_falls_back_to_last_known_state_when_live_read_is_unavailable() {
+        let inst = compressor();
+        *inst.last_state.write() = Some(vec![1, 2, 3]);
+        assert_eq!(inst.get_state_binary(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn set_parameter_reaches_processor_despite_brief_lock_contention() {
+        let inst = compressor();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let holder = {
+            let inst = Arc::clone(&inst);
+            std::thread::spawn(move || {
+                let _g = inst.builtin_processor.lock();
+                locked_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(20));
+            })
+        };
+        locked_rx.recv().unwrap();
+        inst.set_parameter(4, 30.0); // Makeup Gain +30 dB
+        holder.join().unwrap();
+
+        // 0.001 is far below threshold → output = input × makeup (≈31.6×).
+        let mut l = vec![0.001f32; 64];
+        let mut r = vec![0.001f32; 64];
+        inst.process_stereo(&mut l, &mut r);
+        assert!(l[63] > 0.02, "makeup gain never reached the processor: {}", l[63]);
     }
 }
 

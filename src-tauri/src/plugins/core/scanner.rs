@@ -456,7 +456,7 @@ impl PluginScanner {
         // resource first (no code execution), then IPluginFactory2 as fallback.
         let (name, vendor, version, category) = if matches!(format, PluginFormat::VST) {
             let (n, v, ver) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                read_vst2_metadata(path)
+                with_code_load_lock(|| read_vst2_metadata(path))
             }))
             .unwrap_or_else(|_| {
                 log::error!("VST2 DLL panicked during scan: {}", path.display());
@@ -465,7 +465,7 @@ impl PluginScanner {
             .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
             (n, v, ver, "Effect".to_string())
         } else if matches!(format, PluginFormat::CLAP) {
-            let (n, v, ver) = crate::plugins::processor::clap::read_clap_metadata(path)
+            let (n, v, ver) = with_code_load_lock(|| crate::plugins::processor::clap::read_clap_metadata(path))
                 .unwrap_or_else(|| (filename.to_string(), String::new(), String::new()));
             (n, v, ver, "Effect".to_string())
         } else if matches!(format, PluginFormat::VST3) {
@@ -822,7 +822,24 @@ fn vi_parse(data: &[u8]) -> Option<(String, String, String)> {
 
 /// Briefly load a VST3 DLL and query `IPluginFactory2` for real metadata.
 /// Falls back to `IPluginFactory` (name + factory vendor only) if unavailable.
+/// Serializes every scan step that executes plugin code (DLL load +
+/// entry point / factory). The directory walk and static metadata reads
+/// (moduleinfo.json, VERSIONINFO) stay parallel; running several plugins'
+/// DllMain/initializers at once in-process multiplies the chance that one
+/// misbehaving DLL takes the app down mid-scan.
+// ponytail: in-process + serialized; out-of-process scanning (spawn self
+// with --scan-one <path>) is the real isolation if scan crashes persist.
+fn with_code_load_lock<T>(f: impl FnOnce() -> T) -> T {
+    static CODE_LOAD_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _guard = CODE_LOAD_LOCK.lock();
+    f()
+}
+
 fn read_vst3_dll_info(dll_path: &Path) -> Option<(String, String, String, String)> {
+    with_code_load_lock(|| read_vst3_dll_info_unlocked(dll_path))
+}
+
+fn read_vst3_dll_info_unlocked(dll_path: &Path) -> Option<(String, String, String, String)> {
     #[cfg(target_os = "windows")]
     {
         read_vst3_dll_info_win(dll_path)

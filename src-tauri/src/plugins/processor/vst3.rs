@@ -34,6 +34,8 @@ mod win {
         SymbolicSampleSizes_::kSample32,
     };
     use vst3::{Class, ComPtr, ComWrapper, Interface};
+    use vst3::Steinberg::Vst::IComponentHandler;
+    use crate::plugins::processor::vst3_host::{HostComponentHandler, HostParameterChanges, PendingParams};
 
     // ──────────────────────────────────────────────────────────────────
     // COM initialization per-thread (CRITICAL for VST3 plugin stability)
@@ -239,6 +241,17 @@ mod win {
         /// is violated, so callers must chunk to this size (see process_stereo).
         sample_rate: f64,
         max_block:  usize,
+        /// Normalized edits for the processor — from the plugin's own GUI
+        /// (IComponentHandler::performEdit) and from the host — delivered
+        /// via ProcessData::inputParameterChanges on the next block.
+        pending_params: PendingParams,
+        param_changes: HostParameterChanges,
+        /// Audio-thread scratch (pre-allocated): this block's edits, and
+        /// those that didn't fit HostParameterChanges' capacity.
+        param_scratch: Vec<(u32, f64)>,
+        param_overflow: Vec<(u32, f64)>,
+        /// Kept alive for the controller, which holds a reference to it.
+        _component_handler: Option<ComWrapper<HostComponentHandler>>,
         /// MUST be last: DLL must outlive all COM interface pointers above so that
         /// ComPtr::drop() (which calls Release() through the vtable) never fires
         /// after the DLL is unloaded.
@@ -457,7 +470,15 @@ mod win {
                     } else { None }
                 }
             };
-            if controller.is_none() {
+            let pending_params = PendingParams::default();
+            let component_handler = controller.as_ref().map(|ctrl| {
+                let handler = ComWrapper::new(HostComponentHandler::new(pending_params.clone()));
+                if let Some(ptr) = handler.to_com_ptr::<IComponentHandler>() {
+                    unsafe { ctrl.setComponentHandler(ptr.as_ptr()); }
+                }
+                handler
+            });
+                        if controller.is_none() {
                 log::debug!("{} '{}': IEditController not available (parameter automation disabled)", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
             }
 
@@ -477,6 +498,11 @@ mod win {
                 icp_connected: Arc::new(AtomicBool::new(false)),
                 sample_rate,
                 max_block: block_size.max(1),
+                pending_params,
+                param_changes: HostParameterChanges::new(),
+                param_scratch: Vec::with_capacity(256),
+                param_overflow: Vec::with_capacity(256),
+                _component_handler: component_handler,
             })
         }
 
@@ -509,16 +535,37 @@ mod win {
             let total = left.len().min(right.len());
             if total == 0 { return; }
 
+            // Parameter edits since the last block (older overflow first so
+            // newer values for the same id win).
+            self.param_scratch.clear();
+            self.param_scratch.append(&mut self.param_overflow);
+            self.pending_params.try_drain_into(&mut self.param_scratch);
+            if !self.param_scratch.is_empty() {
+                self.param_changes.load(&self.param_scratch, &mut self.param_overflow);
+            }
+
             // The host's ASIO/WASAPI callback size can vary at runtime (see
             // audio::manager's BufferSize::Default) and may exceed the
             // maxSamplesPerBlock negotiated at load(). Never hand the plugin
             // more samples per call than it was configured for.
-            for (start, end) in chunk_bounds(total, self.max_block) {
-                self.process_chunk(&mut left[start..end], &mut right[start..end]);
+            for (i, (start, end)) in chunk_bounds(total, self.max_block).enumerate() {
+                // Changes go with the first chunk only (sample offset 0).
+                let changes = if i == 0 && !self.param_changes.is_empty() {
+                    self.param_changes.as_ptr()
+                } else {
+                    ptr::null_mut()
+                };
+                self.process_chunk(&mut left[start..end], &mut right[start..end], changes);
             }
+            self.param_changes.clear();
         }
 
-        fn process_chunk(&mut self, left: &mut [f32], right: &mut [f32]) {
+        fn process_chunk(
+            &mut self,
+            left: &mut [f32],
+            right: &mut [f32],
+            input_changes: *mut vst3::Steinberg::Vst::IParameterChanges,
+        ) {
             let n = left.len().min(right.len());
             if n == 0 { return; }
             if self.in_l.len() < n { self.in_l.resize(n, 0.0); }
@@ -550,7 +597,7 @@ mod win {
                 numInputs: 1,
                 numOutputs: 1,
                 inputs: &mut in_bus, outputs: &mut out_bus,
-                inputParameterChanges: ptr::null_mut(),
+                inputParameterChanges: input_changes,
                 outputParameterChanges: ptr::null_mut(),
                 inputEvents: ptr::null_mut(),
                 outputEvents: ptr::null_mut(),
@@ -573,6 +620,9 @@ mod win {
             if let Some(ref ctrl) = self.controller {
                 unsafe { ctrl.setParamNormalized(param_id, normalized); }
             }
+            // The controller doesn't forward this to the processor — the
+            // host does, on the next process() call.
+            self.pending_params.push(param_id, normalized);
         }
 
         /// Snapshot the plugin state as raw bytes (serialised via IComponent::getState).

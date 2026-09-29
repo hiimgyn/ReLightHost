@@ -79,6 +79,24 @@ export async function getVUData(): Promise<VUData> {
   return invoke('get_vu_data');
 }
 
+// Preset Commands
+export async function listPresets(): Promise<string[]> {
+  return invoke('list_presets');
+}
+
+export async function savePreset(name: string): Promise<void> {
+  return invoke('save_preset', { name });
+}
+
+/** Replaces the chain with the preset; resolves to the number of plugins loaded. */
+export async function loadPreset(name: string): Promise<number> {
+  return invoke('load_preset', { name });
+}
+
+export async function deletePreset(name: string): Promise<void> {
+  return invoke('delete_preset', { name });
+}
+
 // Plugin Commands
 export async function scanPlugins(): Promise<PluginInfo[]> {
   return invoke('scan_plugins');

@@ -2,6 +2,7 @@ import { Button, Popconfirm, Space, Tooltip, Typography, theme } from 'antd';
 import { Plus, Trash2, AudioWaveform, ArrowLeftRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useTranslation } from '../../i18n';
+import PresetMenu from './PresetMenu';
 
 const { Text } = Typography;
 
@@ -121,6 +122,7 @@ export default function ChainToolbar({
       {/* Action Buttons */}
       <Space size={8} wrap align="center">
         {outSlot}
+        <PresetMenu disabled={isChainInitializing} />
         <Tooltip title={isChainInitializing ? t('chain.preparing') : t('chain.addPlugin')}>
           <Button
             type="primary"

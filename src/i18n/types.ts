@@ -67,6 +67,18 @@ export interface TranslationSchema {
     removeAllSuccess: string;
     removeAllFailed: string;
     launchFailed: string;
+    presets: string;
+    savePreset: string;
+    presetName: string;
+    presetNameInvalid: string;
+    presetSaved: string;
+    presetLoaded: string;
+    presetDeleted: string;
+    presetFailed: string;
+    loadPresetConfirm: string;
+    loadPresetConfirmDesc: string;
+    deletePresetConfirm: string;
+    noPresets: string;
   };
   card: {
     active: string;

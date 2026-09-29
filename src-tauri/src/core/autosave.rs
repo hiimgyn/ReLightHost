@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 
-use crate::core::snapshot::{build_chain_preset_from_manager, preset_hash_bytes};
+use crate::core::snapshot::build_chain_preset_from_manager;
 use crate::timing::AUTOSAVE_DEBOUNCE;
 
 #[derive(Debug, Clone, Copy)]
@@ -111,22 +111,26 @@ fn save_autosave_snapshot(
     static SAVE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     let _save = SAVE_LOCK.lock();
     let preset = build_chain_preset_from_manager(plugin_manager, "autosave");
-    let hash = preset_hash_bytes(&preset);
-
-    let skip_write = hash
-        .map(|h| h == autosave_last_hash.load(Ordering::Acquire))
-        .unwrap_or(false);
-
-    if skip_write {
+    // Serialize once: the same bytes are hashed (dedupe) and written.
+    let json = match preset.to_json() {
+        Ok(j) => j,
+        Err(e) => {
+            log::warn!("Failed to serialize auto-save: {e}");
+            return;
+        }
+    };
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        json.hash(&mut h);
+        h.finish()
+    };
+    if hash == autosave_last_hash.load(Ordering::Acquire) {
         return;
     }
 
-    match preset_manager.read().save_preset(&preset) {
-        Ok(_) => {
-            if let Some(h) = hash {
-                autosave_last_hash.store(h, Ordering::Release);
-            }
-        }
+    match preset_manager.read().save_preset_json(&preset.name, &json) {
+        Ok(_) => autosave_last_hash.store(hash, Ordering::Release),
         Err(e) => log::warn!("Failed to auto-save plugin chain: {e}"),
     }
 }

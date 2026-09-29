@@ -1,5 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 
@@ -25,12 +23,4 @@ pub fn build_chain_preset_from_manager(
     }
 
     preset
-}
-
-/// Stable hash of a preset snapshot for autosave dedupe.
-pub fn preset_hash_bytes(preset: &Preset) -> Option<u64> {
-    let bytes = serde_json::to_vec(preset).ok()?;
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    Some(hasher.finish())
 }

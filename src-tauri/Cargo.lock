@@ -10,6 +10,7 @@ dependencies = [
  "arc-swap",
  "asio-sys",
  "auto-launch",
+ "base64 0.22.1",
  "chrono",
  "deep_filter",
  "dirs 7.0.0",

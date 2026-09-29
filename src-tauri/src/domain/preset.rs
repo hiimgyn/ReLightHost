@@ -28,8 +28,39 @@ pub struct PresetPlugin {
     pub parameters: Vec<PresetParameter>,
     /// VST3 binary state blob (from IComponent::getState)
     /// This includes internal plugin data like sample banks, custom presets, etc.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Serialized as base64 (older versions wrote a JSON number array —
+    /// still accepted on load).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "state_blob")]
     pub vst3_state: Option<Vec<u8>>,
+}
+
+/// Plugin state blobs as base64 strings: a JSON number array costs up to
+/// 4 bytes of text per byte (8+ pretty-printed, one number per line).
+mod state_blob {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(bytes) => s.serialize_str(&STANDARD.encode(bytes)),
+            None => s.serialize_none(),
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Blob {
+        Base64(String),
+        Legacy(Vec<u8>),
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        match Option::<Blob>::deserialize(d)? {
+            None => Ok(None),
+            Some(Blob::Legacy(bytes)) => Ok(Some(bytes)),
+            Some(Blob::Base64(text)) => STANDARD.decode(text).map(Some).map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,15 +106,9 @@ impl Preset {
         }
     }
 
-    pub fn save_to_file(&self, path: &Path) -> Result<()> {
-        // Write to a temp file then rename over the target — rename is atomic on
-        // the same volume, so a crash/power-loss mid-write can never leave a
-        // truncated/corrupt autosave.json behind.
-        let json = serde_json::to_string_pretty(&self)?;
-        let tmp_path = path.with_extension("json.tmp");
-        fs::write(&tmp_path, json)?;
-        fs::rename(&tmp_path, path)?;
-        Ok(())
+    /// Compact JSON — what gets written to disk (and hashed by autosave).
+    pub fn to_json(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
     }
 
     pub fn load_from_file(path: &Path) -> Result<Self> {
@@ -91,6 +116,16 @@ impl Preset {
         let preset: Preset = serde_json::from_str(&json)?;
         Ok(preset)
     }
+}
+
+/// Write to a temp file then rename over the target — rename is atomic on
+/// the same volume, so a crash/power-loss mid-write can never leave a
+/// truncated/corrupt file behind.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, bytes)?;
+    fs::rename(&tmp_path, path)?;
+    Ok(())
 }
 
 pub struct PresetManager {
@@ -121,14 +156,10 @@ impl PresetManager {
         Ok(path)
     }
 
-    pub fn save_preset(&self, preset: &Preset) -> Result<PathBuf> {
-        let filename = format!("{}.json", preset.name.replace(' ', "_"));
-        let path = self.presets_dir.join(filename);
-        
-        preset.save_to_file(&path)?;
-        
-        // log::info!("Preset saved: {}", path.display());
-        
+    /// Writes an already-serialized preset (see `Preset::to_json`).
+    pub fn save_preset_json(&self, name: &str, json: &[u8]) -> Result<PathBuf> {
+        let path = self.presets_dir.join(format!("{}.json", name.replace(' ', "_")));
+        write_atomic(&path, json)?;
         Ok(path)
     }
 
@@ -189,5 +220,60 @@ mod chrono {
 
             format!("{}", duration.as_secs())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plugin_with_state(state: Option<Vec<u8>>) -> PresetPlugin {
+        PresetPlugin {
+            plugin_id: "vst3::x".into(),
+            plugin_name: "X".into(),
+            plugin_vendor: None,
+            plugin_version: None,
+            plugin_path: None,
+            plugin_format: None,
+            plugin_category: None,
+            bypassed: false,
+            parameters: vec![],
+            vst3_state: state,
+        }
+    }
+
+    #[test]
+    fn preset_files_are_written_compact() {
+        let dir = std::env::temp_dir().join(format!("rh-preset-compact-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut preset = Preset::new("compact".into(), vec![]);
+        preset.plugin_chain.push(plugin_with_state(Some(vec![1; 64])));
+        let path = PresetManager::with_dir(dir.clone()).save_preset_json(&preset.name, &preset.to_json().unwrap()).unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(!text.contains('\n'), "pretty-printed preset: {} bytes", text.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn state_is_stored_as_a_compact_base64_string() {
+        let json = serde_json::to_string(&plugin_with_state(Some(vec![0, 1, 2, 255]))).unwrap();
+        assert!(json.contains(r#""vst3_state":"AAEC/w==""#), "{json}");
+    }
+
+    #[test]
+    fn state_saved_by_older_versions_as_a_number_array_still_loads() {
+        let mut json = serde_json::to_value(plugin_with_state(None)).unwrap();
+        json["vst3_state"] = serde_json::json!([0, 1, 2, 255]);
+        let p: PresetPlugin = serde_json::from_value(json).unwrap();
+        assert_eq!(p.vst3_state, Some(vec![0, 1, 2, 255]));
+    }
+
+    #[test]
+    fn base64_state_round_trips_and_absent_state_stays_absent() {
+        let p = plugin_with_state(Some(vec![9; 1000]));
+        let back: PresetPlugin = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.vst3_state, p.vst3_state);
+        let none: PresetPlugin = serde_json::from_str(&serde_json::to_string(&plugin_with_state(None)).unwrap()).unwrap();
+        assert_eq!(none.vst3_state, None);
     }
 }

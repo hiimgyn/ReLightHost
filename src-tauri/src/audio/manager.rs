@@ -209,6 +209,9 @@ pub struct AudioManager {
     effective_rate: AtomicU32,
     /// Try WASAPI exclusive mode first (AppConfig::wasapi_exclusive).
     wasapi_exclusive: AtomicBool,
+    /// Set by a WASAPI capture/render thread when its device fails; picked
+    /// up (and monitoring stopped) by `get_status`, which the UI polls.
+    stream_failed: Arc<AtomicBool>,
 }
 
 impl AudioManager {
@@ -229,6 +232,7 @@ impl AudioManager {
             wasapi_fallback_reason: Arc::new(RwLock::new(None)),
             effective_rate:   AtomicU32::new(0),
             wasapi_exclusive: AtomicBool::new(false),
+            stream_failed:    Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -245,6 +249,7 @@ impl AudioManager {
             dsp_load_u32: Arc::clone(&self.dsp_load_u32),
             output_is_asio,
             underrun_count: Arc::clone(&self.underrun_count),
+            stream_failed: Arc::clone(&self.stream_failed),
         }
     }
 
@@ -414,6 +419,7 @@ impl AudioManager {
         };
 
         self.underrun_count.store(0, Ordering::Relaxed);
+        self.stream_failed.store(false, Ordering::Relaxed);
 
         // -----------------------------------------------------------------
         // Virtual/monitor output mirror (e.g. VB-Audio Virtual Cable).
@@ -535,7 +541,7 @@ impl AudioManager {
                 PendingBridgedInput::Asio
             } else {
                 let raw = input_id.strip_prefix("in_").unwrap_or(&input_id);
-                let (stream, result) = wasapi::start_capture(raw, config.buffer_size, rate, exclusive, producer)
+                let (stream, result) = wasapi::start_capture(raw, config.buffer_size, rate, exclusive, producer, Arc::clone(&self.stream_failed))
                     .map_err(|e| anyhow::anyhow!("Failed to start WASAPI input '{raw}': {e}"))?;
                 input_wasapi_result = Some(result);
                 PendingBridgedInput::Wasapi(stream)
@@ -618,6 +624,8 @@ impl AudioManager {
                     // fields above; this second pass's underruns shouldn't
                     // smear the real one's count.
                     underrun_count: Arc::new(AtomicU64::new(0)),
+                    // A lost mirror device shouldn't stop the main stream.
+                    stream_failed: Arc::new(AtomicBool::new(false)),
                 };
                 match wasapi::start_render(&id, config.buffer_size, rate, false, consumer, passthrough_mixer, None) {
                     Ok((stream, _result)) => Some(stream),
@@ -681,6 +689,7 @@ impl AudioManager {
         {
             let mut status = self.status.write();
             status.is_monitoring = true;
+            status.stream_error = None;
             status.sample_rate = rate;
             status.latency_ms = (config.buffer_size as f32 / rate as f32) * 1000.0;
         }
@@ -726,6 +735,12 @@ impl AudioManager {
 
     /// Get current audio status
     pub fn get_status(&self) -> AudioStatus {
+        if self.stream_failed.swap(false, Ordering::AcqRel) {
+            log::warn!("{} Audio device failed — stopping monitoring", crate::core::threading::thread_prefix("audio/monitor"));
+            let _ = self.toggle_monitoring(false);
+            self.status.write().stream_error =
+                Some("The audio device stopped responding (unplugged or lost). Monitoring was stopped.".into());
+        }
         let dsp_load = f32::from_bits(self.dsp_load_u32.load(Ordering::Relaxed));
         self.status.write().cpu_usage = dsp_load;
         let mut status = self.status.read().clone();
@@ -860,5 +875,22 @@ impl AudioManager {
 impl Default for AudioManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_stream_is_reported_once_and_monitoring_marked_stopped() {
+        let am = AudioManager::new();
+        am.status.write().is_monitoring = true;
+        am.stream_failed.store(true, Ordering::Relaxed);
+
+        let status = am.get_status();
+        assert!(!status.is_monitoring);
+        assert!(status.stream_error.is_some());
+        assert!(!am.get_status().is_monitoring, "stays stopped");
     }
 }

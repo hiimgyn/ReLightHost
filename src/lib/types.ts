@@ -7,6 +7,8 @@ export interface AudioStatus {
   buffer_size: number;
   cpu_usage: number;
   latency_ms: number;
+  /** Set when the running device failed and monitoring was stopped. */
+  stream_error?: string | null;
 }
 
 export interface AudioConfig {

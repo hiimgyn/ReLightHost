@@ -456,6 +456,7 @@ pub fn start_capture(
     sample_rate: u32,
     exclusive: bool,
     mut producer: HeapProd<StereoFrame>,
+    failed: Arc<AtomicBool>,
 ) -> anyhow::Result<(WasapiCaptureStream, ExclusiveModeResult)> {
     let device_id = device_id.to_string();
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -562,6 +563,7 @@ pub fn start_capture(
             }
             if let Some(e) = device_error {
                 log::warn!("WASAPI capture device error (device may be lost), stopping capture thread: {e}");
+                failed.store(true, Ordering::Release);
                 break 'outer;
             }
         }
@@ -711,10 +713,6 @@ pub fn start_render(
         let mut left_buf = vec![0.0f32; buffer_frames as usize];
         let mut right_buf = vec![0.0f32; buffer_frames as usize];
         let mmcss_once = Once::new();
-        // Logs a `GetCurrentPadding` failure once rather than silently
-        // treating every future call as "0 padding" forever — a device-lost
-        // condition should be visible somewhere.
-        let padding_err_once = Once::new();
         while !thread_stop.load(Ordering::Relaxed) {
             // SAFETY: `event` is a valid, still-open event handle for the
             // lifetime of this loop.
@@ -730,10 +728,9 @@ pub fn start_render(
             let padding = match unsafe { client.GetCurrentPadding() } {
                 Ok(p) => p,
                 Err(e) => {
-                    padding_err_once.call_once(|| {
-                        log::warn!("WASAPI GetCurrentPadding failed (device may be lost): {e}");
-                    });
-                    0
+                    log::warn!("WASAPI render device error (device may be lost), stopping render thread: {e}");
+                    mixer.stream_failed.store(true, Ordering::Release);
+                    break;
                 }
             };
             let frames_available = buffer_frames.saturating_sub(padding);

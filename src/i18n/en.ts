@@ -184,6 +184,8 @@ export const en: TranslationSchema = {
     noneDisabled: 'None (disabled)',
     noneNoInput: 'None (No Input)',
     selectAsioDevice: 'Select ASIO device',
+    streamLost: 'Audio device lost',
+    restartAudio: 'Restart audio',
   },
   appSettings: {
     title: 'Application Settings',

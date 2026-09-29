@@ -23,6 +23,9 @@ pub struct AudioStatus {
     /// explaining why. `None` when exclusive mode was granted, or when no
     /// WASAPI leg is active.
     pub wasapi_fallback_reason: Option<String>,
+    /// Set when a running stream died (device unplugged / lost); monitoring
+    /// was stopped because of it. Cleared when monitoring starts again.
+    pub stream_error: Option<String>,
 }
 
 impl Default for AudioStatus {
@@ -41,6 +44,7 @@ impl Default for AudioStatus {
             vst3_settling: false,
             exclusive_mode_active: false,
             wasapi_fallback_reason: None,
+            stream_error: None,
         }
     }
 }

@@ -74,6 +74,8 @@ pub struct MixerState {
     /// output (see `backend::asio::start_output_only` and
     /// `backend::wasapi::start_render`) — surfaced via `AudioStatus::underrun_count`.
     pub underrun_count: Arc<std::sync::atomic::AtomicU64>,
+    /// Set by an output thread whose device failed (see `AudioManager::get_status`).
+    pub stream_failed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Result of processing one audio block: whether to mirror it to the
@@ -151,6 +153,7 @@ mod tests {
             dsp_load_u32: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             output_is_asio,
             underrun_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            stream_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 

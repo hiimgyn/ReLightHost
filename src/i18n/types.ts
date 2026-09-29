@@ -184,6 +184,8 @@ export interface TranslationSchema {
     noneDisabled: string;
     noneNoInput: string;
     selectAsioDevice: string;
+    streamLost: string;
+    restartAudio: string;
   };
   appSettings: {
     title: string;

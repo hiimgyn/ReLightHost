@@ -1,5 +1,5 @@
-import { ReactNode, useEffect, useState } from 'react';
-import { ConfigProvider, theme as antTheme, App as AntApp, Space, Typography, Divider, Tooltip } from 'antd';
+import { ReactNode, useEffect, useRef, useState } from 'react';
+import { ConfigProvider, theme as antTheme, App as AntApp, Button, Space, Typography, Divider, Tooltip } from 'antd';
 import { useShallow } from 'zustand/react/shallow';
 import { getThemeTokens, applyThemeCssVars } from '../../theme';
 import { Heart } from 'lucide-react';
@@ -23,10 +23,48 @@ interface LayoutProps {
 /** Inner shell — lives inside ConfigProvider so it can read design tokens. */
 function AppShell({ children, isDark }: { children: ReactNode; isDark: boolean }) {
   const { token } = antTheme.useToken();
-  const { status, fetchStatus } = useAudioStore(useShallow((s) => ({
+  const { status, fetchStatus, toggleMonitoring } = useAudioStore(useShallow((s) => ({
     status: s.status,
     fetchStatus: s.fetchStatus,
+    toggleMonitoring: s.toggleMonitoring,
   })));
+  const { notification } = AntApp.useApp();
+  const { t } = useTranslation();
+  const shownStreamError = useRef<string | null>(null);
+
+  // Device unplugged / lost: the backend stopped monitoring — say so once,
+  // with a one-click restart.
+  useEffect(() => {
+    const err = status.stream_error ?? null;
+    if (!err || err === shownStreamError.current) {
+      shownStreamError.current = err;
+      return;
+    }
+    shownStreamError.current = err;
+    const key = 'stream-error';
+    notification.error({
+      key,
+      title: t('audioSettings.streamLost'),
+      description: err,
+      duration: 0,
+      actions: (
+        <Button
+          type="primary"
+          size="small"
+          onClick={async () => {
+            notification.destroy(key);
+            try {
+              await toggleMonitoring(true);
+            } finally {
+              await fetchStatus();
+            }
+          }}
+        >
+          {t('audioSettings.restartAudio')}
+        </Button>
+      ),
+    });
+  }, [status.stream_error, notification, t, toggleMonitoring, fetchStatus]);
   const pluginChain = usePluginStore((s) => s.pluginChain);
 
   useEffect(() => {

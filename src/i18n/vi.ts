@@ -184,6 +184,8 @@ export const vi: TranslationSchema = {
     noneDisabled: 'Không (vô hiệu hóa)',
     noneNoInput: 'Không (không có đầu vào)',
     selectAsioDevice: 'Chọn thiết bị ASIO',
+    streamLost: 'Mất kết nối thiết bị âm thanh',
+    restartAudio: 'Khởi động lại audio',
   },
   appSettings: {
     title: 'Cài đặt Ứng dụng',

@@ -10,7 +10,7 @@ use crate::audio::types::{AudioStatus, AudioConfig};
 use crate::audio::device::AudioDevice;
 use crate::audio::vu_meter::VUMeter;
 use crate::audio::backend::{asio, wasapi};
-use crate::audio::mixer::MixerState;
+use crate::audio::mixer::{MixerState, StereoFrame};
 
 /// One side of a monitoring session's INPUT leg, in the "bridged" case
 /// (every case except full-duplex same-ASIO-device).
@@ -387,10 +387,11 @@ impl AudioManager {
         //  • Cross-device (WASAPI or ASIO+WASAPI): clocks can drift; keep
         //    the existing 8× safety margin.
         // -----------------------------------------------------------------
+        // Capacity in stereo frames (the ring carries `StereoFrame`s).
         let buf_capacity = if same_asio_device {
-            (config.buffer_size as usize).max(2048) * 4 * 2  // 4 frames × stereo
+            (config.buffer_size as usize).max(2048) * 4
         } else {
-            (config.buffer_size as usize).max(4096) * 8 * 2  // 8 frames × stereo
+            (config.buffer_size as usize).max(4096) * 8
         };
 
         self.underrun_count.store(0, Ordering::Relaxed);
@@ -427,7 +428,7 @@ impl AudioManager {
         });
 
         let (virt_producer, mut virt_consumer) = if virt_wasapi_id.is_some() {
-            let virt_rb = HeapRb::<f32>::new(buf_capacity);
+            let virt_rb = HeapRb::<StereoFrame>::new(buf_capacity);
             let (p, c) = virt_rb.split();
             (Some(p), Some(c))
         } else {
@@ -496,7 +497,7 @@ impl AudioManager {
             // `toggle_monitoring` — and `asio_guard` now covers the
             // remaining panic-unwind case too (see its doc comment).
             // ---------------------------------------------------------
-            let rb = HeapRb::<f32>::new(buf_capacity);
+            let rb = HeapRb::<StereoFrame>::new(buf_capacity);
             let (producer, consumer) = rb.split();
 
             let input_id = config.input_device_id.as_deref()

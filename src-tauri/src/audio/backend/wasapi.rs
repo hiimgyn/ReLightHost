@@ -13,10 +13,10 @@ use windows::Win32::System::Com::{
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::core::PCWSTR;
-use ringbuf::{HeapProd, HeapCons, traits::{Producer, Consumer}};
+use ringbuf::{HeapProd, HeapCons, traits::Producer};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Once};
-use crate::audio::mixer::{MixerState, process_block, main_output_gate_open};
+use crate::audio::mixer::{MixerState, StereoFrame, pop_frames, process_block, main_output_gate_open};
 
 /// Decodes a COM-allocated wide string and frees the CoTaskMem allocation
 /// the caller owns — `IMMDevice::GetId` and `PropVariantToStringAlloc` both
@@ -438,7 +438,7 @@ pub fn start_capture(
     device_id: &str,
     buffer_size_frames: u32,
     sample_rate: u32,
-    mut producer: HeapProd<f32>,
+    mut producer: HeapProd<StereoFrame>,
 ) -> anyhow::Result<(WasapiCaptureStream, ExclusiveModeResult)> {
     let device_id = device_id.to_string();
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -529,13 +529,11 @@ pub fn start_capture(
                     // both L/R (matches the old cpal `input_channels < 2`
                     // handling).
                     for &s in samples.iter() {
-                        let _ = producer.try_push(s);
-                        let _ = producer.try_push(s);
+                        let _ = producer.try_push([s, s]);
                     }
                 } else {
                     for pair in samples.chunks_exact(2) {
-                        let _ = producer.try_push(pair[0]);
-                        let _ = producer.try_push(pair[1]);
+                        let _ = producer.try_push([pair[0], pair[1]]);
                     }
                 }
                 // SAFETY: releases exactly the `num_frames` `GetBuffer`
@@ -663,9 +661,9 @@ pub fn start_render(
     device_id: &str,
     buffer_size_frames: u32,
     sample_rate: u32,
-    mut consumer: HeapCons<f32>,
+    mut consumer: HeapCons<StereoFrame>,
     mixer: MixerState,
-    mut virt_producer: Option<HeapProd<f32>>,
+    mut virt_producer: Option<HeapProd<StereoFrame>>,
 ) -> anyhow::Result<(WasapiRenderStream, ExclusiveModeResult)> {
     let device_id = device_id.to_string();
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -728,15 +726,9 @@ pub fn start_render(
             // A `try_pop()` miss here means the upstream producer hasn't
             // kept up — count it as an underrun rather than silently
             // playing 0.0.
-            for i in 0..frames {
-                left_buf[i] = consumer.try_pop().unwrap_or_else(|| {
-                    mixer.underrun_count.fetch_add(1, Ordering::Relaxed);
-                    0.0
-                });
-                right_buf[i] = consumer.try_pop().unwrap_or_else(|| {
-                    mixer.underrun_count.fetch_add(1, Ordering::Relaxed);
-                    0.0
-                });
+            let underruns = pop_frames(&mut consumer, &mut left_buf[..frames], &mut right_buf[..frames]);
+            if underruns > 0 {
+                mixer.underrun_count.fetch_add(underruns, Ordering::Relaxed);
             }
 
             let mixer_result = process_block(&mut left_buf[..frames], &mut right_buf[..frames], &mixer, sample_rate as f64);
@@ -745,8 +737,7 @@ pub fn start_render(
             if mixer_result.mirror_to_virtual {
                 if let Some(ref mut vp) = virt_producer {
                     for i in 0..frames {
-                        let _ = vp.try_push(left_buf[i]);
-                        let _ = vp.try_push(right_buf[i]);
+                        let _ = vp.try_push([left_buf[i], right_buf[i]]);
                     }
                 }
             }

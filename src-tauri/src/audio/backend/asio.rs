@@ -4,8 +4,8 @@ use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Once};
 use asio_sys::{Asio, AsioSampleType, BufferPreference, CallbackInfo, Driver};
-use ringbuf::{HeapProd, HeapCons, traits::{Producer, Consumer}};
-use crate::audio::mixer::{MixerState, process_block, main_output_gate_open};
+use ringbuf::{HeapProd, HeapCons, traits::Producer};
+use crate::audio::mixer::{MixerState, StereoFrame, pop_frames, process_block, main_output_gate_open};
 
 /// The ASIO SDK only ever allows one loaded driver per process (loading a
 /// second driver tears down the first via `removeCurrentDriver()`, which
@@ -330,7 +330,7 @@ pub fn start_duplex(
     out_offset: usize,
     buffer_size_hint: Option<i32>,
     mixer: MixerState,
-    mut virt_producer: Option<HeapProd<f32>>,
+    mut virt_producer: Option<HeapProd<StereoFrame>>,
 ) -> anyhow::Result<AsioDuplexStream> {
     // Held for this whole setup path (through `driver.start()` below, on
     // every return path) — see `ASIO_LIFECYCLE_LOCK`'s doc comment. Not
@@ -517,8 +517,7 @@ pub fn start_duplex(
         if result.mirror_to_virtual {
             if let Some(ref mut vp) = virt_producer {
                 for frame in 0..left_buf.len() {
-                    let _ = vp.try_push(left_buf[frame]);
-                    let _ = vp.try_push(right_buf[frame]);
+                    let _ = vp.try_push([left_buf[frame], right_buf[frame]]);
                 }
             }
         }
@@ -565,7 +564,7 @@ pub fn start_input_only(
     driver_name: &str,
     offset: usize,
     buffer_size_hint: Option<i32>,
-    mut producer: HeapProd<f32>,
+    mut producer: HeapProd<StereoFrame>,
 ) -> anyhow::Result<AsioDuplexStream> {
     // See `ASIO_LIFECYCLE_LOCK`'s doc comment — held for this whole setup path.
     let _lifecycle_guard = ASIO_LIFECYCLE_LOCK
@@ -633,8 +632,7 @@ pub fn start_input_only(
             let r = unsafe { read_asio_sample(in_r_ptr, frame, input_format) };
             // Non-blocking: drop the frame rather than blocking the
             // real-time thread if the ring buffer is full.
-            let _ = producer.try_push(l);
-            let _ = producer.try_push(r);
+            let _ = producer.try_push([l, r]);
         }
     });
 
@@ -657,9 +655,9 @@ pub fn start_output_only(
     driver_name: &str,
     offset: usize,
     buffer_size_hint: Option<i32>,
-    mut consumer: HeapCons<f32>,
+    mut consumer: HeapCons<StereoFrame>,
     mixer: MixerState,
-    mut virt_producer: Option<HeapProd<f32>>,
+    mut virt_producer: Option<HeapProd<StereoFrame>>,
 ) -> anyhow::Result<AsioDuplexStream> {
     // See `ASIO_LIFECYCLE_LOCK`'s doc comment — held for this whole setup path.
     let _lifecycle_guard = ASIO_LIFECYCLE_LOCK
@@ -742,15 +740,9 @@ pub fn start_output_only(
         // A `try_pop()` miss here means the upstream producer (WASAPI
         // capture, or whatever feeds this ring buffer) hasn't kept up —
         // count it as an underrun rather than silently playing 0.0.
-        for frame in 0..buffer_size {
-            left_buf[frame] = consumer.try_pop().unwrap_or_else(|| {
-                mixer.underrun_count.fetch_add(1, Ordering::Relaxed);
-                0.0
-            });
-            right_buf[frame] = consumer.try_pop().unwrap_or_else(|| {
-                mixer.underrun_count.fetch_add(1, Ordering::Relaxed);
-                0.0
-            });
+        let underruns = pop_frames(&mut consumer, &mut left_buf, &mut right_buf);
+        if underruns > 0 {
+            mixer.underrun_count.fetch_add(underruns, Ordering::Relaxed);
         }
 
         let result = process_block(&mut left_buf, &mut right_buf, &mixer, sample_rate);
@@ -759,8 +751,7 @@ pub fn start_output_only(
         if result.mirror_to_virtual {
             if let Some(ref mut vp) = virt_producer {
                 for frame in 0..left_buf.len() {
-                    let _ = vp.try_push(left_buf[frame]);
-                    let _ = vp.try_push(right_buf[frame]);
+                    let _ = vp.try_push([left_buf[frame], right_buf[frame]]);
                 }
             }
         }

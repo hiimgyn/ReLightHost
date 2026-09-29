@@ -2,6 +2,27 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use crate::audio::vu_meter::VUMeter;
 
+/// One interleaved stereo frame. Ring buffers between legs carry whole
+/// frames so a producer/consumer race can never split an L/R pair (which
+/// used to leave the channels swapped until the next split).
+pub type StereoFrame = [f32; 2];
+
+/// Drains up to `left.len()` frames from `cons` into `left`/`right`; missing
+/// frames become silence. Returns how many frames were missing (underruns).
+pub fn pop_frames(cons: &mut ringbuf::HeapCons<StereoFrame>, left: &mut [f32], right: &mut [f32]) -> u64 {
+    use ringbuf::traits::Consumer;
+    let mut underruns = 0;
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        let [fl, fr] = cons.try_pop().unwrap_or_else(|| {
+            underruns += 1;
+            [0.0, 0.0]
+        });
+        *l = fl;
+        *r = fr;
+    }
+    underruns
+}
+
 pub type AudioProcessFn = Box<dyn Fn(&mut [f32], &mut [f32]) + Send + 'static>;
 
 pub struct MixerState {
@@ -94,6 +115,23 @@ mod tests {
             output_is_asio,
             underrun_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    #[test]
+    fn pop_frames_keeps_left_right_paired_and_counts_underruns_per_frame() {
+        use ringbuf::{HeapRb, traits::{Producer, Split}};
+        let (mut prod, mut cons) = HeapRb::<StereoFrame>::new(8).split();
+        prod.try_push([0.1, -0.1]).unwrap();
+
+        let (mut l, mut r) = ([9.0f32; 3], [9.0f32; 3]);
+        let underruns = pop_frames(&mut cons, &mut l, &mut r);
+        assert_eq!((l, r), ([0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]));
+        assert_eq!(underruns, 2, "one underrun per missing frame, not per sample");
+
+        prod.try_push([0.2, -0.2]).unwrap();
+        let (mut l, mut r) = ([0.0f32; 1], [0.0f32; 1]);
+        assert_eq!(pop_frames(&mut cons, &mut l, &mut r), 0);
+        assert_eq!((l[0], r[0]), (0.2, -0.2));
     }
 
     #[test]

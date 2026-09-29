@@ -13,7 +13,7 @@
 //! while that plugin was loaded, which is a strong hint for which plugin to
 //! remove if the app keeps disappearing.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -25,6 +25,33 @@ use serde::{Deserialize, Serialize};
 struct MarkerFile {
     #[serde(default)]
     active: HashSet<String>,
+    /// Live instance count per path (in memory only — the file just needs
+    /// the set). Two instances of one plugin: removing one must not clear
+    /// the marker while the other is still loaded.
+    #[serde(skip)]
+    counts: HashMap<String, u32>,
+}
+
+impl MarkerFile {
+    /// Returns whether the persisted set changed.
+    fn activate(&mut self, path: &str) -> bool {
+        *self.counts.entry(path.to_string()).or_insert(0) += 1;
+        self.active.insert(path.to_string())
+    }
+
+    /// Returns whether the persisted set changed.
+    fn deactivate(&mut self, path: &str) -> bool {
+        match self.counts.get_mut(path) {
+            Some(n) if *n > 1 => {
+                *n -= 1;
+                false
+            }
+            _ => {
+                self.counts.remove(path);
+                self.active.remove(path)
+            }
+        }
+    }
 }
 
 struct Marker {
@@ -93,7 +120,7 @@ pub fn startup_warning() -> Vec<String> {
 pub fn mark_active(plugin_path: &str) {
     let m = marker();
     let mut state = m.state.lock();
-    if state.active.insert(plugin_path.to_string()) {
+    if state.activate(plugin_path) {
         save(m, &state);
     }
 }
@@ -101,7 +128,7 @@ pub fn mark_active(plugin_path: &str) {
 pub fn mark_inactive(plugin_path: &str) {
     let m = marker();
     let mut state = m.state.lock();
-    if state.active.remove(plugin_path) {
+    if state.deactivate(plugin_path) {
         save(m, &state);
     }
 }
@@ -130,6 +157,17 @@ mod tests {
 
         assert_eq!(stale, vec!["C:/Some/Plugin.vst3".to_string()]);
         assert!(state.active.is_empty(), "draining should reset state for the new run");
+    }
+
+    #[test]
+    fn a_path_stays_active_until_every_instance_of_it_is_released() {
+        let mut state = MarkerFile::default();
+        assert!(state.activate("C:/P.vst3"));
+        assert!(!state.activate("C:/P.vst3"), "second instance: file unchanged");
+        assert!(!state.deactivate("C:/P.vst3"), "one instance still loaded");
+        assert!(state.active.contains("C:/P.vst3"));
+        assert!(state.deactivate("C:/P.vst3"));
+        assert!(state.active.is_empty());
     }
 
     #[test]

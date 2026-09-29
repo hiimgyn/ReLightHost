@@ -59,6 +59,9 @@ pub struct PluginInstance {
     gui_hwnd:       Arc<AtomicIsize>,
     /// Crash protection state
     crash_protection: SharedCrashProtection,
+    /// Set by the audio thread when the crash limit is hit; the event is
+    /// emitted from a normal thread (see `get_crash_statuses`).
+    crash_notice_pending: AtomicBool,
 }
 
 impl PluginInstance {
@@ -175,6 +178,7 @@ impl PluginInstance {
             gui_open:          Arc::new(AtomicBool::new(false)),
             gui_hwnd:          Arc::new(AtomicIsize::new(0)),
             crash_protection:  crash_protection::create_shared(),
+            crash_notice_pending: AtomicBool::new(false),
         })
     }
 
@@ -251,15 +255,11 @@ impl PluginInstance {
                             log::error!("{} plugin crashed during processing: {}", $label, crash_msg);
                             if let Some(mut protection) = self.crash_protection.try_lock() {
                                 protection.mark_crashed(crash_msg);
-                                // Notify the frontend exactly once when the crash limit is reached.
+                                // Notify the frontend exactly once when the crash limit is
+                                // reached — flagged here, emitted off the audio thread by
+                                // PluginInstanceManager::get_crash_statuses (polled by the UI).
                                 if protection.crash_count == 3 {
-                                    let id = self.instance_id.clone();
-                                    std::thread::spawn(move || {
-                                        crate::app_events::emit_plugin_chain_changed(
-                                            "crash_limit_exceeded",
-                                            Some(&id),
-                                        );
-                                    });
+                                    self.crash_notice_pending.store(true, Ordering::Release);
                                 }
                             }
                             left.fill(0.0);
@@ -602,6 +602,21 @@ fn split_load_groups(is_vst3: &[bool], parallel_vst3: bool) -> (Vec<usize>, Vec<
     (sequential, parallel)
 }
 
+/// Waits (bounded) until `arc` is referenced only by the caller, i.e. the
+/// audio thread has finished the block that was using the chain snapshot it
+/// came from. arc-swap converts readers' outstanding debts into real
+/// references during `store`/`swap`, so `strong_count` sees them.
+fn wait_until_unshared<T>(arc: &Arc<T>) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Arc::strong_count(arc) > 1 {
+        if Instant::now() >= deadline {
+            log::warn!("Removed plugin chain entry still referenced after 1 s; dropping anyway");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// Manager for all plugin instances — lock-free RCU for audio processing.
 pub struct PluginInstanceManager {
     instances: ArcSwap<Vec<Arc<PluginInstance>>>,
@@ -808,8 +823,10 @@ impl PluginInstanceManager {
             inst
             // modify lock drops here
         };
-        // PluginInstance::drop() runs here, outside the lock.
-        // If a GUI is open it blocks until the GUI thread finishes cleanup.
+        // PluginInstance::drop() runs here, outside the lock — and only
+        // after the audio thread has let go of the old chain snapshot, so
+        // the drop (file I/O, GUI wait, plugin teardown) never lands on it.
+        wait_until_unshared(&instance);
         drop(instance);
         Ok(())
     }
@@ -834,7 +851,12 @@ impl PluginInstanceManager {
         self.instances
             .load()
             .iter()
-            .map(|i| (i.instance_id().to_string(), i.get_crash_status()))
+            .map(|i| {
+                if i.crash_notice_pending.swap(false, Ordering::AcqRel) {
+                    crate::app_events::emit_plugin_chain_changed("crash_limit_exceeded", Some(i.instance_id()));
+                }
+                (i.instance_id().to_string(), i.get_crash_status())
+            })
             .collect()
     }
 
@@ -863,8 +885,14 @@ impl PluginInstanceManager {
 
     /// Clear all instances
     pub fn clear(&self) {
-        let _guard = self.modify_lock.lock();
-        self.instances.store(Arc::new(Vec::new()));
+        let old = {
+            let _guard = self.modify_lock.lock();
+            self.instances.swap(Arc::new(Vec::new()))
+        };
+        // Same reason as remove_instance: drop here, never on the audio thread.
+        // The reader holds the old Vec (not each instance), so wait on it.
+        wait_until_unshared(&old);
+        drop(old);
     }
 
     /// Reorder instances in the chain
@@ -976,6 +1004,47 @@ mod state_tests {
         let mut r = vec![0.001f32; 64];
         inst.process_stereo(&mut l, &mut r);
         assert!(l[63] > 0.02, "makeup gain never reached the processor: {}", l[63]);
+    }
+
+    /// Stands in for the audio thread: holds the chain snapshot (as
+    /// `process_chain_stereo` does for a whole block) while `run` executes.
+    fn with_reader_holding_chain(manager: &Arc<PluginInstanceManager>, run: impl FnOnce()) {
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let reader = {
+            let manager = Arc::clone(manager);
+            std::thread::spawn(move || {
+                let _chain = manager.instances.load();
+                held_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(50));
+            })
+        };
+        held_rx.recv().unwrap();
+        run();
+        reader.join().unwrap();
+    }
+
+    #[test]
+    fn remove_instance_drops_the_plugin_on_the_caller_not_the_reader() {
+        let manager = Arc::new(PluginInstanceManager::new());
+        let id = manager.load_plugin(compressor().plugin_info.clone(), 48_000.0, 512).unwrap();
+        let weak = Arc::downgrade(&manager.get_instance(&id).unwrap());
+
+        with_reader_holding_chain(&manager, || {
+            manager.remove_instance(&id).unwrap();
+            assert!(weak.upgrade().is_none(), "instance still alive after remove — its last ref (and Drop) is left to the reader");
+        });
+    }
+
+    #[test]
+    fn clear_drops_plugins_on_the_caller_not_the_reader() {
+        let manager = Arc::new(PluginInstanceManager::new());
+        let id = manager.load_plugin(compressor().plugin_info.clone(), 48_000.0, 512).unwrap();
+        let weak = Arc::downgrade(&manager.get_instance(&id).unwrap());
+
+        with_reader_holding_chain(&manager, || {
+            manager.clear();
+            assert!(weak.upgrade().is_none(), "instance still alive after clear — its last ref (and Drop) is left to the reader");
+        });
     }
 }
 

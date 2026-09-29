@@ -214,11 +214,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
           <div className="relative w-full h-full flex">
             {/* Waveform takes 75% width */}
             <div className="flex-1 h-full">
-              <WaveformDualCanvas
-                vad={vad}
-                reductionDb={mix * 30}
-                active={mix > 0.05}
-              />
+              <WaveformDualCanvas instanceId={plugin.instance_id} />
             </div>
             {/* Neural VAD Orb takes right section */}
             <div

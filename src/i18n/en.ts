@@ -21,6 +21,8 @@ export const en: TranslationSchema = {
     save: 'Save',
     ok: 'OK',
     system: 'System',
+    scopeInput: 'INPUT',
+    scopeOutput: 'OUTPUT',
   },
   header: {
     appTitle: 'ReLightHost',

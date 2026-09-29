@@ -62,6 +62,8 @@ pub struct PluginInstance {
     /// Set by the audio thread when the crash limit is hit; the event is
     /// emitted from a normal thread (see `get_crash_statuses`).
     crash_notice_pending: AtomicBool,
+    /// Before/after level history for the plugin GUI's waveform.
+    scope: crate::plugins::core::scope::Scope,
 }
 
 impl PluginInstance {
@@ -187,6 +189,7 @@ impl PluginInstance {
             gui_hwnd:          Arc::new(AtomicIsize::new(0)),
             crash_protection,
             crash_notice_pending: AtomicBool::new(false),
+            scope: crate::plugins::core::scope::Scope::new((sample_rate / 100.0).round() as usize),
         })
     }
 
@@ -237,6 +240,15 @@ impl PluginInstance {
     /// Uses try_lock so the audio callback never blocks waiting for the mutex.
     /// Wrapped with crash protection to prevent plugin crashes from taking down the app.
     pub fn process_stereo(&self, left: &mut [f32], right: &mut [f32]) {
+        self.scope.around(left, right, |left, right| self.process_inner(left, right));
+    }
+
+    /// (input, output) peak per 10 ms window, oldest first (≈2 s).
+    pub fn scope_snapshot(&self) -> Vec<(f32, f32)> {
+        self.scope.snapshot()
+    }
+
+    fn process_inner(&self, left: &mut [f32], right: &mut [f32]) {
         if self.is_bypassed() {
             return; // Pass through unchanged — matches LightHost bypass logic
         }
@@ -1051,6 +1063,18 @@ mod state_tests {
         inst.process_stereo(&mut l, &mut r);
         assert_eq!((l[31], r[31]), (0.25, -0.25));
         assert!(matches!(inst.get_crash_status(), crash_protection::PluginStatus::Error(_)), "status must survive processing");
+    }
+
+    #[test]
+    fn scope_shows_the_plugin_input_and_output_levels() {
+        let inst = compressor();
+        inst.set_parameter(4, 12.0); // +12 dB makeup, signal stays under threshold
+        let (mut l, mut r) = (vec![0.1f32; 480], vec![0.1f32; 480]);
+        inst.process_stereo(&mut l, &mut r);
+        let snap = inst.scope_snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!((snap[0].0 - 0.1).abs() < 1e-3, "pre {}", snap[0].0);
+        assert!((snap[0].1 - 0.398).abs() < 0.01, "post {}", snap[0].1);
     }
 
     #[test]

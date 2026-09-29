@@ -21,6 +21,8 @@ export const vi: TranslationSchema = {
     save: 'Lưu',
     ok: 'Đồng ý',
     system: 'Hệ thống',
+    scopeInput: 'ĐẦU VÀO',
+    scopeOutput: 'ĐẦU RA',
   },
   header: {
     appTitle: 'ReLightHost',

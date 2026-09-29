@@ -357,3 +357,13 @@ pub fn reset_plugin_crash_protection(state: tauri::State<AppState>, instance_id:
     }
 }
 
+
+/// (input, output) peak per 10 ms window for the plugin GUI's waveform.
+#[tauri::command]
+pub fn get_plugin_scope(state: tauri::State<AppState>, instance_id: String) -> Result<Vec<(f32, f32)>, String> {
+    state
+        .plugin_manager
+        .get_instance(&instance_id)
+        .map(|inst| inst.scope_snapshot())
+        .ok_or_else(|| format!("Plugin instance not found: {}", instance_id))
+}

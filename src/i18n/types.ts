@@ -21,6 +21,8 @@ export interface TranslationSchema {
     save: string;
     ok: string;
     system: string;
+    scopeInput: string;
+    scopeOutput: string;
   };
   header: {
     appTitle: string;

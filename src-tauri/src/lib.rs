@@ -217,6 +217,7 @@ pub fn run() {
             commands::plugin::get_plugin_crash_statuses,
             commands::plugin::reset_plugin_crash_protection,
             commands::plugin::get_noise_suppressor_vad,
+            commands::plugin::get_plugin_scope,
             commands::config::get_parallel_vst3_loading,
             commands::config::set_parallel_vst3_loading,
             commands::config::get_wasapi_exclusive,

@@ -796,7 +796,8 @@ pub fn start_output_only(
         48_000.0
     });
     let mmcss_once = Once::new();
-    let mut trimmer = BacklogTrimmer::new(sample_rate as usize);
+    // 1 s window; 2 ms of jitter headroom.
+    let mut trimmer = BacklogTrimmer::new(sample_rate as usize, sample_rate as usize / 500);
     let mut left_buf = vec![0.0f32; buffer_size];
     let mut right_buf = vec![0.0f32; buffer_size];
     let output_is_asio = mixer.output_is_asio;

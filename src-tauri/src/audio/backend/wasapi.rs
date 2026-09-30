@@ -709,7 +709,8 @@ pub fn start_render(
             return;
         }
 
-        let mut trimmer = BacklogTrimmer::new(sample_rate as usize);
+        // 1 s window; 2 ms of jitter headroom (WASAPI periods jitter).
+        let mut trimmer = BacklogTrimmer::new(sample_rate as usize, sample_rate as usize / 500);
         let mut left_buf = vec![0.0f32; buffer_frames as usize];
         let mut right_buf = vec![0.0f32; buffer_frames as usize];
         let mmcss_once = Once::new();

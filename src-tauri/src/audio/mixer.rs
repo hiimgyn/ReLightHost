@@ -30,19 +30,22 @@ pub fn pop_frames(cons: &mut ringbuf::HeapCons<StereoFrame>, left: &mut [f32], r
 /// ring's full capacity). Tracks the *minimum* occupancy seen over a window
 /// — the latency that is truly excess, regardless of how bursty the
 /// producer is — and trims the oldest frames so that minimum becomes one
-/// consumer block.
+/// consumer block plus `margin` (headroom for producer jitter). Excess
+/// within `margin` is left alone, so slow drift trims rarely, in one step,
+/// instead of shaving a few frames (a click) every window.
 // ponytail: drops frames (one small click per trim) instead of resampling;
 // add an adaptive resampler if drift trims turn out to be audible.
 pub struct BacklogTrimmer {
     window: usize,
+    margin: usize,
     elapsed: usize,
     min_seen: usize,
 }
 
 impl BacklogTrimmer {
-    /// `window` in frames — e.g. one second's worth.
-    pub fn new(window: usize) -> Self {
-        Self { window: window.max(1), elapsed: 0, min_seen: usize::MAX }
+    /// `window` and `margin` in frames — e.g. one second and a few ms.
+    pub fn new(window: usize, margin: usize) -> Self {
+        Self { window: window.max(1), margin, elapsed: 0, min_seen: usize::MAX }
     }
 
     /// Call right before popping `block` frames. Returns frames dropped.
@@ -53,10 +56,10 @@ impl BacklogTrimmer {
         if self.elapsed < self.window {
             return 0;
         }
-        let excess = self.min_seen.saturating_sub(block);
+        let excess = self.min_seen.saturating_sub(block + self.margin);
         self.elapsed = 0;
         self.min_seen = usize::MAX;
-        if excess > 0 { cons.skip(excess) } else { 0 }
+        if excess > self.margin { cons.skip(excess) } else { 0 }
     }
 }
 
@@ -185,7 +188,7 @@ mod tests {
     #[test]
     fn trimmer_drops_a_steady_backlog_down_to_one_block() {
         let (mut prod, mut cons) = HeapRb::<StereoFrame>::new(4096).split();
-        let mut trimmer = BacklogTrimmer::new(1000);
+        let mut trimmer = BacklogTrimmer::new(1000, 0);
         let (mut l, mut r) = ([0.0f32; 100], [0.0f32; 100]);
         fill(&mut prod, 1000, 0); // 1000-frame backlog, then producer keeps pace
         let mut next = 1000;
@@ -205,9 +208,35 @@ mod tests {
         for i in 0..40 {
             prod.try_push([i as f32; 4]).unwrap();
         }
-        let mut trimmer = BacklogTrimmer::new(8);
+        let mut trimmer = BacklogTrimmer::new(8, 0);
         assert_eq!(trimmer.before_pop(&mut cons, 8), 32);
         assert_eq!(cons.occupied_len(), 8);
+    }
+
+    #[test]
+    fn trimmer_keeps_a_jitter_margin_above_one_block() {
+        let (mut prod, mut cons) = HeapRb::<StereoFrame>::new(4096).split();
+        let mut trimmer = BacklogTrimmer::new(1000, 50);
+        let (mut l, mut r) = ([0.0f32; 100], [0.0f32; 100]);
+        fill(&mut prod, 1000, 0);
+        let mut next = 1000;
+        for _ in 0..10 {
+            trimmer.before_pop(&mut cons, 100);
+            pop_frames(&mut cons, &mut l, &mut r);
+            fill(&mut prod, 100, next);
+            next += 100;
+        }
+        trimmer.before_pop(&mut cons, 100);
+        assert_eq!(cons.occupied_len(), 150, "trimmed to one block + margin");
+    }
+
+    #[test]
+    fn trimmer_ignores_an_excess_within_the_margin() {
+        let (mut prod, mut cons) = HeapRb::<StereoFrame>::new(4096).split();
+        let mut trimmer = BacklogTrimmer::new(100, 50);
+        fill(&mut prod, 190, 0); // cushion 150 + 40 excess (< margin)
+        assert_eq!(trimmer.before_pop(&mut cons, 100), 0);
+        assert_eq!(cons.occupied_len(), 190);
     }
 
     #[test]
@@ -215,7 +244,7 @@ mod tests {
         // Producer delivers 480-frame bursts, consumer pulls 64: occupancy
         // swings high but regularly drops near zero — no excess latency.
         let (mut prod, mut cons) = HeapRb::<StereoFrame>::new(4096).split();
-        let mut trimmer = BacklogTrimmer::new(1000);
+        let mut trimmer = BacklogTrimmer::new(1000, 0);
         let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
         let (mut produced, mut consumed) = (0usize, 0usize);
         for _ in 0..200 {

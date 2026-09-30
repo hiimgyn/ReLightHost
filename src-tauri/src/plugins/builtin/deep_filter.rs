@@ -155,7 +155,8 @@ impl DeepFilterProcessor {
         Some(Self {
             prod_to_worker,
             cons_from_worker,
-            trimmer: crate::audio::mixer::BacklogTrimmer::new(48_000),
+            // Headroom: half a hop — inference time varies from hop to hop.
+            trimmer: crate::audio::mixer::BacklogTrimmer::new(48_000, HOP_SIZE / 2),
             dry_l: VecDeque::with_capacity(RB_CAPACITY),
             dry_r: VecDeque::with_capacity(RB_CAPACITY),
 

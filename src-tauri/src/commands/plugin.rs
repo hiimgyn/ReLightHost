@@ -27,7 +27,7 @@ fn wait_for_vst3_restore_ready(state: &AppState) {
         if state.startup.vst3_restore_ready.load(Ordering::Acquire) {
             return;
         }
-        std::thread::sleep(Duration::from_millis(25));
+        crate::core::host_thread::wait_a_moment();
     }
 
     log::warn!("VST3 restore replay did not finish within the wait timeout; opening GUI anyway");
@@ -145,8 +145,15 @@ pub fn get_plugin_parameters(
     }
 }
 
+/// Chain mutations all run on the plugin host thread, so they never wait on
+/// the chain lock from the UI thread while a reload holds it there.
 #[tauri::command]
-pub fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to_index: usize) -> Result<(), String> {
+pub async fn reorder_plugin_chain(state: tauri::State<'_, AppState>, from_index: usize, to_index: usize) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || reorder_plugin_chain_on_host(&state, from_index, to_index)).await
+}
+
+fn reorder_plugin_chain_on_host(state: &AppState, from_index: usize, to_index: usize) -> Result<(), String> {
     state
         .plugin_manager
         .reorder(from_index, to_index)
@@ -156,7 +163,12 @@ pub fn reorder_plugin_chain(state: tauri::State<AppState>, from_index: usize, to
 }
 
 #[tauri::command]
-pub fn swap_plugin_chain(state: tauri::State<AppState>, first_index: usize, second_index: usize) -> Result<(), String> {
+pub async fn swap_plugin_chain(state: tauri::State<'_, AppState>, first_index: usize, second_index: usize) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || swap_plugin_chain_on_host(&state, first_index, second_index)).await
+}
+
+fn swap_plugin_chain_on_host(state: &AppState, first_index: usize, second_index: usize) -> Result<(), String> {
     state
         .plugin_manager
         .swap(first_index, second_index)

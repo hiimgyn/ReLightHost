@@ -228,7 +228,7 @@ impl PluginInstance {
                     close_sent = true;
                 }
             }
-            std::thread::sleep(Duration::from_millis(5));
+            crate::core::host_thread::wait_a_moment();
         }
 
         !self.gui_open.load(Ordering::Acquire)

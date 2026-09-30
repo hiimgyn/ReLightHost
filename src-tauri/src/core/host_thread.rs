@@ -93,6 +93,29 @@ fn pump_messages() {
     }
 }
 
+/// A ~5 ms pause for polling loops (waiting for a plugin GUI thread to exit,
+/// for the VST3 state replay, …). On the host thread it keeps dispatching
+/// window messages meanwhile: a plugin thread may itself be waiting on this
+/// thread's message queue (JUCE's message-thread lock), and a plain sleep
+/// would stall both until the loop times out.
+pub fn wait_a_moment() {
+    if IS_HOST.with(|h| h.get()) {
+        pump_messages();
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjects, QS_ALLINPUT};
+            unsafe {
+                MsgWaitForMultipleObjects(0, std::ptr::null(), 0, PUMP_INTERVAL.as_millis() as u32, QS_ALLINPUT);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        std::thread::sleep(PUMP_INTERVAL);
+        pump_messages();
+    } else {
+        std::thread::sleep(PUMP_INTERVAL);
+    }
+}
+
 /// Runs `f` on the host thread without waiting for it.
 pub fn post(f: impl FnOnce() + Send + 'static) {
     let job: Job = Box::new(move || {
@@ -146,6 +169,20 @@ mod tests {
     fn nested_calls_from_the_host_thread_run_inline_instead_of_deadlocking() {
         let inner = run_blocking(|| run_blocking(|| 7));
         assert_eq!(inner, 7);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn waiting_on_the_host_thread_keeps_its_message_queue_moving() {
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW, PostThreadMessageW, MSG, PM_NOREMOVE, WM_APP};
+        let still_queued = run_blocking(|| unsafe {
+            PostThreadMessageW(GetCurrentThreadId(), WM_APP + 7, 0, 0);
+            wait_a_moment();
+            let mut msg: MSG = std::mem::zeroed();
+            PeekMessageW(&mut msg, std::ptr::null_mut(), WM_APP + 7, WM_APP + 7, PM_NOREMOVE) != 0
+        });
+        assert!(!still_queued, "a polling wait on the host thread must dispatch messages");
     }
 
     #[test]

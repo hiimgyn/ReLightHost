@@ -258,3 +258,24 @@ S = < 1 giờ, M = nửa ngày, L = 1–2 ngày.
 - [ ] **8.4 Bundle nhiều plugin (M):** CLAP/VST3 chỉ lấy plugin đầu tiên trong file; liệt kê và nạp theo index.
 - [ ] **8.5 Tự nối lại thiết bị WASAPI khi cắm lại (M):** `IMMNotificationClient`, dựa trên cờ lỗi của Task 11.
 - [ ] **8.6 Quét plugin out-of-process (L)** và **8.7 thread host plugin riêng (COM STA + message pump) để restore/load không chặn main thread (L).**
+
+---
+
+## Vòng 3 (2026-09-30) — rà lại sau Phase 7–8
+
+Đã làm xong toàn bộ Phase 7–8 (kể cả 8.7 thread host plugin). Rà lại chính các thay đổi đó và phần code chưa đọc kỹ; đã sửa (mỗi mục một commit, có test khi kiểm chứng được):
+
+- [x] Thread host: vòng chờ (`request_close_gui`, chờ replay VST3) vẫn bơm message — tránh treo khi đóng editor JUCE; reorder/swap chạy trên thread host.
+- [x] VST2 GUI: gửi `effEditIdle` định kỳ; `effEditClose` trước khi hủy cửa sổ host.
+- [x] CLAP GUI: chạy trên thread host (`gui.*` là `[main-thread]`), `hide`/`destroy` trước khi hủy cửa sổ, `set_scale` theo DPI; mở editor không giữ mutex processor (tránh audio dry).
+- [x] i18n các chuỗi còn viết cứng; tiêu đề canvas mô tả đúng dữ liệu thật.
+- [x] Tray: trạng thái Monitor Output đồng bộ và được lưu session ở mọi đường.
+- [x] UI giữ trạng thái "đang chuẩn bị" tới khi restore (giờ async) xong; gộp các lần gọi `get_audio_status` chồng nhau.
+- [x] VU meter không phụ thuộc buffer size.
+- [x] NoiseSuppressor: trễ cố định đúng 1 khung (480 mẫu) với mọi buffer size — trước đây đan xen tín hiệu thô/đã xử lý khi buffer không chia hết 480.
+- [x] BacklogTrimmer: thêm biên jitter + trễ cắt (hysteresis).
+- [x] Scanner: không đi theo symlink/junction trỏ ngược lên thư mục cha (trùng plugin / tràn stack).
+
+Vòng 4: kiểm chứng tổng (clippy `-D warnings`, 100/100 test, tsc, `pnpm build`, `cargo build`, `--scan-one`) — sạch.
+
+Còn cần thử trên máy thật (không tự động hoá được): JUCE/iPlug2 VST3, CLAP (nih-plug), VST2 editor; ASIO + Voicemeeter trên thread host; rút/cắm lại USB; đổi buffer trong control panel ASIO; preset; waveform; restore với plugin chậm.

@@ -48,6 +48,12 @@ pub struct NoiseSuppressor {
     gate_gain:    f32, // current (smoothed) gate multiplier
 }
 
+fn primed_queue() -> VecDeque<f32> {
+    let mut q = VecDeque::with_capacity(FRAME_SIZE * 4);
+    q.resize(FRAME_SIZE, 0.0);
+    q
+}
+
 impl NoiseSuppressor {
     /// Returns `None` if `sample_rate` is not 48000 Hz — RNNoise's FRAME_SIZE
     /// of 480 samples is only valid at 48 kHz (480 / 48000 = 10 ms frame).
@@ -62,12 +68,17 @@ impl NoiseSuppressor {
         Some(Self {
             state_l: DenoiseState::new(),
             state_r: DenoiseState::new(),
-            in_l:  VecDeque::new(),
-            in_r:  VecDeque::new(),
-            out_l: VecDeque::new(),
-            out_r: VecDeque::new(),
-            dry_l: VecDeque::new(),
-            dry_r: VecDeque::new(),
+            in_l:  VecDeque::with_capacity(FRAME_SIZE * 4),
+            in_r:  VecDeque::with_capacity(FRAME_SIZE * 4),
+            // Output and dry queues start one frame deep: RNNoise only emits
+            // whole 480-sample frames, so priming them with a frame of
+            // silence gives a constant one-frame delay and guarantees a full
+            // block of output for ANY block size (256, 512, 1024 … don't
+            // divide 480). Dry stays sample-aligned with the denoised signal.
+            out_l: primed_queue(),
+            out_r: primed_queue(),
+            dry_l: primed_queue(),
+            dry_r: primed_queue(),
             mix:                1.0,
             vad_gate_threshold: 0.0,
             gate_attenuation:   0.0,
@@ -121,27 +132,17 @@ impl BuiltinProcessor for NoiseSuppressor {
             1.0
         };
 
-        // Write output with wet/dry blend + gate + output gain.
-        // Pass-through samples that have no denoised counterpart yet
-        // (initial FRAME_SIZE latency on startup).
-        let avail = self.out_l.len().min(self.out_r.len()).min(n);
-        for i in 0..avail {
+        // Write output with wet/dry blend + gate + output gain. The primed
+        // queues (see `new`) always hold at least `n` samples here.
+        for i in 0..n {
             self.gate_gain = GATE_COEFF * self.gate_gain + (1.0 - GATE_COEFF) * gate_target;
-            let dry_l = self.dry_l.pop_front().unwrap_or(left[i]);
-            let dry_r = self.dry_r.pop_front().unwrap_or(right[i]);
+            let dry_l = self.dry_l.pop_front().unwrap_or(0.0);
+            let dry_r = self.dry_r.pop_front().unwrap_or(0.0);
             let wet_l = self.out_l.pop_front().unwrap_or(dry_l);
             let wet_r = self.out_r.pop_front().unwrap_or(dry_r);
             left[i]  = (dry_l + mix * (wet_l - dry_l)) * self.gate_gain * output_gain;
             right[i] = (dry_r + mix * (wet_r - dry_r)) * self.gate_gain * output_gain;
         }
-        // Pass-through during startup fill phase.
-        for i in avail..n {
-            left[i]  *= output_gain;
-            right[i] *= output_gain;
-        }
-        // Prevent dry buffer from growing unbounded during the startup latency phase.
-        while self.dry_l.len() > FRAME_SIZE * 2 { self.dry_l.pop_front(); }
-        while self.dry_r.len() > FRAME_SIZE * 2 { self.dry_r.pop_front(); }
     }
 
     fn set_parameter(&mut self, id: u32, value: f32) {
@@ -156,7 +157,7 @@ impl BuiltinProcessor for NoiseSuppressor {
 
     fn get_vad(&self) -> f32 { self.last_vad }
 
-    /// Output lags input by one RNNoise frame (it only emits whole frames).
+    /// Output lags input by exactly one RNNoise frame (see `new`).
     fn latency_samples(&self) -> u32 { FRAME_SIZE as u32 }
 }
 
@@ -168,3 +169,27 @@ impl Default for NoiseSuppressor {
 // threads as long as only one thread calls it at a time (enforced by the
 // Mutex<Option<Box<dyn BuiltinProcessor>>> in PluginInstance).
 unsafe impl Send for NoiseSuppressor {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_is_the_input_delayed_by_exactly_one_frame_for_any_block_size() {
+        for block in [256usize, 512, 1024, 100] {
+            let mut ns = NoiseSuppressor::new(48_000.0).unwrap();
+            ns.set_parameter(0, 0.0); // mix = 0: dry path only, so the delay is exact
+            let input: Vec<f32> = (0..block * 20).map(|i| (i as f32 * 1e-4).sin() * 0.5).collect();
+            let mut output = Vec::with_capacity(input.len());
+            for chunk in input.chunks(block) {
+                let (mut l, mut r) = (chunk.to_vec(), chunk.to_vec());
+                ns.process_stereo(&mut l, &mut r);
+                output.extend_from_slice(&l);
+            }
+            for (t, &y) in output.iter().enumerate() {
+                let expected = if t < FRAME_SIZE { 0.0 } else { input[t - FRAME_SIZE] };
+                assert!((y - expected).abs() < 1e-6, "block {block}: sample {t} = {y}, expected {expected}");
+            }
+        }
+    }
+}

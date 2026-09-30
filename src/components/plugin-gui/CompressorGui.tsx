@@ -169,7 +169,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
         {/* Visual Stage: Interactive Transfer Curve */}
         <VisualStageContainer
           height={190}
-          title="Transfer Characteristic & Gain Reduction"
+          title={t('compressor.transferTitle')}
           badge={
             <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
               {threshold.toFixed(1)} dB / {ratio.toFixed(1)}:1

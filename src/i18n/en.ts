@@ -23,6 +23,12 @@ export const en: TranslationSchema = {
     system: 'System',
     scopeInput: 'INPUT',
     scopeOutput: 'OUTPUT',
+    errorTitle: 'Something went wrong',
+    reload: 'Reload',
+    resetAllTooltip: 'Reset all parameters to factory defaults',
+    bypassPlugin: 'Bypass Plugin',
+    activatePlugin: 'Activate Plugin',
+    defaults: 'Defaults',
   },
   header: {
     appTitle: 'ReLightHost',
@@ -81,6 +87,9 @@ export const en: TranslationSchema = {
     loadPresetConfirmDesc: 'The current chain will be replaced.',
     deletePresetConfirm: 'Delete preset "{name}"?',
     noPresets: 'No saved presets',
+    pluginsSwapped: 'Plugins swapped',
+    orderUpdated: 'Plugin order updated',
+    reorderFailed: 'Failed to reorder plugins',
   },
   card: {
     active: 'ACTIVE',
@@ -269,6 +278,7 @@ export const en: TranslationSchema = {
     parallelMix: 'Parallel Mix',
     parallelMixLeft: '0% (dry only)',
     parallelMixRight: '100% (wet)',
+    transferTitle: 'Transfer Characteristic & Gain Reduction',
   },
   voice: {
     title: 'Voice Designer',
@@ -294,6 +304,7 @@ export const en: TranslationSchema = {
     ceiling: 'Ceiling',
     ceilingLeft: '−12 dB (heavy limit)',
     ceilingRight: '0 dB (unity / safety)',
+    responseTitle: 'Frequency Response (20 Hz — 20 kHz)',
   },
   noise: {
     title: 'Noise Suppressor (RNNoise)',
@@ -316,6 +327,8 @@ export const en: TranslationSchema = {
     gateAll: 'Gate all non-speech',
     attenNone: 'No reduction',
     attenFull: 'Full silence',
+    subtitle: 'Real-Time Speech Enhancement & Neural VAD Gate',
+    levelsTitle: 'Input vs Output Level (last 2 s)',
   },
   deepFilter: {
     title: 'DeepFilterNet 3 Pro',
@@ -327,7 +340,7 @@ export const en: TranslationSchema = {
     mix: 'Clean / Dry Mix',
     outputGain: 'Output Trim',
     attenuationDb: 'Attenuation Limit',
-    oscilloscopeTitle: 'High-Res Neural Spectral Waveform (Raw vs Filtered)',
+    oscilloscopeTitle: 'Input vs Output Level (last 2 s)',
     vadConfidence: 'SPEECH ENERGY',
     footerDesc: 'Powered by DeepFilterNet3 — State-of-the-Art Deep Complex Spectrogram Filtering. Low latency with zero external dependencies.',
   },

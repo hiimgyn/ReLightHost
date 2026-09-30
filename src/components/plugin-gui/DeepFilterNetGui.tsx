@@ -209,7 +209,7 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
         {/* Visual Stage: Neural Spectral Oscilloscope & AI Speech Orb */}
         <VisualStageContainer
           height={185}
-          title={t('deepFilter.oscilloscopeTitle') || 'Neural Dual Oscilloscope (Raw Noise vs Clean Voice)'}
+          title={t('deepFilter.oscilloscopeTitle')}
           badge={
             <div className="flex items-center gap-2">
               <span className="flex items-center gap-1 text-[10px] font-mono text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20">

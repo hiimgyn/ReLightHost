@@ -2,6 +2,7 @@ import React from 'react';
 import { Badge, Tooltip } from 'antd';
 import { Power, RotateCcw } from 'lucide-react';
 import { useThemeStore } from '../../../stores/themeStore';
+import { useTranslation } from '../../../i18n';
 
 interface PluginHeaderProps {
   title: string;
@@ -25,6 +26,7 @@ export const PluginHeader: React.FC<PluginHeaderProps> = ({
   icon,
 }) => {
   const isDark = useThemeStore((s) => s.theme === 'dark');
+  const { t } = useTranslation();
 
   return (
     <div
@@ -34,7 +36,7 @@ export const PluginHeader: React.FC<PluginHeaderProps> = ({
     >
       <div className="flex items-center gap-3">
         {onToggleEnabled && (
-          <Tooltip title={enabled ? 'Bypass Plugin' : 'Activate Plugin'}>
+          <Tooltip title={enabled ? t('common.bypassPlugin') : t('common.activatePlugin')}>
             <button
               onClick={onToggleEnabled}
               className={`p-2 rounded-lg border transition-all cursor-pointer flex items-center justify-center ${
@@ -94,7 +96,7 @@ export const PluginHeader: React.FC<PluginHeaderProps> = ({
 
       <div className="flex items-center gap-2">
         {onResetAll && (
-          <Tooltip title="Reset all parameters to factory defaults">
+          <Tooltip title={t('common.resetAllTooltip')}>
             <button
               onClick={onResetAll}
               className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors cursor-pointer border ${
@@ -104,7 +106,7 @@ export const PluginHeader: React.FC<PluginHeaderProps> = ({
               }`}
             >
               <RotateCcw size={11} />
-              <span>Defaults</span>
+              <span>{t('common.defaults')}</span>
             </button>
           </Tooltip>
         )}

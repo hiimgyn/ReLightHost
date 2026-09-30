@@ -155,7 +155,7 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
         {/* Visual Stage: Interactive 3-Band Bode Plot */}
         <VisualStageContainer
           height={185}
-          title="Frequency Response (20 Hz — 20 kHz)"
+          title={t('voice.responseTitle')}
           badge={
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">

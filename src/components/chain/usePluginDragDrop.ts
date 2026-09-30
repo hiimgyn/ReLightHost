@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { MessageInstance } from 'antd/es/message/interface';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { PluginInstanceInfo } from '../../lib/types';
+import { useTranslation } from '../../i18n';
 
 interface UsePluginDragDropOptions {
   pluginChain: PluginInstanceInfo[];
@@ -24,6 +25,7 @@ export function usePluginDragDrop({
   swapChain,
   messageApi,
 }: UsePluginDragDropOptions) {
+  const { t } = useTranslation();
   // draggedIndex: which card is being dragged
   // insertBefore: index BEFORE which the dragged card will be inserted
   //               (0 = before first, pluginChain.length = after last)
@@ -156,7 +158,7 @@ export function usePluginDragDrop({
       try {
         if (swapTo !== null && swapTo !== from) {
           await swapChain(from, swapTo);
-          messageApi.success('Plugins swapped');
+          messageApi.success(t('chain.pluginsSwapped'));
           return;
         }
 
@@ -165,9 +167,9 @@ export function usePluginDragDrop({
         if (from === to) return;
 
         await reorderChain(from, to);
-        messageApi.success('Plugin order updated');
+        messageApi.success(t('chain.orderUpdated'));
       } catch (error) {
-        messageApi.error('Failed to reorder plugins');
+        messageApi.error(t('chain.reorderFailed'));
         console.error(error);
       }
     };

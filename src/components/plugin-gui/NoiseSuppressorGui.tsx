@@ -179,7 +179,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
         {/* Header */}
         <PluginHeader
           title={t('noise.title') || 'Noise Suppressor Pro'}
-          subtitle="Real-Time Speech Enhancement & Neural VAD Gate"
+          subtitle={t('noise.subtitle')}
           badgeText="NEURAL DSP"
           badgeColor="#00f0ff"
           onResetAll={handleResetAll}
@@ -204,7 +204,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
         {/* Visual Stage: Dual Waveform Oscilloscope & AI Speech Orb */}
         <VisualStageContainer
           height={185}
-          title="Dual-Layer Oscilloscope (Dry Noise vs Clean Voice)"
+          title={t('noise.levelsTitle')}
           badge={
             <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
               VAD: {Math.round(vad * 100)}%

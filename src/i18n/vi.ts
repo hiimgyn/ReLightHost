@@ -23,6 +23,12 @@ export const vi: TranslationSchema = {
     system: 'Hệ thống',
     scopeInput: 'ĐẦU VÀO',
     scopeOutput: 'ĐẦU RA',
+    errorTitle: 'Đã xảy ra lỗi',
+    reload: 'Tải lại',
+    resetAllTooltip: 'Đặt lại mọi tham số về mặc định',
+    bypassPlugin: 'Bỏ qua plugin',
+    activatePlugin: 'Kích hoạt plugin',
+    defaults: 'Mặc định',
   },
   header: {
     appTitle: 'ReLightHost',
@@ -81,6 +87,9 @@ export const vi: TranslationSchema = {
     loadPresetConfirmDesc: 'Chuỗi hiện tại sẽ bị thay thế.',
     deletePresetConfirm: 'Xóa preset "{name}"?',
     noPresets: 'Chưa có preset nào',
+    pluginsSwapped: 'Đã hoán đổi plugin',
+    orderUpdated: 'Đã cập nhật thứ tự plugin',
+    reorderFailed: 'Không thể sắp xếp lại plugin',
   },
   card: {
     active: 'HOẠT ĐỘNG',
@@ -269,6 +278,7 @@ export const vi: TranslationSchema = {
     parallelMix: 'Hòa trộn song song (Mix)',
     parallelMixLeft: '0% (chỉ tín hiệu gốc)',
     parallelMixRight: '100% (qua xử lý)',
+    transferTitle: 'Đặc tuyến truyền & mức giảm gain',
   },
   voice: {
     title: 'Voice Designer',
@@ -294,6 +304,7 @@ export const vi: TranslationSchema = {
     ceiling: 'Trần âm lượng (Ceiling)',
     ceilingLeft: '−12 dB (nén mạnh)',
     ceilingRight: '0 dB (an toàn)',
+    responseTitle: 'Đáp tuyến tần số (20 Hz — 20 kHz)',
   },
   noise: {
     title: 'Khử tiếng ồn (RNNoise)',
@@ -316,6 +327,8 @@ export const vi: TranslationSchema = {
     gateAll: 'Khóa mọi tạp âm ngoài giọng',
     attenNone: 'Không suy hao',
     attenFull: 'Im lặng hoàn toàn',
+    subtitle: 'Tăng cường giọng nói thời gian thực & cổng VAD nơ-ron',
+    levelsTitle: 'Mức đầu vào vs đầu ra (2 giây gần nhất)',
   },
   deepFilter: {
     title: 'DeepFilterNet 3 Pro',
@@ -327,7 +340,7 @@ export const vi: TranslationSchema = {
     mix: 'Tỷ lệ hòa trộn (Mix)',
     outputGain: 'Âm lượng đầu ra',
     attenuationDb: 'Mức suy giảm cực đại',
-    oscilloscopeTitle: 'Dao động ký phổ nơ-ron (Âm thô vs Âm sạch)',
+    oscilloscopeTitle: 'Mức đầu vào vs đầu ra (2 giây gần nhất)',
     vadConfidence: 'NĂNG LƯỢNG GIỌNG',
     footerDesc: 'Sử dụng DeepFilterNet3 — Công nghệ lọc phổ phức hợp học sâu hiện đại nhất thế giới. Độ trễ thấp, tích hợp hoàn toàn không phụ thuộc file ngoài.',
   },

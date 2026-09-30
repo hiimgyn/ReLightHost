@@ -23,6 +23,12 @@ export interface TranslationSchema {
     system: string;
     scopeInput: string;
     scopeOutput: string;
+    errorTitle: string;
+    reload: string;
+    resetAllTooltip: string;
+    bypassPlugin: string;
+    activatePlugin: string;
+    defaults: string;
   };
   header: {
     appTitle: string;
@@ -81,6 +87,9 @@ export interface TranslationSchema {
     loadPresetConfirmDesc: string;
     deletePresetConfirm: string;
     noPresets: string;
+    pluginsSwapped: string;
+    orderUpdated: string;
+    reorderFailed: string;
   };
   card: {
     active: string;
@@ -269,6 +278,7 @@ export interface TranslationSchema {
     parallelMix: string;
     parallelMixLeft: string;
     parallelMixRight: string;
+    transferTitle: string;
   };
   voice: {
     title: string;
@@ -294,6 +304,7 @@ export interface TranslationSchema {
     ceiling: string;
     ceilingLeft: string;
     ceilingRight: string;
+    responseTitle: string;
   };
   noise: {
     title: string;
@@ -316,6 +327,8 @@ export interface TranslationSchema {
     gateAll: string;
     attenNone: string;
     attenFull: string;
+    subtitle: string;
+    levelsTitle: string;
   };
   deepFilter: {
     title: string;

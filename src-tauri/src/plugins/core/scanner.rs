@@ -186,7 +186,7 @@ impl PluginScanner {
                     *modified_acc ^= mtime.wrapping_add(p.as_os_str().len() as u64);
                     *modified_acc = modified_acc.rotate_left(7);
                     *len_acc = len_acc.wrapping_add(meta.len());
-                    if meta.is_dir() {
+                    if meta.is_dir() && !is_link_back_to_ancestor(&p, dir) {
                         walk(&p, modified_acc, len_acc, exists);
                     }
                 }
@@ -284,6 +284,7 @@ impl PluginScanner {
         let entries: Vec<std::path::PathBuf> = fs::read_dir(dir)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
+            .filter(|p| !is_link_back_to_ancestor(p, dir))
             .collect();
 
         // Process each entry in parallel. For directories we may recurse (nested
@@ -484,6 +485,20 @@ impl PluginScanner {
         };
 
         Some(sub_plugins(&id, path.to_string_lossy().to_string(), format, metas))
+    }
+}
+
+/// True for a symlink/junction pointing at `dir` itself or one of its
+/// ancestors. Following it would walk the same tree again — every plugin
+/// listed dozens of times, or unbounded recursion with long paths enabled.
+fn is_link_back_to_ancestor(entry: &Path, dir: &Path) -> bool {
+    let is_link = fs::symlink_metadata(entry).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+    if !is_link {
+        return false;
+    }
+    match (fs::canonicalize(entry), fs::canonicalize(dir)) {
+        (Ok(target), Ok(here)) => here.starts_with(&target),
+        _ => true, // dangling / unresolvable link: nothing to scan behind it
     }
 }
 
@@ -1284,5 +1299,42 @@ mod probe_tests {
     #[test]
     fn probing_a_missing_file_finds_nothing() {
         assert!(probe_in_process(ProbeKind::Vst2, Path::new("C:/does/not/exist.dll")).is_empty());
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod link_cycle_tests {
+    use super::*;
+
+    #[test]
+    fn a_junction_back_to_an_ancestor_is_not_followed() {
+        let root = std::env::temp_dir().join(format!("rh-loop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let contents = root.join("One.vst3").join("Contents");
+        std::fs::create_dir_all(&contents).unwrap();
+        std::fs::write(
+            contents.join("moduleInfo.json"),
+            r#"{"Classes":[{"Category":"Audio Module Class","Name":"One"}]}"#,
+        )
+        .unwrap();
+        let link = root.join("loop");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("mklink /J unavailable — skipping");
+            return;
+        }
+
+        let found = PluginScanner::new().scan_directory(&root, true).unwrap();
+        let _fingerprint = PluginScanner::fingerprint_path(&root); // must terminate
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(found.iter().filter(|p| p.name == "One").count(), 1, "found via the loop: {}", found.len());
     }
 }

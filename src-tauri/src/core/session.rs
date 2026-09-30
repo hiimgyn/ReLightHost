@@ -47,8 +47,15 @@ pub(crate) fn restore_session_impl(
         let _ = state.audio_manager.toggle_monitoring(false);
         state.audio_manager.restore_config(session.audio);
         state.audio_manager.set_muted(session.muted);
-        let tray_state = app.state::<crate::TrayState>();
-        crate::bootstrap::tray::sync_audio_tray_state(app, &tray_state, session.muted);
+        // Tray menu updates run on the UI thread. Hand it over without waiting:
+        // this runs on the plugin host thread, and the UI thread may itself be
+        // waiting on this thread (e.g. shutdown_for_exit) — blocking here could
+        // deadlock.
+        let (tray_app, muted) = (app.clone(), session.muted);
+        crate::app_events::run_on_main_thread(move || {
+            let tray_state = tray_app.state::<crate::TrayState>();
+            crate::bootstrap::tray::sync_audio_tray_state(&tray_app, &tray_state, muted);
+        });
         let _ = state.audio_manager.set_loopback(session.loopback_enabled);
         audio_restored = true;
         log::info!("{} ✅ Audio session restored", crate::core::threading::thread_prefix("restore/main"));
@@ -222,9 +229,10 @@ pub(crate) fn restore_session_impl(
     // ── 3. Start stream after restore (or earlier for VST3 sessions) ─────
     //
     // ASIO COM rule: toggle_monitoring must always be called from a thread
-    // that has COM initialized (i.e. a Tauri command handler thread).
-    // Raw std::thread::spawn threads are NOT COM-initialized and will crash
-    // with STATUS_ACCESS_VIOLATION on ASIO drivers.
+    // that has COM initialized — the plugin host thread this restore runs
+    // on (see core::host_thread). Raw std::thread::spawn threads are NOT
+    // COM-initialized and will crash with STATUS_ACCESS_VIOLATION on ASIO
+    // drivers.
     //
     // For VST3 restores, we now try to bring monitoring up before the plugin
     // load/replay phase so the startup order matches the manual add path more

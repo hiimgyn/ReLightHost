@@ -78,8 +78,9 @@ pub struct SessionRestoreResult {
     /// True when the output device is a Voicemeeter ASIO Insert driver.
     /// Voicemeeter needs to finish its own startup before our ASIO stream
     /// connects — the frontend schedules `toggle_monitoring(true)` after a
-    /// delay rather than doing it here to keep the call on a COM-initialized
-    /// Tauri command thread (raw std::thread::spawn threads crash on ASIO).
+    /// delay rather than doing it here; that command runs on the
+    /// COM-initialized plugin host thread (raw std::thread::spawn threads
+    /// crash on ASIO).
     needs_deferred_start: bool,
     /// How long the frontend should still wait before that deferred
     /// `toggle_monitoring(true)` (0 when the safe-start window has already

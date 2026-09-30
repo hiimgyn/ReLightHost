@@ -1,8 +1,15 @@
 use crate::AppState;
 use tauri::Manager;
 
+/// Runs on the plugin host thread (the thread that owns the plugins and
+/// streams) and blocks the caller until done — callable from the UI thread's
+/// window/tray handlers.
 pub(crate) fn shutdown_for_exit(app: &tauri::AppHandle) {
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>().inner().clone();
+    crate::core::host_thread::run_blocking(move || shutdown_on_host(&state));
+}
+
+fn shutdown_on_host(state: &AppState) {
 
     crate::core::autosave::flush_on_exit(
         &state.plugin_manager,

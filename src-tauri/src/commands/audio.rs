@@ -26,7 +26,12 @@ pub(crate) fn sync_chain_to_audio_rate(state: &AppState) {
 }
 
 #[tauri::command]
-pub fn start_audio(state: tauri::State<AppState>) -> Result<(), String> {
+pub async fn start_audio(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || start_audio_on_host(&state)).await
+}
+
+fn start_audio_on_host(state: &AppState) -> Result<(), String> {
     state
         .audio_manager
         .start()
@@ -34,7 +39,12 @@ pub fn start_audio(state: tauri::State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn stop_audio(state: tauri::State<AppState>) -> Result<(), String> {
+pub async fn stop_audio(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || stop_audio_on_host(&state)).await
+}
+
+fn stop_audio_on_host(state: &AppState) -> Result<(), String> {
     state
         .audio_manager
         .stop()
@@ -42,19 +52,29 @@ pub fn stop_audio(state: tauri::State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_audio_status(state: tauri::State<AppState>) -> Result<AudioStatus, String> {
+pub async fn get_audio_status(state: tauri::State<'_, AppState>) -> Result<AudioStatus, String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || get_audio_status_on_host(&state)).await
+}
+
+fn get_audio_status_on_host(state: &AppState) -> Result<AudioStatus, String> {
     let mut status = state.audio_manager.get_status();
     // get_status may just have rebuilt the stream after an ASIO reset at a
     // different rate.
-    sync_chain_to_audio_rate(&state);
+    sync_chain_to_audio_rate(state);
     let rate = state.audio_manager.processing_rate();
     status.plugin_latency_ms = state.plugin_manager.chain_latency_samples() as f32 / rate as f32 * 1000.0;
     Ok(status)
 }
 
+/// On the plugin host thread: listing loads every ASIO driver briefly, and
+/// ASIO lifecycle calls stay on the thread that runs the streams.
 #[tauri::command]
-pub fn list_audio_devices() -> Result<Vec<AudioDeviceInfo>, String> {
-    AudioDevice::list_devices().map_err(|e| format!("Failed to list audio devices: {}", e))
+pub async fn list_audio_devices() -> Result<Vec<AudioDeviceInfo>, String> {
+    crate::core::host_thread::run(|| {
+        AudioDevice::list_devices().map_err(|e| format!("Failed to list audio devices: {}", e))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -63,86 +83,126 @@ pub fn get_audio_config(state: tauri::State<AppState>) -> Result<AudioConfig, St
 }
 
 #[tauri::command]
-pub fn set_output_device(state: tauri::State<AppState>, device_id: Option<String>) -> Result<(), String> {
+pub async fn set_output_device(state: tauri::State<'_, AppState>, device_id: Option<String>) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || set_output_device_on_host(&state, device_id)).await
+}
+
+fn set_output_device_on_host(state: &AppState, device_id: Option<String>) -> Result<(), String> {
     state
         .audio_manager
         .set_output_device(device_id)
         .map_err(|e| format!("Failed to set output device: {}", e))?;
-    sync_chain_to_audio_rate(&state);
-    crate::save_audio_session_to_disk(&state);
+    sync_chain_to_audio_rate(state);
+    crate::save_audio_session_to_disk(state);
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_input_device(state: tauri::State<AppState>, device_id: Option<String>) -> Result<(), String> {
+pub async fn set_input_device(state: tauri::State<'_, AppState>, device_id: Option<String>) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || set_input_device_on_host(&state, device_id)).await
+}
+
+fn set_input_device_on_host(state: &AppState, device_id: Option<String>) -> Result<(), String> {
     state
         .audio_manager
         .set_input_device(device_id)
         .map_err(|e| format!("Failed to set input device: {}", e))?;
-    sync_chain_to_audio_rate(&state);
-    crate::save_audio_session_to_disk(&state);
+    sync_chain_to_audio_rate(state);
+    crate::save_audio_session_to_disk(state);
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_virtual_output_device(state: tauri::State<AppState>, device_id: Option<String>) -> Result<(), String> {
+pub async fn set_virtual_output_device(state: tauri::State<'_, AppState>, device_id: Option<String>) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || set_virtual_output_device_on_host(&state, device_id)).await
+}
+
+fn set_virtual_output_device_on_host(state: &AppState, device_id: Option<String>) -> Result<(), String> {
     state
         .audio_manager
         .set_virtual_output_device(device_id)
         .map_err(|e| format!("Failed to set virtual output device: {}", e))?;
-    crate::save_audio_session_to_disk(&state);
+    crate::save_audio_session_to_disk(state);
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_input_channel_offset(state: tauri::State<AppState>, offset: usize) -> Result<(), String> {
+pub async fn set_input_channel_offset(state: tauri::State<'_, AppState>, offset: usize) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || set_input_channel_offset_on_host(&state, offset)).await
+}
+
+fn set_input_channel_offset_on_host(state: &AppState, offset: usize) -> Result<(), String> {
     state
         .audio_manager
         .set_input_channel_offset(offset)
         .map_err(|e| format!("Failed to set input channel: {}", e))?;
-    crate::save_audio_session_to_disk(&state);
+    crate::save_audio_session_to_disk(state);
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_output_channel_offset(state: tauri::State<AppState>, offset: usize) -> Result<(), String> {
+pub async fn set_output_channel_offset(state: tauri::State<'_, AppState>, offset: usize) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || set_output_channel_offset_on_host(&state, offset)).await
+}
+
+fn set_output_channel_offset_on_host(state: &AppState, offset: usize) -> Result<(), String> {
     state
         .audio_manager
         .set_output_channel_offset(offset)
         .map_err(|e| format!("Failed to set output channel: {}", e))?;
-    crate::save_audio_session_to_disk(&state);
+    crate::save_audio_session_to_disk(state);
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_sample_rate(state: tauri::State<AppState>, rate: u32) -> Result<(), String> {
+pub async fn set_sample_rate(state: tauri::State<'_, AppState>, rate: u32) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || set_sample_rate_on_host(&state, rate)).await
+}
+
+fn set_sample_rate_on_host(state: &AppState, rate: u32) -> Result<(), String> {
     state
         .audio_manager
         .set_sample_rate(rate)
         .map_err(|e| format!("Failed to set sample rate: {}", e))?;
-    sync_chain_to_audio_rate(&state);
-    crate::save_audio_session_to_disk(&state);
+    sync_chain_to_audio_rate(state);
+    crate::save_audio_session_to_disk(state);
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_buffer_size(state: tauri::State<AppState>, size: u32) -> Result<(), String> {
+pub async fn set_buffer_size(state: tauri::State<'_, AppState>, size: u32) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || set_buffer_size_on_host(&state, size)).await
+}
+
+fn set_buffer_size_on_host(state: &AppState, size: u32) -> Result<(), String> {
     state
         .audio_manager
         .set_buffer_size(size)
         .map_err(|e| format!("Failed to set buffer size: {}", e))?;
-    crate::save_audio_session_to_disk(&state);
+    crate::save_audio_session_to_disk(state);
     Ok(())
 }
 
 #[tauri::command]
-pub fn toggle_monitoring(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+pub async fn toggle_monitoring(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || toggle_monitoring_on_host(&state, enabled)).await
+}
+
+fn toggle_monitoring_on_host(state: &AppState, enabled: bool) -> Result<(), String> {
     state
         .audio_manager
         .toggle_monitoring(enabled)
         .map_err(|e| format!("Failed to toggle monitoring: {}", e))?;
     if enabled {
-        sync_chain_to_audio_rate(&state);
+        sync_chain_to_audio_rate(state);
     }
     Ok(())
 }

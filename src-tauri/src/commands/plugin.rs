@@ -45,7 +45,12 @@ pub fn scan_plugins(state: tauri::State<'_, AppState>) -> Result<Vec<PluginInfo>
 }
 
 #[tauri::command]
-pub fn load_plugin(state: tauri::State<AppState>, info: PluginInfo) -> Result<String, String> {
+pub async fn load_plugin(state: tauri::State<'_, AppState>, info: PluginInfo) -> Result<String, String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || load_plugin_on_host(&state, info)).await
+}
+
+fn load_plugin_on_host(state: &AppState, info: PluginInfo) -> Result<String, String> {
     let (rate, block) = {
         let am = &state.audio_manager;
         (am.processing_rate(), am.get_config().buffer_size as usize)
@@ -59,7 +64,12 @@ pub fn load_plugin(state: tauri::State<AppState>, info: PluginInfo) -> Result<St
 }
 
 #[tauri::command]
-pub fn remove_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
+pub async fn remove_plugin(state: tauri::State<'_, AppState>, instance_id: String) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || remove_plugin_on_host(&state, instance_id)).await
+}
+
+fn remove_plugin_on_host(state: &AppState, instance_id: String) -> Result<(), String> {
     state
         .plugin_manager
         .remove_instance(&instance_id)
@@ -84,9 +94,21 @@ pub fn set_plugin_bypass(state: tauri::State<AppState>, instance_id: String, byp
     }
 }
 
+/// On the plugin host thread: VST3 setParamNormalized is a UI-thread call
+/// into the edit controller.
 #[tauri::command]
-pub fn set_plugin_parameter(
-    state: tauri::State<AppState>,
+pub async fn set_plugin_parameter(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+    param_id: u32,
+    value: f64,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || set_plugin_parameter_on_host(&state, instance_id, param_id, value)).await
+}
+
+fn set_plugin_parameter_on_host(
+    state: &AppState,
     instance_id: String,
     param_id: u32,
     value: f64,
@@ -144,7 +166,12 @@ pub fn swap_plugin_chain(state: tauri::State<AppState>, first_index: usize, seco
 }
 
 #[tauri::command]
-pub fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
+pub async fn launch_plugin(state: tauri::State<'_, AppState>, instance_id: String) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || launch_plugin_on_host(&state, instance_id)).await
+}
+
+fn launch_plugin_on_host(state: &AppState, instance_id: String) -> Result<(), String> {
     let instance_opt = {
         let manager = &state.plugin_manager;
         manager.get_instance(&instance_id)
@@ -152,7 +179,7 @@ pub fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Resu
     if let Some(instance) = instance_opt {
         let info = instance.get_info();
         if info.format == PluginFormat::VST3 {
-            wait_for_vst3_restore_ready(&state);
+            wait_for_vst3_restore_ready(state);
         }
         log::info!(
             "launch_plugin requested: id={}, name='{}', gui_open={} format={:?}",
@@ -172,8 +199,16 @@ pub fn launch_plugin(state: tauri::State<AppState>, instance_id: String) -> Resu
 }
 
 #[tauri::command]
-pub fn launch_plugins(
-    state: tauri::State<AppState>,
+pub async fn launch_plugins(
+    state: tauri::State<'_, AppState>,
+    instance_ids: Option<Vec<String>>,
+) -> Result<LaunchPluginsResult, String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || launch_plugins_on_host(&state, instance_ids)).await
+}
+
+fn launch_plugins_on_host(
+    state: &AppState,
     instance_ids: Option<Vec<String>>,
 ) -> Result<LaunchPluginsResult, String> {
     let ids: Vec<String> = match instance_ids {
@@ -208,7 +243,7 @@ pub fn launch_plugins(
     });
 
     if has_vst3 {
-        wait_for_vst3_restore_ready(&state);
+        wait_for_vst3_restore_ready(state);
     }
 
     for id in ids {

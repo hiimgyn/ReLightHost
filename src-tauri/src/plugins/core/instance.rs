@@ -707,11 +707,10 @@ impl PluginInstanceManager {
     /// that plugin failed to construct (same semantics as skipping a failed
     /// `load_plugin` in a loop).
     ///
-    /// CAVEAT (review finding, "Important #1"): `restore_session` — the only
-    /// caller — is a plain synchronous Tauri command, which Tauri 2 runs on
-    /// the main/UI thread. With `parallel_vst3` off (default), every VST3
-    /// plugin is therefore created on that same main thread, same as before
-    /// this feature existed. With it on and more than one VST3 plugin, those
+    /// CAVEAT (review finding, "Important #1"): callers (session restore,
+    /// preset load) run on the plugin host thread (see core::host_thread).
+    /// With `parallel_vst3` off (default), every VST3 plugin is therefore
+    /// created on that one thread, like a single-plugin load. With it on and more than one VST3 plugin, those
     /// `createInstance`/`initialize()` calls move to Rayon worker threads
     /// instead. Some plugin frameworks (JUCE is the common one) assume the
     /// thread that first creates a plugin is *the* UI/message thread and set

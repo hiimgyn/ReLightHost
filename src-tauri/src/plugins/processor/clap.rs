@@ -195,8 +195,8 @@ unsafe extern "C" fn host_request_callback(h: *const ClapHost) {
     Arc::from_raw(data).request();
 }
 
-/// Delivers a plugin's `request_callback` as `on_main_thread` on the app's
-/// main thread (nih-plug, clap-wrapper and others rely on it for parameter
+/// Delivers a plugin's `request_callback` as `on_main_thread` on the plugin
+/// host thread (nih-plug, clap-wrapper and others rely on it for parameter
 /// and GUI sync). The mutex serialises that call against the plugin being
 /// destroyed.
 pub(crate) struct MainThreadTarget {
@@ -226,7 +226,9 @@ impl MainThreadTarget {
         if self.pending.swap(true, Ordering::AcqRel) {
             return;
         }
-        crate::app_events::run_on_main_thread(move || {
+        // The plugin's "main thread" is the plugin host thread — the thread
+        // that creates and destroys plugins (see core::host_thread).
+        crate::core::host_thread::post(move || {
             self.pending.store(false, Ordering::Release);
             let plugin = self.plugin.lock();
             if plugin.is_null() {
@@ -859,20 +861,28 @@ mod main_thread_tests {
     use std::sync::atomic::AtomicU32;
 
     static CALLS: AtomicU32 = AtomicU32::new(0);
-    unsafe extern "C" fn on_main(_: *const ClapPlugin) { CALLS.fetch_add(1, Ordering::SeqCst); }
+    static CALL_THREAD: parking_lot::Mutex<Option<std::thread::ThreadId>> = parking_lot::Mutex::new(None);
+    unsafe extern "C" fn on_main(_: *const ClapPlugin) {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        *CALL_THREAD.lock() = Some(std::thread::current().id());
+    }
 
     #[test]
-    fn request_callback_reaches_on_main_thread_until_the_plugin_is_detached() {
+    fn request_callback_runs_on_the_plugin_host_thread_until_detached() {
         let mut plugin: ClapPlugin = unsafe { std::mem::zeroed() };
         plugin.on_main_thread = Some(on_main);
         let target = MainThreadTarget::new();
         target.attach(&plugin);
+        let host = crate::core::host_thread::run_blocking(|| std::thread::current().id());
 
-        Arc::clone(&target).request(); // no app handle in tests → runs inline
+        Arc::clone(&target).request();
+        crate::core::host_thread::run_blocking(|| ()); // flush the posted callback
         assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(*CALL_THREAD.lock(), Some(host), "the plugin's main thread is the host thread");
 
         target.detach();
         Arc::clone(&target).request();
+        crate::core::host_thread::run_blocking(|| ());
         assert_eq!(CALLS.load(Ordering::SeqCst), 1, "no callback after the plugin is gone");
     }
 }

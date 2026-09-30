@@ -82,7 +82,12 @@ pub fn get_wasapi_exclusive(state: tauri::State<AppState>) -> bool {
 
 /// Restarts a running stream so the new mode applies immediately.
 #[tauri::command]
-pub fn set_wasapi_exclusive(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+pub async fn set_wasapi_exclusive(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let state = state.inner().clone();
+    crate::core::host_thread::run(move || set_wasapi_exclusive_on_host(&state, enabled)).await
+}
+
+fn set_wasapi_exclusive_on_host(state: &AppState, enabled: bool) -> Result<(), String> {
     state
         .config_manager
         .set_wasapi_exclusive(enabled)

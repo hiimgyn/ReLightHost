@@ -39,6 +39,9 @@ interface AudioStore {
   applyExternalLoopbackState: (enabled: boolean) => void;
 }
 
+let statusInFlight: Promise<void> | null = null;
+let statusRefreshQueued = false;
+
 export const useAudioStore = create<AudioStore>((set, get) => ({
   status: {
     is_monitoring: false,
@@ -60,17 +63,33 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   isMuted: false,
   isLoopbackEnabled: false,
 
-  fetchStatus: async () => {
-    try {
-      const status = await tauri.getAudioStatus();
-      set({
-        status,
-        isMuted: status.is_muted,
-        isLoopbackEnabled: status.loopback_enabled,
-      });
-    } catch (error) {
-      console.error('Failed to fetch audio status:', error);
+  fetchStatus: () => {
+    // Status requests queue on the backend's plugin host thread behind any
+    // long job (e.g. a session restore). Coalesce overlapping calls instead
+    // of stacking them, and fetch once more if asked again meanwhile — so a
+    // caller refreshing after an action never gets a pre-action result.
+    if (statusInFlight) {
+      statusRefreshQueued = true;
+      return statusInFlight;
     }
+    statusInFlight = (async () => {
+      do {
+        statusRefreshQueued = false;
+        try {
+          const status = await tauri.getAudioStatus();
+          set({
+            status,
+            isMuted: status.is_muted,
+            isLoopbackEnabled: status.loopback_enabled,
+          });
+        } catch (error) {
+          console.error('Failed to fetch audio status:', error);
+        }
+      } while (statusRefreshQueued);
+    })().finally(() => {
+      statusInFlight = null;
+    });
+    return statusInFlight;
   },
 
   fetchDevices: async () => {

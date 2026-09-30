@@ -91,9 +91,17 @@ impl VUMeter {
             (peak.max(s.abs()), sq + s * s)
         });
 
+        // Decay/smoothing coefficients are defined per REFERENCE_FRAMES and
+        // scaled to this block's length, so the meter moves at the same speed
+        // whatever the buffer size (a fixed per-block factor made it fall 16×
+        // faster at 64 samples than at 1024).
+        const REFERENCE_FRAMES: f32 = 1024.0;
+        let blocks = left.len().max(right.len()) as f32 / REFERENCE_FRAMES;
+        let decay = self.decay_rate.powf(blocks);
+
         // Decay then clamp new peak up
-        let decayed_l = (load_f32(&self.left_peak) * self.decay_rate).max(peak_l);
-        let decayed_r = (load_f32(&self.right_peak) * self.decay_rate).max(peak_r);
+        let decayed_l = (load_f32(&self.left_peak) * decay).max(peak_l);
+        let decayed_r = (load_f32(&self.right_peak) * decay).max(peak_r);
         store_f32(&self.left_peak, decayed_l);
         store_f32(&self.right_peak, decayed_r);
 
@@ -101,8 +109,9 @@ impl VUMeter {
         const RMS_SMOOTH: f32 = 0.8;
         let rms_l = if !left.is_empty() { (sq_sum_l / left.len() as f32).sqrt() } else { 0.0 };
         let rms_r = if !right.is_empty() { (sq_sum_r / right.len() as f32).sqrt() } else { 0.0 };
-        store_f32(&self.left_rms,  load_f32(&self.left_rms)  * RMS_SMOOTH + rms_l * (1.0 - RMS_SMOOTH));
-        store_f32(&self.right_rms, load_f32(&self.right_rms) * RMS_SMOOTH + rms_r * (1.0 - RMS_SMOOTH));
+        let smooth = RMS_SMOOTH.powf(blocks);
+        store_f32(&self.left_rms,  load_f32(&self.left_rms)  * smooth + rms_l * (1.0 - smooth));
+        store_f32(&self.right_rms, load_f32(&self.right_rms) * smooth + rms_r * (1.0 - smooth));
 
         // Peak hold using elapsed nanos since creation — caller provides `now` so
         // Instant::now() is called only once per audio block across all users.
@@ -190,6 +199,24 @@ mod tests {
         assert!(data.right.peak > 0.99);
     }
     
+    #[test]
+    fn decay_and_smoothing_do_not_depend_on_block_size() {
+        let (big, small) = (VUMeter::new(), VUMeter::new());
+        let loud = vec![0.8f32; 1024];
+        let now = Instant::now();
+        big.update(&loud, &loud, now);
+        small.update(&loud, &loud, now);
+        // The same 1024 frames of silence: one block vs sixteen.
+        let silence = vec![0.0f32; 1024];
+        big.update(&silence, &silence, now);
+        for chunk in silence.chunks(64) {
+            small.update(chunk, chunk, now);
+        }
+        let (b, s) = (big.get_data().left, small.get_data().left);
+        assert!((b.peak - s.peak).abs() < 0.01, "peak {} vs {}", b.peak, s.peak);
+        assert!((b.rms - s.rms).abs() < 0.01, "rms {} vs {}", b.rms, s.rms);
+    }
+
     #[test]
     fn test_db_conversion() {
         assert_eq!(to_db(1.0), 0.0); // Full scale = 0 dB

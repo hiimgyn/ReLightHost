@@ -16,7 +16,7 @@
 use anyhow::{anyhow, Result};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── CLAP ABI constants ───────────────────────────────────────────────────────
 
@@ -668,37 +668,13 @@ impl ClapProcessor {
         }
     }
 
-    /// Expose the raw plugin pointer (as usize) for the GUI thread.
-    /// Safe as long as `ClapProcessor` outlives the GUI thread — the
-    /// `gui_open` AtomicBool in `PluginInstance` guarantees this ordering.
-    pub fn raw_plugin_usize(&self) -> usize { self.plugin.0 as usize }
-
-    /// Expose the raw GUI extension pointer (as usize) for the GUI thread.
-    pub fn raw_gui_ext_usize(&self) -> Option<usize> {
-        self.gui_ext.map(|p| p as usize)
-    }
-
-    /// Open the native GUI.  Spawns a platform GUI thread.
-    pub fn open_gui(
-        &self,
-        plugin_name : &str,
-        gui_flag    : Arc<AtomicBool>,
-        gui_hwnd    : Arc<AtomicIsize>,
-    ) -> Result<()> {
-        let gui_ext_usize = match self.raw_gui_ext_usize() {
-            Some(p) => p,
-            None => {
-                gui_flag.store(false, Ordering::Release);
-                return Err(anyhow!("'{}' has no CLAP GUI extension", plugin_name));
-            }
-        };
-        crate::plugins::gui::clap::open_clap_gui(
-            self.raw_plugin_usize(),
-            gui_ext_usize,
-            plugin_name,
-            gui_flag,
-            gui_hwnd,
-        )
+    /// (plugin, gui extension) pointers as integers for the GUI code, or
+    /// `None` if the plugin has no GUI. Handed out so the caller can open the
+    /// editor without holding the processor mutex (the audio thread
+    /// `try_lock`s it every block). Valid while this processor lives —
+    /// `PluginInstance` closes the editor (`gui_open`) before dropping it.
+    pub fn gui_handles(&self) -> Option<(usize, usize)> {
+        self.gui_ext.map(|gui| (self.plugin.0 as usize, gui as usize))
     }
 }
 

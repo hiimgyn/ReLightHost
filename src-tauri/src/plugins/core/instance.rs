@@ -546,18 +546,26 @@ impl PluginInstance {
         }
         // ── CLAP GUI ────────────────────────────────────────────────────────────────────
         {
-            let guard = match self.clap_processor.try_lock_for(std::time::Duration::from_millis(200)) {
-                Some(g) => g,
+            // Only the GUI handles are taken under the processor mutex: the
+            // editor is created on the plugin host thread (CLAP's main thread)
+            // and that can take a while — holding the mutex meanwhile would
+            // make the audio thread's try_lock fail and play dry audio.
+            let handles = match self.clap_processor.try_lock_for(std::time::Duration::from_millis(200)) {
+                Some(g) => g.as_ref().map(|p| p.gui_handles()),
                 None => {
                     gui_flag.store(false, Ordering::Release);
                     return Err(anyhow::anyhow!("CLAP plugin processor busy — try again"));
                 }
             };
-            if let Some(ref proc) = *guard {
+            if let Some(handles) = handles {
                 let plugin_name = self.plugin_info.name.clone();
-                let gui_hwnd    = self.gui_hwnd.clone();
+                let Some((plugin_raw, gui_raw)) = handles else {
+                    gui_flag.store(false, Ordering::Release);
+                    return Err(anyhow::anyhow!("'{}' has no CLAP GUI extension", plugin_name));
+                };
+                let gui_hwnd = self.gui_hwnd.clone();
                 let result = crash_protection::protected_call(AssertUnwindSafe(|| {
-                    proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd)
+                    crate::plugins::gui::clap::open_clap_gui(plugin_raw, gui_raw, &plugin_name, gui_flag.clone(), gui_hwnd)
                 }));
                 match result {
                     Ok(Ok(())) => return Ok(()),

@@ -1,12 +1,14 @@
 //! CLAP GUI hosting — Win32 host window + `clap_plugin_gui_t` embedding.
 //!
-//! Flow mirrors vst2_gui.rs:
-//!   1. Spawn a dedicated GUI thread  (CoInitializeEx for COM compat)
-//!   2. `gui.create(plugin, "win32", false)` — create embedded view
-//!   3. `gui.get_size` → size our host window
-//!   4. `gui.set_parent(plugin, &ClapWindow{api="win32", hwnd})` — embed
-//!   5. `gui.show` → standard Win32 GetMessageW loop
-//!   6. WM_CLOSE: `gui.hide` → `gui.destroy` → set gui_flag=false
+//! Every `gui.*` call is `[main-thread]` in CLAP — the thread that created
+//! the plugin, i.e. the plugin host thread (see core::host_thread). So the
+//! editor lives there too: its host window is created on that thread and
+//! driven by the host thread's message pump; there is no per-editor thread.
+//!   1. `gui.create(plugin, "win32", false)` → `set_scale` → `get_size`
+//!   2. create the host window, `gui.set_parent`, `gui.show`
+//!   3. WM_CLOSE: `gui.hide` → `gui.destroy` → destroy the host window
+//!      (the plugin's embedded view goes before its parent does)
+//!   4. WM_NCDESTROY: clear the GUI-open flag / HWND
 
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
@@ -36,41 +38,14 @@ pub fn open_clap_gui(
     gui_flag    : Arc<AtomicBool>,
     gui_hwnd    : Arc<AtomicIsize>,
 ) -> Result<()> {
-    use super::super::processor::clap::{ClapPlugin, ClapPluginGui};
-
-    // Verify the GUI extension pointer is non-null before spawning.
     if gui_ext_raw == 0 {
         gui_flag.store(false, Ordering::Release);
         return Err(anyhow!("Null CLAP GUI extension for '{}'", plugin_name));
     }
-
-    let name_owned = plugin_name.to_string();
-
-    std::thread::Builder::new()
-        .name(format!("clap-gui-{}", plugin_name))
-        .stack_size(4 * 1024 * 1024)
-        .spawn(move || {
-            // GuiFlagGuard clears the open flag and HWND on any exit path.
-            struct GuiFlagGuard(Arc<AtomicBool>, Arc<AtomicIsize>);
-            impl Drop for GuiFlagGuard {
-                fn drop(&mut self) {
-                    self.1.store(0, Ordering::Release);
-                    self.0.store(false, Ordering::Release);
-                    crate::app_events::emit_plugin_chain_changed("gui_close", None);
-                }
-            }
-            let _guard = GuiFlagGuard(gui_flag, gui_hwnd.clone());
-
-            let plugin  = plugin_raw  as *const ClapPlugin;
-            let gui_ext = gui_ext_raw as *const ClapPluginGui;
-
-            if let Err(e) = win::run_clap_editor(plugin, gui_ext, &name_owned, gui_hwnd) {
-                log::error!("CLAP GUI error for '{}': {}", name_owned, e);
-            }
-        })
-        .map_err(|e| anyhow!("Failed to spawn CLAP GUI thread: {}", e))?;
-
-    Ok(())
+    let name = plugin_name.to_string();
+    crate::core::host_thread::run_blocking(move || unsafe {
+        win::open(plugin_raw as *const _, gui_ext_raw as *const _, &name, gui_flag, gui_hwnd)
+    })
 }
 
 // ── Win32 window implementation ───────────────────────────────────────────────
@@ -78,22 +53,17 @@ pub fn open_clap_gui(
 #[cfg(target_os = "windows")]
 mod win {
     use anyhow::{anyhow, Result};
-    use std::ffi::{CString, c_void};
-    use std::sync::Arc;
+    use std::cell::Cell;
+    use std::ffi::CString;
     use std::ptr;
-    use std::sync::atomic::{AtomicIsize, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-    use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-    use super::super::super::processor::clap::{
-        ClapPlugin,
-        ClapPluginGui,
-        ClapWindow,
-        CLAP_WINDOW_API_WIN32,
-    };
+    use super::super::super::processor::clap::{ClapPlugin, ClapPluginGui, ClapWindow, CLAP_WINDOW_API_WIN32};
 
     const CLASS_NAME: &[u16] = &[
         b'R' as u16, b'e' as u16, b'L' as u16, b'i' as u16, b'g' as u16,
@@ -101,193 +71,201 @@ mod win {
         b'P' as u16, 0,
     ];
 
-    /// Thread-local HWND (isize) used by WndProc → gui.set_size.
-    use std::cell::Cell;
-    type ResizeCallback = Box<dyn Fn(u32, u32)>;
-    thread_local! {
-        static TL_HWND: Cell<isize> = const { Cell::new(0) };
-        /// Resize callback: (width, height) → gui.set_size.
-        static TL_RESIZE: std::cell::RefCell<Option<ResizeCallback>> =
-            const { std::cell::RefCell::new(None) };
+    /// Per-window state, owned by the window (GWLP_USERDATA) and freed on
+    /// WM_NCDESTROY.
+    struct Editor {
+        plugin: *const ClapPlugin,
+        gui_ext: *const ClapPluginGui,
+        gui_flag: Arc<AtomicBool>,
+        gui_hwnd: Arc<AtomicIsize>,
+        /// hide + destroy already sent.
+        closed: Cell<bool>,
     }
 
-    /// Posted to self once the message loop is running, to call gui.show from
-    /// within the loop (avoids a ShowWindow-vs-GetMessage ordering problem).
-    const WM_CLAP_SHOW: u32 = WM_USER + 1;
-
-    unsafe extern "system" fn wnd_proc(
-        hwnd   : HWND,
-        msg    : u32,
-        wparam : WPARAM,
-        lparam : LPARAM,
-    ) -> LRESULT {
-        match msg {
-            WM_CLAP_SHOW => {
-                ShowWindow(hwnd, SW_SHOW);
-                0
+    impl Editor {
+        unsafe fn close_view(&self) {
+            if self.closed.replace(true) {
+                return;
             }
+            if let Some(hide) = (*self.gui_ext).hide { hide(self.plugin); }
+            if let Some(destroy) = (*self.gui_ext).destroy { destroy(self.plugin); }
+        }
+    }
+
+    unsafe fn editor<'a>(hwnd: HWND) -> Option<&'a Editor> {
+        (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Editor).as_ref()
+    }
+
+    unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        match msg {
             WM_SIZE => {
-                let w = (lparam & 0xffff) as u32;
-                let h = ((lparam >> 16) & 0xffff) as u32;
-                if w > 0 && h > 0 {
-                    TL_RESIZE.with(|r| {
-                        if let Some(ref f) = *r.borrow() { f(w, h); }
-                    });
+                let (w, h) = ((lparam & 0xffff) as u32, ((lparam >> 16) & 0xffff) as u32);
+                if let Some(ed) = editor(hwnd) {
+                    if w > 0 && h > 0 && !ed.closed.get() {
+                        if let Some(set_size) = (*ed.gui_ext).set_size { set_size(ed.plugin, w, h); }
+                    }
                 }
                 0
             }
             WM_CLOSE => {
+                if let Some(ed) = editor(hwnd) {
+                    ed.close_view();
+                }
                 DestroyWindow(hwnd);
                 0
             }
-            WM_DESTROY => {
-                PostQuitMessage(0);
-                0
+            WM_NCDESTROY => {
+                let raw = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut Editor;
+                if !raw.is_null() {
+                    let ed = Box::from_raw(raw);
+                    ed.close_view();
+                    ed.gui_hwnd.store(0, Ordering::Release);
+                    ed.gui_flag.store(false, Ordering::Release);
+                    crate::app_events::emit_plugin_chain_changed("gui_close", None);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
 
-    // The resize callback closure needs its own `unsafe {}` to call the fn pointer,
-    // but Rust's unused_unsafe lint fires because it's nested inside the outer
-    // `unsafe` block of run_clap_editor. The inner unsafe IS required.
-    #[allow(unused_unsafe)]
-    pub fn run_clap_editor(
-        plugin    : *const ClapPlugin,
-        gui_ext   : *const ClapPluginGui,
-        name      : &str,
-        gui_hwnd  : Arc<AtomicIsize>,
+    /// Creates, embeds and shows the editor. Must run on the plugin host thread.
+    pub(super) unsafe fn open(
+        plugin: *const ClapPlugin,
+        gui_ext: *const ClapPluginGui,
+        name: &str,
+        gui_flag: Arc<AtomicBool>,
+        gui_hwnd: Arc<AtomicIsize>,
     ) -> Result<()> {
-        unsafe {
-            // COM apartment for plugins that use COM internally (e.g. some Windows audio plugins).
-            struct ComGuard;
-            impl Drop for ComGuard { fn drop(&mut self) { unsafe { CoUninitialize(); } } }
-            CoInitializeEx(ptr::null::<c_void>(), COINIT_APARTMENTTHREADED as u32);
-            let _com = ComGuard;
-
-            // ── Check Win32 API is supported ──────────────────────────────────
-            if let Some(is_supported) = (*gui_ext).is_api_supported {
-                if !is_supported(plugin, CLAP_WINDOW_API_WIN32.as_ptr() as *const _, false) {
-                    return Err(anyhow!("'{}' does not support Win32 embedded GUI", name));
-                }
+        if let Some(is_supported) = (*gui_ext).is_api_supported {
+            if !is_supported(plugin, CLAP_WINDOW_API_WIN32.as_ptr() as *const _, false) {
+                return Err(anyhow!("'{}' does not support Win32 embedded GUI", name));
             }
-
-            // ── Create the CLAP GUI view ──────────────────────────────────────
-            let create = (*gui_ext).create
-                .ok_or_else(|| anyhow!("No gui.create for '{}'", name))?;
-            if !create(plugin, CLAP_WINDOW_API_WIN32.as_ptr() as *const _, false) {
-                return Err(anyhow!("gui.create() failed for '{}'", name));
-            }
-
-            // ── Get initial plugin size, fall back to 640×400 ─────────────────
-            let (mut plug_w, mut plug_h) = (640u32, 400u32);
-            if let Some(get_size) = (*gui_ext).get_size {
-                get_size(plugin, &mut plug_w, &mut plug_h);
-            }
-
-            // ── Register Win32 class (idempotent) ─────────────────────────────
-            let hinstance = GetModuleHandleW(std::ptr::null());
-            // Load the app icon embedded in the exe by tauri_build (resource ID 32512).
-            let hicon = LoadIconW(hinstance, 32512 as _);
-            let wc = WNDCLASSW {
-                style         : CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc   : Some(wnd_proc),
-                cbClsExtra    : 0,
-                cbWndExtra    : 0,
-                hInstance     : hinstance,
-                hIcon         : hicon,
-                hCursor       : LoadCursorW(ptr::null_mut(), IDC_ARROW),
-                hbrBackground : 6 as _, // COLOR_WINDOW + 1
-                lpszMenuName  : ptr::null(),
-                lpszClassName : CLASS_NAME.as_ptr(),
-            };
-            RegisterClassW(&wc); // may fail if already registered — that's fine
-
-            // Compute window rect from client size.
-            let title_wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-            let style = WS_OVERLAPPEDWINDOW & !WS_THICKFRAME & !WS_MAXIMIZEBOX;
-            let mut rect = windows_sys::Win32::Foundation::RECT {
-                left: 0, top: 0,
-                right: plug_w as i32,
-                bottom: plug_h as i32,
-            };
-            AdjustWindowRect(&mut rect, style, 0);
-            let win_w = rect.right  - rect.left;
-            let win_h = rect.bottom - rect.top;
-
-            // ── Create host window ────────────────────────────────────────────
-            let hwnd = CreateWindowExW(
-                0,
-                CLASS_NAME.as_ptr(),
-                title_wide.as_ptr(),
-                style,
-                CW_USEDEFAULT, CW_USEDEFAULT,
-                win_w, win_h,
-                ptr::null_mut(), ptr::null_mut(), hinstance, ptr::null_mut(),
-            );
-            if hwnd.is_null() {
-                if let Some(d) = (*gui_ext).destroy { d(plugin); }
-                return Err(anyhow!("CreateWindowExW failed for '{}'", name));
-            }
-
-            // Publish HWND so PluginInstance::drop can send WM_CLOSE.
-            gui_hwnd.store(hwnd as isize, Ordering::Release);
-
-            // Apply the app icon to both title bar and taskbar.
-            if !hicon.is_null() {
-                SendMessageW(hwnd, WM_SETICON, ICON_BIG as _, hicon as _);
-                SendMessageW(hwnd, WM_SETICON, ICON_SMALL as _, hicon as _);
-            }
-            TL_HWND.with(|c| c.set(hwnd as isize));
-
-            // ── Install resize callback ───────────────────────────────────────
-            if let Some(set_size_fn) = (*gui_ext).set_size {
-                TL_RESIZE.with(|r| {
-                    *r.borrow_mut() = Some(Box::new(move |w, h| unsafe {
-                        set_size_fn(plugin, w, h);
-                    }));
-                });
-            }
-
-            // ── Embed plugin into our window ──────────────────────────────────
-            let win32_api_cstr = CString::new("win32").unwrap();
-            let clap_win = ClapWindow {
-                api      : win32_api_cstr.as_ptr(),
-                specific : hwnd as usize,
-            };
-            let set_parent = (*gui_ext).set_parent
-                .ok_or_else(|| anyhow!("No gui.set_parent for '{}'", name))?;
-            if !set_parent(plugin, &clap_win) {
-                DestroyWindow(hwnd);
-                if let Some(d) = (*gui_ext).destroy { d(plugin); }
-                return Err(anyhow!("gui.set_parent() failed for '{}'", name));
-            }
-
-            // Post WM_CLAP_SHOW so gui.show() is called from inside the loop.
-            PostMessageW(hwnd, WM_CLAP_SHOW, 0, 0);
-
-            // ── Message loop ─────────────────────────────────────────────────
-            let mut msg = std::mem::zeroed::<MSG>();
-            loop {
-                let ret = GetMessageW(&mut msg, ptr::null_mut(), 0, 0);
-                if ret == 0 || ret == -1 { break; }
-
-                // WM_CLAP_SHOW: call gui.show from the message loop thread.
-                if msg.hwnd == hwnd && msg.message == WM_CLAP_SHOW {
-                    if let Some(show) = (*gui_ext).show { show(plugin); }
-                }
-
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-
-            // ── Cleanup ───────────────────────────────────────────────────────
-            if let Some(hide)    = (*gui_ext).hide    { hide(plugin);    }
-            if let Some(destroy) = (*gui_ext).destroy { destroy(plugin); }
-
-            TL_RESIZE.with(|r| *r.borrow_mut() = None);
-
-            Ok(())
         }
+        let create = (*gui_ext).create.ok_or_else(|| anyhow!("No gui.create for '{}'", name))?;
+        if !create(plugin, CLAP_WINDOW_API_WIN32.as_ptr() as *const _, false) {
+            return Err(anyhow!("gui.create() failed for '{}'", name));
+        }
+
+        // Scale for the system DPI (plugins that measure DPI themselves
+        // ignore this).
+        let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForSystem();
+        if let Some(set_scale) = (*gui_ext).set_scale {
+            if dpi > 0 { set_scale(plugin, dpi as f64 / 96.0); }
+        }
+        let (mut plug_w, mut plug_h) = (640u32, 400u32);
+        if let Some(get_size) = (*gui_ext).get_size {
+            get_size(plugin, &mut plug_w, &mut plug_h);
+        }
+
+        let hinstance = GetModuleHandleW(ptr::null());
+        // App icon embedded in the exe by tauri_build (resource ID 32512).
+        let hicon = LoadIconW(hinstance, 32512 as _);
+        let wc = WNDCLASSW {
+            style         : CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc   : Some(wnd_proc),
+            cbClsExtra    : 0,
+            cbWndExtra    : 0,
+            hInstance     : hinstance,
+            hIcon         : hicon,
+            hCursor       : LoadCursorW(ptr::null_mut(), IDC_ARROW),
+            hbrBackground : 6 as _, // COLOR_WINDOW + 1
+            lpszMenuName  : ptr::null(),
+            lpszClassName : CLASS_NAME.as_ptr(),
+        };
+        RegisterClassW(&wc); // fails harmlessly if already registered
+
+        let title_wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let style = WS_OVERLAPPEDWINDOW & !WS_THICKFRAME & !WS_MAXIMIZEBOX;
+        let mut rect = windows_sys::Win32::Foundation::RECT { left: 0, top: 0, right: plug_w as i32, bottom: plug_h as i32 };
+        AdjustWindowRect(&mut rect, style, 0);
+        let hwnd = CreateWindowExW(
+            0, CLASS_NAME.as_ptr(), title_wide.as_ptr(), style,
+            CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
+            ptr::null_mut(), ptr::null_mut(), hinstance, ptr::null_mut(),
+        );
+        if hwnd.is_null() {
+            if let Some(d) = (*gui_ext).destroy { d(plugin); }
+            return Err(anyhow!("CreateWindowExW failed for '{}'", name));
+        }
+        if !hicon.is_null() {
+            SendMessageW(hwnd, WM_SETICON, ICON_BIG as _, hicon as _);
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL as _, hicon as _);
+        }
+
+        // From here on the window owns the editor state: any failure below
+        // goes through DestroyWindow → WM_NCDESTROY, which destroys the view
+        // and clears the flags.
+        gui_hwnd.store(hwnd as isize, Ordering::Release);
+        let ed = Box::new(Editor { plugin, gui_ext, gui_flag, gui_hwnd, closed: Cell::new(false) });
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(ed) as isize);
+
+        let win32_api = CString::new("win32").unwrap();
+        let clap_win = ClapWindow { api: win32_api.as_ptr(), specific: hwnd as usize };
+        let embedded = (*gui_ext).set_parent.map(|set_parent| set_parent(plugin, &clap_win)).unwrap_or(false);
+        if !embedded {
+            DestroyWindow(hwnd);
+            return Err(anyhow!("gui.set_parent() failed for '{}'", name));
+        }
+
+        ShowWindow(hwnd, SW_SHOW);
+        if let Some(show) = (*gui_ext).show { show(plugin); }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+    use crate::plugins::processor::clap::{ClapPlugin, ClapPluginGui, ClapWindow};
+    use parking_lot::Mutex;
+    use std::thread::ThreadId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, PostMessageW, WM_CLOSE};
+
+    static CALLS: Mutex<Vec<(&'static str, ThreadId, bool)>> = Mutex::new(Vec::new());
+    static PARENT: Mutex<usize> = Mutex::new(0);
+
+    fn record(name: &'static str) {
+        let parent = *PARENT.lock();
+        let alive = parent != 0 && unsafe { IsWindow(parent as _) } != 0;
+        CALLS.lock().push((name, std::thread::current().id(), alive));
+    }
+    unsafe extern "C" fn create(_: *const ClapPlugin, _: *const std::ffi::c_char, _: bool) -> bool { record("create"); true }
+    unsafe extern "C" fn set_parent(_: *const ClapPlugin, w: *const ClapWindow) -> bool {
+        *PARENT.lock() = (*w).specific;
+        record("set_parent");
+        true
+    }
+    unsafe extern "C" fn show(_: *const ClapPlugin) -> bool { record("show"); true }
+    unsafe extern "C" fn hide(_: *const ClapPlugin) -> bool { record("hide"); true }
+    unsafe extern "C" fn destroy(_: *const ClapPlugin) { record("destroy"); }
+
+    #[test]
+    fn gui_runs_on_the_host_thread_and_is_destroyed_before_its_window() {
+        let plugin: ClapPlugin = unsafe { std::mem::zeroed() };
+        let mut gui: ClapPluginGui = unsafe { std::mem::zeroed() };
+        gui.create = Some(create);
+        gui.set_parent = Some(set_parent);
+        gui.show = Some(show);
+        gui.hide = Some(hide);
+        gui.destroy = Some(destroy);
+        let flag = Arc::new(AtomicBool::new(true));
+        let hwnd = Arc::new(AtomicIsize::new(0));
+
+        open_clap_gui(&plugin as *const _ as usize, &gui as *const _ as usize, "fake", Arc::clone(&flag), Arc::clone(&hwnd)).unwrap();
+        let host = crate::core::host_thread::run_blocking(|| std::thread::current().id());
+        let win = hwnd.load(Ordering::Acquire);
+        assert_ne!(win, 0, "host window published");
+
+        unsafe { PostMessageW(win as _, WM_CLOSE, 0, 0) };
+        crate::core::host_thread::run_blocking(crate::core::host_thread::wait_a_moment);
+
+        let calls = CALLS.lock().clone();
+        let names: Vec<_> = calls.iter().map(|c| c.0).collect();
+        assert_eq!(names, ["create", "set_parent", "show", "hide", "destroy"]);
+        assert!(calls.iter().all(|c| c.1 == host), "every gui.* call on the plugin host thread");
+        assert!(calls[3].2 && calls[4].2, "hide/destroy while the host window still exists");
+        assert!(!flag.load(Ordering::Acquire), "gui flag cleared");
+        assert_eq!(hwnd.load(Ordering::Acquire), 0);
     }
 }

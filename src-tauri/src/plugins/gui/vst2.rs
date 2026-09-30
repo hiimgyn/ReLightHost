@@ -87,6 +87,23 @@ mod win {
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetModuleHandleA, LoadLibraryA, GetProcAddress};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+    /// Timer driving `effEditIdle` — VST2 editors expect the host to call it
+    /// regularly (meters, animations and some plugins' whole repaint hang
+    /// off it).
+    const IDLE_TIMER: usize = 1;
+    const IDLE_INTERVAL_MS: u32 = 30;
+
+    type CloseHook = Box<dyn FnOnce()>;
+    thread_local! {
+        /// Closes the editor (`effEditClose`) — run from WM_CLOSE *before* the
+        /// host window, and with it the plugin's child window, is destroyed.
+        static TL_CLOSE: std::cell::RefCell<Option<CloseHook>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn set_close_hook(hook: CloseHook) {
+        TL_CLOSE.with(|h| *h.borrow_mut() = Some(hook));
+    }
+
     // Runtime resolver for AdjustWindowRectForDpi (available on Win10+).
     // Falls back to returning false when not present.
     unsafe fn try_adjust_window_rect_for_dpi(rect: *mut RECT, style: u32, menu: i32, dpi: u32) -> bool {
@@ -133,6 +150,15 @@ mod win {
             unsafe { DestroyWindow(hwnd); }
             return Err(anyhow!("'{}': VST2 effEditOpen returned false", plugin_name));
         }
+        let idle = guard.editor_idle_handle();
+        set_close_hook({
+            let plugin = Arc::clone(plugin);
+            Box::new(move || {
+                if let Ok(mut guard) = plugin.lock() {
+                    guard.editor_close();
+                }
+            })
+        });
 
         // Some plugins report the correct size only after open().
         let (post_w, post_h) = guard.editor_size();
@@ -163,6 +189,7 @@ mod win {
         unsafe {
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
+            SetTimer(hwnd, IDLE_TIMER, IDLE_INTERVAL_MS, None);
         }
 
         // Release the plugin lock before entering the message loop so that
@@ -171,19 +198,23 @@ mod win {
         drop(guard);
 
         // ── Message loop ──────────────────────────────────────────────────────
-        // Standard blocking Win32 loop.  Plugin child-windows get WM_PAINT etc.
-        // via DispatchMessageW without any additional idle hacks.
+        // Plugin child windows get WM_PAINT etc. via DispatchMessageW; the
+        // idle timer drives effEditIdle.
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
+                if msg.message == WM_TIMER && msg.hwnd == hwnd && msg.wParam == IDLE_TIMER {
+                    idle.idle();
+                }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
         }
 
         // ── Cleanup ───────────────────────────────────────────────────────────
-        // Re-acquire the lock to call effEditClose.
-        // The plugin should destroy its child window during close().
+        // Normally WM_CLOSE already closed the editor (before the window was
+        // destroyed); this covers the loop ending any other way. No-op if closed.
+        TL_CLOSE.with(|h| h.borrow_mut().take());
         if let Ok(mut guard) = plugin.lock() {
             guard.editor_close();
         }
@@ -202,6 +233,14 @@ mod win {
         lparam: windows_sys::Win32::Foundation::LPARAM,
     ) -> windows_sys::Win32::Foundation::LRESULT {
         match msg {
+            WM_CLOSE => {
+                KillTimer(hwnd, IDLE_TIMER);
+                if let Some(close_editor) = TL_CLOSE.with(|h| h.borrow_mut().take()) {
+                    close_editor();
+                }
+                DestroyWindow(hwnd);
+                0
+            }
             WM_DESTROY => {
                 PostQuitMessage(0);
                 0
@@ -211,7 +250,7 @@ mod win {
         }
     }
 
-    fn create_host_window(title: &str, width: i32, height: i32) -> Result<windows_sys::Win32::Foundation::HWND> {
+    pub(super) fn create_host_window(title: &str, width: i32, height: i32) -> Result<windows_sys::Win32::Foundation::HWND> {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
 
@@ -294,5 +333,33 @@ mod win {
 
             Ok(hwnd)
         }
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::win::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, SendMessageW, WM_CLOSE};
+
+    #[test]
+    fn closing_the_window_closes_the_editor_while_the_window_still_exists() {
+        let saw_live_window = Arc::new(AtomicBool::new(false));
+        let ok = std::thread::spawn({
+            let saw = Arc::clone(&saw_live_window);
+            move || unsafe {
+                let hwnd = create_host_window("test", 100, 100).unwrap();
+                set_close_hook(Box::new(move || {
+                    saw.store(IsWindow(hwnd) != 0, Ordering::SeqCst);
+                }));
+                SendMessageW(hwnd, WM_CLOSE, 0, 0);
+                IsWindow(hwnd) == 0
+            }
+        })
+        .join()
+        .unwrap();
+        assert!(saw_live_window.load(Ordering::SeqCst), "effEditClose must run before the host window is destroyed");
+        assert!(ok, "window destroyed after the editor closed");
     }
 }

@@ -67,6 +67,7 @@ mod eff {
     pub const EDIT_GET_RECT:     i32 = 13; // ptr = *mut *mut ERect (out)
     pub const EDIT_OPEN:         i32 = 14; // ptr = parent HWND
     pub const EDIT_CLOSE:        i32 = 15;
+    pub const EDIT_IDLE:         i32 = 19;
     pub const GET_CHUNK:         i32 = 23; // ptr = *mut *mut c_void, index = 1 (prog)
     pub const SET_CHUNK:         i32 = 24; // ptr = data, value = size, index = 1
     pub const GET_VENDOR_NAME:   i32 = 47; // ptr = char[64]
@@ -180,11 +181,31 @@ impl RawPlugin {
         ok
     }
 
+    /// Handle for `effEditIdle` calls from the editor's GUI thread.
+    pub(crate) fn editor_idle_handle(&self) -> EditorIdle {
+        EditorIdle(self.effect)
+    }
+
     pub(crate) fn editor_close(&mut self) {
         if self.editor_open {
             self.dispatch(eff::EDIT_CLOSE, 0, 0, ptr::null_mut(), 0.0);
             self.editor_open = false;
         }
+    }
+}
+
+/// `effEditIdle` sender for the editor's GUI thread. Called without the
+/// plugin mutex on purpose: the audio thread `try_lock`s that mutex every
+/// block, and holding it for a repaint would drop blocks to dry audio.
+/// Plugins expect editor calls concurrently with processing (as in every
+/// VST2 host); the editor thread exits before the plugin is dropped.
+pub(crate) struct EditorIdle(pub(crate) *mut AEffect);
+
+unsafe impl Send for EditorIdle {}
+
+impl EditorIdle {
+    pub(crate) fn idle(&self) {
+        unsafe { ((*self.0).dispatcher)(self.0, eff::EDIT_IDLE, 0, 0, ptr::null_mut(), 0.0) };
     }
 }
 
@@ -389,5 +410,34 @@ mod tests {
         assert_eq!(host_callback(ptr::null_mut(), 16, 0, 0, ptr::null_mut(), 0.0), 44_100);
         assert_eq!(host_callback(ptr::null_mut(), 17, 0, 0, ptr::null_mut(), 0.0), 256);
         assert_eq!(host_callback(ptr::null_mut(), 1, 0, 0, ptr::null_mut(), 0.0), 2400);
+    }
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+    use std::sync::atomic::AtomicI32;
+
+    static LAST_OPCODE: AtomicI32 = AtomicI32::new(-1);
+    unsafe extern "C" fn dispatcher(_: *mut AEffect, op: i32, _: i32, _: isize, _: *mut c_void, _: f32) -> isize {
+        LAST_OPCODE.store(op, Ordering::SeqCst);
+        0
+    }
+    unsafe extern "C" fn process(_: *mut AEffect, _: *const *const f32, _: *mut *mut f32, _: i32) {}
+    unsafe extern "C" fn process_f64(_: *mut AEffect, _: *const *const f64, _: *mut *mut f64, _: i32) {}
+    unsafe extern "C" fn set_param(_: *mut AEffect, _: i32, _: f32) {}
+    unsafe extern "C" fn get_param(_: *mut AEffect, _: i32) -> f32 { 0.0 }
+
+    #[test]
+    fn editor_idle_sends_eff_edit_idle() {
+        let mut effect = AEffect {
+            magic: VST_MAGIC, dispatcher, process, set_parameter: set_param, get_parameter: get_param,
+            num_programs: 0, num_params: 0, num_inputs: 2, num_outputs: 2, flags: 0,
+            resvd1: 0, resvd2: 0, initial_delay: 0, real_qualities: 0, off_qualities: 0, io_ratio: 1.0,
+            object: ptr::null_mut(), user: ptr::null_mut(), unique_id: 0, version: 0,
+            process_replacing: process, process_double_replacing: process_f64, future: [0; 56],
+        };
+        EditorIdle(&mut effect).idle();
+        assert_eq!(LAST_OPCODE.load(Ordering::SeqCst), 19, "effEditIdle");
     }
 }

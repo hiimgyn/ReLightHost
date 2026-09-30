@@ -174,6 +174,7 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                         }
                         let tray_state = app.state::<crate::TrayState>();
                         sync_loopback_tray_state(&tray_state, new_enabled);
+                        crate::save_audio_session_to_disk(&state);
                     }
                     "audio_settings" => {
                         if let Some(win) = app.get_webview_window("main") {

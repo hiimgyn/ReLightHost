@@ -51,10 +51,11 @@ pub(crate) fn restore_session_impl(
         // this runs on the plugin host thread, and the UI thread may itself be
         // waiting on this thread (e.g. shutdown_for_exit) — blocking here could
         // deadlock.
-        let (tray_app, muted) = (app.clone(), session.muted);
+        let (tray_app, muted, loopback) = (app.clone(), session.muted, session.loopback_enabled);
         crate::app_events::run_on_main_thread(move || {
             let tray_state = tray_app.state::<crate::TrayState>();
             crate::bootstrap::tray::sync_audio_tray_state(&tray_app, &tray_state, muted);
+            crate::bootstrap::tray::sync_loopback_tray_state(&tray_state, loopback);
         });
         let _ = state.audio_manager.set_loopback(session.loopback_enabled);
         audio_restored = true;

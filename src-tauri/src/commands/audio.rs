@@ -221,11 +221,17 @@ pub fn set_muted(
 }
 
 #[tauri::command]
-pub fn set_loopback(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+pub fn set_loopback(
+    app: tauri::AppHandle<tauri::Wry>,
+    state: tauri::State<AppState>,
+    enabled: bool,
+) -> Result<(), String> {
     state
         .audio_manager
         .set_loopback(enabled)
         .map_err(|e| format!("Failed to set loopback: {}", e))?;
+    let tray_state = app.state::<crate::TrayState>();
+    crate::bootstrap::tray::sync_loopback_tray_state(&tray_state, enabled);
     crate::save_audio_session_to_disk(&state);
     Ok(())
 }

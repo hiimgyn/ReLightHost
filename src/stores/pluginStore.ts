@@ -30,6 +30,10 @@ interface PluginStore {
   /// `setRestoreTargetCount` was last called — see that action's comment.
   restoreProgressCount: number;
   hasFetchedChainOnce: boolean;
+  /** True while restore_session runs on the backend: the chain there is
+   *  still being rebuilt, so an early fetchChain must not end the
+   *  "initializing" state (restore is async — the UI stays responsive). */
+  isRestoring: boolean;
   mutationCount: number;
   isMutating: boolean;
 
@@ -44,6 +48,7 @@ interface PluginStore {
   fetchCrashStatuses: () => Promise<void>;
   setRestoreTargetCount: (count: number | null) => void;
   bumpRestoreProgress: () => void;
+  setRestoring: (restoring: boolean) => void;
 }
 
 export const usePluginStore = create<PluginStore>((set, get) => ({
@@ -55,6 +60,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   restoreTargetCount: null,
   restoreProgressCount: 0,
   hasFetchedChainOnce: false,
+  isRestoring: false,
   mutationCount: 0,
   isMutating: false,
 
@@ -213,16 +219,16 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   fetchChain: async () => {
     try {
       const chain = await tauri.getPluginChain();
-      set(() => ({
+      set((state) => ({
         pluginChain: chain,
-        isChainInitializing: false,
+        isChainInitializing: state.isRestoring,
         hasFetchedChainOnce: true,
       }));
     } catch (error) {
       console.error('Failed to fetch plugin chain:', error);
       // Do not keep the UI permanently locked when initial fetch fails.
-      set(() => ({
-        isChainInitializing: false,
+      set((state) => ({
+        isChainInitializing: state.isRestoring,
         hasFetchedChainOnce: true,
       }));
     }
@@ -256,6 +262,10 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   // events instead, which fire as each plugin finishes loading.
   bumpRestoreProgress: () => {
     set((state) => ({ restoreProgressCount: state.restoreProgressCount + 1 }));
+  },
+
+  setRestoring: (restoring: boolean) => {
+    set(restoring ? { isRestoring: true, isChainInitializing: true } : { isRestoring: false });
   },
 
 }));

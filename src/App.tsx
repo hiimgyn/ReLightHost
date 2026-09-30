@@ -50,12 +50,14 @@ function App() {
     const restoreSession = async () => {
       try {
         usePluginStore.getState().setRestoreTargetCount(null);
+        usePluginStore.getState().setRestoring(true);
         const result = await invoke<{
           audio_restored: boolean;
           plugins_restored: number;
           needs_deferred_start: boolean;
           deferred_start_ms: number;
         }>('restore_session');
+        usePluginStore.getState().setRestoring(false);
 
         usePluginStore
           .getState()
@@ -106,7 +108,9 @@ function App() {
         }
       } catch (error) {
         console.error('Failed to restore session:', error);
+        usePluginStore.getState().setRestoring(false);
         usePluginStore.getState().setRestoreTargetCount(null);
+        void usePluginStore.getState().fetchChain();
         setTimeout(() => setShowFirstTimeAudio(true), 600);
       } finally {
         if (!asioRetryRef.current) {

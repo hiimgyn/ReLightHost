@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://relighthost.hiimgyn.cloud/sitemap-index.xml

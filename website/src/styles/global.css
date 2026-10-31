@@ -1,0 +1,94 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/lexend-deca';
+
+/* shadcn tokens, customized to ReLightHost's brand (indigo #6366f1 → violet) */
+:root {
+  color-scheme: dark;
+  --radius: 0.875rem;
+  --background: oklch(0.155 0.03 280);
+  --foreground: oklch(0.97 0.01 280);
+  --card: oklch(0.2 0.035 280 / 0.6);
+  --card-foreground: var(--foreground);
+  --primary: oklch(0.6 0.2 277);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.26 0.04 280);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.24 0.03 280);
+  --muted-foreground: oklch(0.74 0.03 280);
+  --accent: oklch(0.28 0.06 285);
+  --accent-foreground: var(--foreground);
+  --border: oklch(1 0 0 / 0.09);
+  --ring: oklch(0.68 0.18 285);
+  --violet: oklch(0.66 0.22 305);
+  --sky: oklch(0.77 0.13 230);
+}
+
+@theme inline {
+  --font-sans: 'Lexend Deca Variable', ui-sans-serif, system-ui, sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-violet: var(--violet);
+  --color-sky: var(--sky);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    background-image:
+      radial-gradient(60rem 40rem at 15% -10%, oklch(0.45 0.2 300 / 0.35), transparent 70%),
+      radial-gradient(50rem 36rem at 95% 10%, oklch(0.5 0.2 270 / 0.25), transparent 70%);
+    background-repeat: no-repeat;
+  }
+  ::selection {
+    background: var(--primary);
+    color: var(--primary-foreground);
+  }
+}
+
+@utility text-gradient {
+  background: linear-gradient(100deg, var(--foreground) 10%, oklch(0.78 0.14 285) 50%, var(--violet) 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@utility glass {
+  background: oklch(0.2 0.035 280 / 0.55);
+  backdrop-filter: blur(14px);
+}
+
+@utility grid-bg {
+  background-image:
+    linear-gradient(to right, oklch(1 0 0 / 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(1 0 0 / 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+}
+
+/* Hidden until GSAP reveals them; the `js` class is only set when motion is allowed. */
+.js [data-reveal],
+.js [data-hero] {
+  visibility: hidden;
+}

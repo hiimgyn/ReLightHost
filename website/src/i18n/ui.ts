@@ -73,7 +73,7 @@ const en = {
   cta: {
     title: 'Ready to light up your sound?',
     sub: 'Free download for Windows 10/11. Source available on GitHub.',
-    note: 'Windows only for now · CC BY-NC-SA 4.0',
+    note: 'Windows only for now · GPL-3.0',
   },
   footer: { made: 'Made by HiimGyn', lang: 'Language' },
 };
@@ -147,7 +147,7 @@ const vi: typeof en = {
   cta: {
     title: 'Sẵn sàng thắp sáng âm thanh của bạn?',
     sub: 'Tải miễn phí cho Windows 10/11. Mã nguồn công khai trên GitHub.',
-    note: 'Hiện chỉ hỗ trợ Windows · CC BY-NC-SA 4.0',
+    note: 'Hiện chỉ hỗ trợ Windows · GPL-3.0',
   },
   footer: { made: 'Phát triển bởi HiimGyn', lang: 'Ngôn ngữ' },
 };

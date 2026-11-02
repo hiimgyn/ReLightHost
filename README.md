@@ -35,12 +35,12 @@ VST3, VST2, and CLAP hosting are all implemented as raw FFI against each format'
 | Plugin library | Search, filter, and group plugins by manufacturer before adding them to the chain |
 | Multi-format support | VST3, VST2 (.dll), CLAP, and built-in processors — all hosted via raw FFI, no per-format SDK dependency |
 | Native GUI support | Open plugin editors in native windows when the plugin exposes one |
-| VST3 crash isolation | A VST3 plugin that repeatedly crashes the host gets automatically reloaded in an isolated child process on subsequent launches, so a fragile plugin can no longer take the whole app down |
+| Crash resilience | Plugin scanning runs in a child process, panics inside a plugin call bypass that plugin, and after an unclean exit the app names the plugin that was loaded (see [Crash Resilience](#crash-resilience)) |
 | Audio routing | Select input/output devices, monitor live audio, and toggle hardware loopback |
 | Real-time meters | Live VU meter plus CPU and RAM monitoring in the app footer |
 | Session restore | Restore audio settings and plugin state on launch |
 | Auto-save | Structural chain changes are persisted automatically |
-| System tray | Minimize to tray, restore from the tray, and a full iconized tray menu (mute/monitor-output toggles reflect live state) |
+| System tray | Minimize to tray, restore from the tray, and a full iconized tray menu (mute/monitor-output toggles reflect live state, one-click Reload Audio) |
 | Startup options | Windows startup registration and show-hidden behavior on launch |
 | Theme support | Persistent dark and light theme toggle |
 | Built-in AI & DSP processors | DeepFilterNet 3 (AI SOTA speech denoiser), Compressor, RNNoise, and Voice Designer |
@@ -184,6 +184,10 @@ A plugin crashing the whole app is the worst failure mode for a live audio host,
 
 - **Panic protection** — Rust-side panics inside a plugin call are caught and turned into a bypass instead of taking the process down.
 - **Per-block safety** — the plugin chain never blocks the real-time audio callback waiting on a plugin; a busy or slow plugin is skipped for that block rather than causing an underrun.
+- **Out-of-process scanning** — each plugin binary is probed in a child process, so a plugin that crashes while being scanned only takes that child down.
+- **Unclean-exit report** — if the app disappeared last time, the next launch names the plugin(s) that were loaded when it happened.
+
+> **Limit:** plugins are hosted in-process. A native crash inside a plugin's own code (e.g. an access violation in its DLL) still ends the app; the autosaved session is restored on the next launch.
 
 ---
 
@@ -229,6 +233,7 @@ ReLightHost/
 └── src-tauri/                  # Backend (Rust)
     ├── src/
     │   ├── lib.rs               # App state, commands, tray setup
+    │   ├── audio/               # Audio engine, WASAPI / ASIO backends, VU meter
     │   ├── bootstrap/           # Window and tray bootstrapping
     │   ├── commands/            # IPC commands
     │   ├── core/                # Session, autosave, timing, threading

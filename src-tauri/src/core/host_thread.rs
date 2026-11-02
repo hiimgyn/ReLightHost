@@ -22,8 +22,28 @@ thread_local! {
     static IS_HOST: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Longest a queued job waits while the thread idles in its message wait.
+/// Pause length for [`wait_a_moment`] polling loops.
 const PUMP_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Queues `job` and wakes the host thread out of its idle wait.
+fn submit(job: Job) -> Result<(), mpsc::SendError<Job>> {
+    sender().send(job)?;
+    #[cfg(target_os = "windows")]
+    unsafe {
+        windows_sys::Win32::System::Threading::SetEvent(wake_event());
+    }
+    Ok(())
+}
+
+/// Auto-reset event signalled once per submitted job: the idle wait sleeps
+/// on it plus the message queue, so an idle host thread costs no wake-ups.
+#[cfg(target_os = "windows")]
+fn wake_event() -> windows_sys::Win32::Foundation::HANDLE {
+    static EVENT: OnceLock<usize> = OnceLock::new();
+    *EVENT.get_or_init(|| unsafe {
+        windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) as usize
+    }) as windows_sys::Win32::Foundation::HANDLE
+}
 
 fn sender() -> Sender<Job> {
     SENDER
@@ -61,14 +81,17 @@ fn host_loop(rx: mpsc::Receiver<Job>) {
     }
 }
 
-/// Sleeps until a window message arrives or `PUMP_INTERVAL` passes, so
-/// driver/plugin messages are handled as promptly as on a normal UI thread
-/// and a queued job waits at most one interval.
+/// Sleeps until a job is submitted or a window message / timer arrives,
+/// so driver/plugin messages are handled as promptly as on a normal UI
+/// thread. `MWMO_INPUTAVAILABLE`: also wake for input already queued but
+/// not yet dispatched.
 #[cfg(target_os = "windows")]
 fn wait_for_work(_rx: &mpsc::Receiver<Job>) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjects, QS_ALLINPUT};
+    use windows_sys::Win32::System::Threading::INFINITE;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT};
+    let event = wake_event();
     unsafe {
-        MsgWaitForMultipleObjects(0, std::ptr::null(), 0, PUMP_INTERVAL.as_millis() as u32, QS_ALLINPUT);
+        MsgWaitForMultipleObjectsEx(1, &event, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 }
 
@@ -123,7 +146,7 @@ pub fn post(f: impl FnOnce() + Send + 'static) {
             log::error!("A posted plugin-host job panicked");
         }
     });
-    let _ = sender().send(job);
+    let _ = submit(job);
 }
 
 /// Runs `f` on the host thread and waits for its result. Called from the
@@ -137,7 +160,7 @@ pub fn run_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -
     let job: Job = Box::new(move || {
         let _ = tx.send(catch_unwind(AssertUnwindSafe(f)));
     });
-    sender().send(job).expect("plugin host thread is gone");
+    submit(job).expect("plugin host thread is gone");
     match rx.recv().expect("plugin host thread dropped a job") {
         Ok(r) => r,
         Err(panic) => resume_unwind(panic),
@@ -183,6 +206,15 @@ mod tests {
             PeekMessageW(&mut msg, std::ptr::null_mut(), WM_APP + 7, WM_APP + 7, PM_NOREMOVE) != 0
         });
         assert!(!still_queued, "a polling wait on the host thread must dispatch messages");
+    }
+
+    #[test]
+    fn an_idle_host_thread_wakes_promptly_for_new_work() {
+        run_blocking(|| ());
+        std::thread::sleep(Duration::from_millis(50)); // let it settle into its idle wait
+        let started = std::time::Instant::now();
+        run_blocking(|| ());
+        assert!(started.elapsed() < Duration::from_millis(500), "took {:?}", started.elapsed());
     }
 
     #[test]

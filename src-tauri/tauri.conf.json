@@ -1,6 +1,6 @@
 {
   "productName": "ReLightHost",
-  "version": "2.7.5",
+  "version": "2.8.0",
   "identifier": "ReLightHost",
   "build": {
     "frontendDist": "../dist",

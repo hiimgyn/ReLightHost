@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "ReLightHost"
-version = "2.7.5"
+version = "2.8.0"
 dependencies = [
  "anyhow",
  "arc-swap",

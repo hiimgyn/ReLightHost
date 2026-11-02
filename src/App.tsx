@@ -23,6 +23,7 @@ function InstallUpdateButton() {
       await invoke('install_update');
     } catch (error) {
       console.error('Failed to install update:', error);
+      message.error(t('app.updateFailed', { error: String(error) }));
       setInstalling(false);
     }
   };

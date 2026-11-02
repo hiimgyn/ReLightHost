@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Modal, Switch, Space, Typography, Button, Select, Tabs, theme } from 'antd';
+import { Modal, Switch, Space, Typography, Button, Select, Tabs, theme, message } from 'antd';
 import { 
   Settings2, 
   Info,
@@ -44,6 +44,7 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   const [appVersion, setAppVersion] = useState('');
   const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version?: string; notes?: string } | null>(null);
   const [checking, setChecking] = useState(false);
+  const [checkFailed, setCheckFailed] = useState(false);
   const [installing, setInstalling] = useState(false);
 
   const { token } = theme.useToken();
@@ -139,11 +140,14 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
   const handleCheckUpdate = async () => {
     setChecking(true);
     setUpdateInfo(null);
+    setCheckFailed(false);
     try {
       const info = await invoke<{ available: boolean; version?: string; notes?: string }>('check_for_update');
       setUpdateInfo(info);
-    } catch {
-      setUpdateInfo({ available: false });
+    } catch (error) {
+      // Not "up to date": a failed check says nothing about the version.
+      console.warn('Update check failed:', error);
+      setCheckFailed(true);
     } finally {
       setChecking(false);
     }
@@ -153,7 +157,8 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
     setInstalling(true);
     try {
       await invoke('install_update');
-    } catch {
+    } catch (error) {
+      message.error(t('app.updateFailed', { error: String(error) }));
       setInstalling(false);
     }
   };
@@ -334,6 +339,8 @@ export default function AppSettings({ isOpen, onClose }: AppSettingsProps) {
                 </Paragraph>
               )}
             </div>
+          ) : checkFailed ? (
+            <Text type="danger" style={{ fontSize: 11.5 }}>{t('appSettings.updateCheckFailed')}</Text>
           ) : updateInfo !== null ? (
             <Text type="secondary" style={{ fontSize: 11.5 }}>{t('appSettings.upToDate')}</Text>
           ) : (

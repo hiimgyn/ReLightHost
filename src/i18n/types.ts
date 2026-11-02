@@ -6,6 +6,7 @@ export interface TranslationSchema {
     sessionRestored: string;
     updateAvailable: string;
     updateReady: string;
+    updateFailed: string;
     uncleanExitTitle: string;
     uncleanExitDesc: string;
   };
@@ -245,6 +246,7 @@ export interface TranslationSchema {
     github: string;
     updates: string;
     upToDate: string;
+    updateCheckFailed: string;
     versionAvailable: string;
     installRestart: string;
     checkForUpdates: string;

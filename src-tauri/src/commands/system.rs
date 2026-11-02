@@ -113,14 +113,28 @@ pub async fn check_for_update(app: tauri::AppHandle) -> Result<UpdateInfo, Strin
 pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
-    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
-        let app_handle = app.clone();
-        update
-            .download_and_install(|_chunk, _total| {}, move || {
-                shutdown_for_exit(&app_handle);
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No update is available any more".to_string())?;
+    // Download before tearing anything down: a failed download leaves the
+    // running session untouched.
+    let bytes = update
+        .download(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || shutdown_for_exit(&handle))
+        .await
+        .map_err(|e| e.to_string())?;
+    // On success the installer starts and this process exits inside
+    // `install`. Getting an error back means it never started, with audio
+    // and the chain already torn down — relaunch, which restores the
+    // session shutdown_for_exit just autosaved.
+    if let Err(e) = update.install(bytes) {
+        log::error!("Update install failed, relaunching: {e}");
+        app.restart();
     }
     Ok(())
 }

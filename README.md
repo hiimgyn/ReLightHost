@@ -50,7 +50,7 @@ VST3, VST2, and CLAP hosting are all implemented as raw FFI against each format'
 
 ## Screenshot
 
-![Main window](Screenshot.png)
+![Main window](Screenshot.webp)
 
 ---
 

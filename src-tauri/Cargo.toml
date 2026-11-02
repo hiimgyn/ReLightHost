@@ -4,7 +4,7 @@ version = "2.7.5"
 description = "VST/VST3/CLAP Host"
 authors = ["HiimGyn"]
 license = "GPL-3.0-or-later"
-repository = ""
+repository = "https://github.com/hiimgyn/ReLightHost"
 edition = "2021"
 rust-version = "1.80.0"
 

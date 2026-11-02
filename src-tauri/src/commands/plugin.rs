@@ -210,96 +210,6 @@ fn launch_plugin_on_host(state: &AppState, instance_id: String) -> Result<(), St
     }
 }
 
-#[tauri::command]
-pub async fn launch_plugins(
-    state: tauri::State<'_, AppState>,
-    instance_ids: Option<Vec<String>>,
-) -> Result<LaunchPluginsResult, String> {
-    let state = state.inner().clone();
-    crate::core::host_thread::run(move || launch_plugins_on_host(&state, instance_ids)).await
-}
-
-fn launch_plugins_on_host(
-    state: &AppState,
-    instance_ids: Option<Vec<String>>,
-) -> Result<LaunchPluginsResult, String> {
-    let ids: Vec<String> = match instance_ids {
-        Some(v) if !v.is_empty() => v,
-        _ => state
-            .plugin_manager
-            .get_instances()
-            .into_iter()
-            .filter(|p| !matches!(p.format, PluginFormat::Builtin) && !p.gui_open)
-            .map(|p| p.instance_id)
-            .collect(),
-    };
-
-    if ids.is_empty() {
-        return Ok(LaunchPluginsResult {
-            ok_count: 0,
-            skipped_count: 0,
-            errors: vec![],
-        });
-    }
-
-    let mut ok_count = 0usize;
-    let mut skipped_count = 0usize;
-    let mut errors: Vec<String> = Vec::new();
-
-    let has_vst3 = ids.iter().any(|id| {
-        state
-            .plugin_manager
-            .get_instance(id)
-            .map(|instance| instance.get_info().format == PluginFormat::VST3)
-            .unwrap_or(false)
-    });
-
-    if has_vst3 {
-        wait_for_vst3_restore_ready(state);
-    }
-
-    for id in ids {
-        let instance_opt = {
-            let manager = &state.plugin_manager;
-            manager.get_instance(&id)
-        };
-        let Some(instance) = instance_opt else {
-            errors.push(format!("Unknown instance: {}", id));
-            continue;
-        };
-        let info = instance.get_info();
-        if matches!(info.format, PluginFormat::Builtin) {
-            skipped_count += 1;
-            continue;
-        }
-        if info.gui_open {
-            log::debug!("launch_plugins skip already-open GUI: id={}, name='{}'", id, info.name);
-            skipped_count += 1;
-            continue;
-        }
-
-        log::info!(
-            "launch_plugins opening GUI: id={}, name='{}' format={:?}",
-            id,
-            info.name,
-            info.format
-        );
-        match instance.open_gui() {
-            Ok(()) => {
-                ok_count += 1;
-                crate::app_events::emit_plugin_chain_changed("gui_open", Some(&id));
-            }
-            Err(e) => errors.push(format!("{}: {}", info.name, e)),
-        }
-    }
-
-    Ok(LaunchPluginsResult {
-        ok_count,
-        skipped_count,
-        errors,
-    })
-}
-
 /// `async`: waits up to GUI_CLOSE_TIMEOUT per plugin for its GUI thread to
 /// exit — only posts WM_CLOSE and polls, no thread affinity.
 #[tauri::command(async)]
@@ -375,19 +285,6 @@ pub fn get_noise_suppressor_vad(state: tauri::State<AppState>, instance_id: Stri
     let manager = &state.plugin_manager;
     if let Some(instance) = manager.get_instance(&instance_id) {
         Ok(instance.get_builtin_vad())
-    } else {
-        Err(format!("Plugin instance not found: {}", instance_id))
-    }
-}
-
-#[tauri::command]
-pub fn get_plugin_crash_status(
-    state: tauri::State<AppState>,
-    instance_id: String,
-) -> Result<crate::plugins::PluginStatus, String> {
-    let manager = &state.plugin_manager;
-    if let Some(instance) = manager.get_instance(&instance_id) {
-        Ok(instance.get_crash_status())
     } else {
         Err(format!("Plugin instance not found: {}", instance_id))
     }

@@ -6,7 +6,6 @@ import type {
   PluginInfo,
   PluginInstanceInfo,
   SystemStats,
-  PluginStatus,
   VUData,
   PluginCrashStatusItem,
   LaunchPluginsResult,
@@ -134,10 +133,6 @@ export async function renamePlugin(instanceId: string, newName: string): Promise
   return invoke('rename_plugin', { instanceId, newName });
 }
 
-export async function playTestSound(): Promise<void> {
-  return invoke('play_test_sound');
-}
-
 export async function getSystemStats(): Promise<SystemStats> {
   return invoke('get_system_stats');
 }
@@ -154,21 +149,12 @@ export async function launchPlugin(instanceId: string): Promise<void> {
   return invoke('launch_plugin', { instanceId });
 }
 
-/** Open many native GUIs. Omit IDs to open every VST/VST3/CLAP in the chain that is not already open. */
-export async function launchPlugins(instanceIds?: string[] | null): Promise<LaunchPluginsResult> {
-  return invoke('launch_plugins', { instanceIds: instanceIds ?? null });
-}
-
 /** Request close of many native plugin GUIs. Omit IDs to close every open GUI. */
 export async function closePlugins(instanceIds?: string[] | null): Promise<LaunchPluginsResult> {
   return invoke('close_plugins', { instanceIds: instanceIds ?? null });
 }
 
 // Crash Protection Commands
-export async function getPluginCrashStatus(instanceId: string): Promise<PluginStatus> {
-  return invoke('get_plugin_crash_status', { instanceId });
-}
-
 export async function getPluginCrashStatuses(): Promise<PluginCrashStatusItem[]> {
   return invoke('get_plugin_crash_statuses');
 }

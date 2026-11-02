@@ -207,6 +207,13 @@ fn toggle_monitoring_on_host(state: &AppState, enabled: bool) -> Result<(), Stri
     Ok(())
 }
 
+/// Restarts the stream with the current config (tray "Reload Audio") —
+/// recovers from a device that changed under us without opening settings.
+pub(crate) fn reload_audio_on_host(state: &AppState) -> Result<(), String> {
+    toggle_monitoring_on_host(state, false)?;
+    toggle_monitoring_on_host(state, true)
+}
+
 #[tauri::command]
 pub fn set_muted(
     app: tauri::AppHandle<tauri::Wry>,

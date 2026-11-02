@@ -20,7 +20,8 @@ import { useShallow } from "zustand/react/shallow";
 import { useThemeStore } from "../../stores/themeStore";
 import { useAudioStore } from "../../stores/audioStore";
 import { usePluginStore } from "../../stores/pluginStore";
-import { useTranslation } from "../../i18n";
+import { useTranslation, getTranslation } from "../../i18n";
+import { useLocaleStore } from "../../stores/localeStore";
 import AudioSettings from "../audio/AudioSettings";
 import AppSettings from "../settings/AppSettings";
 
@@ -147,6 +148,13 @@ export default function Header() {
       ),
       listen("tray-open-audio-settings", () => setShowAudioSettings(true)),
       listen("tray-open-app-settings", () => setShowAppSettings(true)),
+      listen<boolean>("tray-audio-reloaded", (e) => {
+        void useAudioStore.getState().fetchStatus();
+        // Read the locale now: this listener outlives locale switches.
+        const locale = useLocaleStore.getState().locale;
+        if (e.payload) message.success(getTranslation(locale, 'header.deviceReloaded'));
+        else message.error(getTranslation(locale, 'header.deviceReloadFailed'));
+      }),
     ];
     // Signal-chain IN/OUT cards open Audio Settings via this same-page event
     // instead of lifting modal state up through PluginChain's props.

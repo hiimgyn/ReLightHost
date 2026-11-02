@@ -20,6 +20,7 @@ const icons = {
   'menu-loopback-off': require('@ant-design/icons-svg/lib/asn/SoundOutlined').default,
   'menu-audio-settings': require('@ant-design/icons-svg/lib/asn/SlidersOutlined').default,
   'menu-app-settings': require('@ant-design/icons-svg/lib/asn/SettingOutlined').default,
+  'menu-reload': require('@ant-design/icons-svg/lib/asn/ReloadOutlined').default,
   'menu-exit': require('@ant-design/icons-svg/lib/asn/PoweroffOutlined').default,
 };
 

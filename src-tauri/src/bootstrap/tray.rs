@@ -105,6 +105,10 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
         }),
         None::<&str>,
     )?;
+    let reload_item = IconMenuItem::with_id(
+        app, "reload_audio", "Reload Audio", true,
+        Some(include_image!("icons/tray/menu-reload.png")), None::<&str>,
+    )?;
     let audio_item = IconMenuItem::with_id(
         app, "audio_settings", "Audio Settings…", true,
         Some(include_image!("icons/tray/menu-audio-settings.png")), None::<&str>,
@@ -131,6 +135,7 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
             &sep1,
             &mute_item,
             &loopback_item,
+            &reload_item,
             &sep2,
             &audio_item,
             &app_item,
@@ -175,6 +180,18 @@ pub fn setup_tray(app: &mut tauri::App<tauri::Wry>) -> tauri::Result<()> {
                         let tray_state = app.state::<crate::TrayState>();
                         sync_loopback_tray_state(&tray_state, new_enabled);
                         crate::save_audio_session_to_disk(&state);
+                    }
+                    "reload_audio" => {
+                        // Off the UI thread: restarting an ASIO stream can take a while.
+                        let state = app.state::<crate::AppState>().inner().clone();
+                        let app = app.clone();
+                        crate::core::host_thread::post(move || {
+                            let result = crate::commands::audio::reload_audio_on_host(&state);
+                            if let Err(e) = &result {
+                                log::warn!("Tray audio reload failed: {e}");
+                            }
+                            let _ = app.emit("tray-audio-reloaded", result.is_ok());
+                        });
                     }
                     "audio_settings" => {
                         if let Some(win) = app.get_webview_window("main") {

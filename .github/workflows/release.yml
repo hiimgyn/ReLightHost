@@ -27,10 +27,10 @@ jobs:
         with:
           node-version: lts/*
 
+      # Version comes from package.json "packageManager" — never "latest",
+      # so a new pnpm major can't break a release build out of nowhere.
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: latest
+        uses: pnpm/action-setup@v6
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -60,7 +60,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - uses: tauri-apps/tauri-action@v0.5.16
+      - uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

@@ -18,10 +18,10 @@ jobs:
         with:
           node-version: lts/*
 
+      # Version comes from package.json "packageManager" — never "latest",
+      # so a new pnpm major can't break a release build out of nowhere.
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: latest
+        uses: pnpm/action-setup@v6
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

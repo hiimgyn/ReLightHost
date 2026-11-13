@@ -38,7 +38,8 @@ const jsonLd = {
     <link rel="sitemap" href="/sitemap-index.xml" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta name="theme-color" content="#1a1530" />
+    <meta name="theme-color" content="#070A14" />
+    <link rel="preload" href="/fonts/gilroy-xbold.otf" as="font" type="font/otf" crossorigin />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="ReLightHost" />
@@ -55,9 +56,6 @@ const jsonLd = {
     <meta name="twitter:image" content={og} />
 
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
-    <script is:inline>
-      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) document.documentElement.classList.add('js');
-    </script>
   </head>
   <body>
     <slot />

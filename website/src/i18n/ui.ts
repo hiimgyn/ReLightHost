@@ -28,7 +28,6 @@ const en = {
     alt: 'The ReLightHost signal chain with Clear, Voice Designer, Pro-Q 4 and Pro-C 2',
   },
   features: {
-    eyebrow: 'Features',
     title: 'Everything a live host needs. Nothing it doesn’t.',
     items: [
       { t: 'Plugin chain', d: 'Add, remove, reorder, swap, bypass and rename plugins in a clean linear chain.' },
@@ -42,14 +41,12 @@ const en = {
     ],
   },
   showcase: {
-    eyebrow: 'In action',
     title: 'Real plugins. Real windows.',
     sub: 'Open any plugin editor straight from its card. Native windows are embedded via Win32, so your favorite plugins look and feel exactly as they should.',
     proq: 'FabFilter Pro-Q 4 running inside ReLightHost',
     clear: 'Supertone Clear running inside ReLightHost',
   },
   processors: {
-    eyebrow: 'Built-in processors',
     title: 'Clean voice out of the box.',
     sub: 'No extra plugins required. ReLightHost ships with AI and DSP processors, each with a pro-audio GUI.',
     items: [
@@ -60,7 +57,6 @@ const en = {
     ],
   },
   tech: {
-    eyebrow: 'Under the hood',
     title: 'Built in Rust, down to the ABI.',
     sub: 'VST3, VST2 and CLAP are hosted through raw FFI against each format’s native ABI — no host-side SDK dependency. Audio runs on lock-free buffers over ASIO or WASAPI.',
     stats: [
@@ -102,7 +98,6 @@ const vi: typeof en = {
     alt: 'Chuỗi tín hiệu ReLightHost với Clear, Voice Designer, Pro-Q 4 và Pro-C 2',
   },
   features: {
-    eyebrow: 'Tính năng',
     title: 'Đủ mọi thứ một trình host live cần. Không thừa gì.',
     items: [
       { t: 'Chuỗi plugin', d: 'Thêm, xoá, sắp xếp, thay thế, bypass và đổi tên plugin trong chuỗi tuyến tính.' },
@@ -116,14 +111,12 @@ const vi: typeof en = {
     ],
   },
   showcase: {
-    eyebrow: 'Thực tế',
     title: 'Plugin thật. Cửa sổ thật.',
     sub: 'Mở editor của bất kỳ plugin nào ngay từ thẻ của nó. Cửa sổ native được nhúng qua Win32, nên plugin quen thuộc của bạn hiển thị và hoạt động đúng như vốn có.',
     proq: 'FabFilter Pro-Q 4 chạy trong ReLightHost',
     clear: 'Supertone Clear chạy trong ReLightHost',
   },
   processors: {
-    eyebrow: 'Bộ xử lý tích hợp',
     title: 'Giọng nói sạch ngay từ đầu.',
     sub: 'Không cần thêm plugin nào. ReLightHost đi kèm các bộ xử lý AI và DSP, mỗi bộ có giao diện chuẩn pro-audio.',
     items: [
@@ -134,7 +127,6 @@ const vi: typeof en = {
     ],
   },
   tech: {
-    eyebrow: 'Công nghệ',
     title: 'Viết bằng Rust, tới tận tầng ABI.',
     sub: 'VST3, VST2 và CLAP được host qua FFI thuần trên ABI gốc của từng định dạng — không phụ thuộc SDK phía host. Âm thanh chạy trên bộ đệm lock-free qua ASIO hoặc WASAPI.',
     stats: [

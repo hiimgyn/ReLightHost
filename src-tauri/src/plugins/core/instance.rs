@@ -568,21 +568,26 @@ impl PluginInstance {
         // Use try_lock_for with a short timeout so the Tauri command thread is
         // never blocked indefinitely when the audio callback holds the mutex.
         {
-            let guard = match self.vst3_processor.try_lock_for(std::time::Duration::from_millis(200)) {
-                Some(g) => g,
+            // Only the controller is taken under the processor mutex (like
+            // CLAP below): attaching an editor can take hundreds of ms, and
+            // the audio thread's try_lock would fail — dry audio — meanwhile.
+            let controller = match self.vst3_processor.try_lock_for(std::time::Duration::from_millis(200)) {
+                Some(g) => g.as_ref().map(|p| p.editor_controller()),
                 None => {
                     gui_flag.store(false, Ordering::Release);
                     return Err(anyhow::anyhow!("Plugin processor busy — try again"));
                 }
             };
-            if let Some(ref proc) = *guard {
+            if let Some(controller) = controller {
                 let plugin_name = self.plugin_info.name.clone();
+                let Some(controller) = controller else {
+                    gui_flag.store(false, Ordering::Release);
+                    return Err(anyhow::anyhow!("Plugin '{}' has no IEditController (GUI not supported)", plugin_name));
+                };
                 let gui_hwnd    = self.gui_hwnd.clone();
-                // Synchronous, on the plugin host thread. The audio thread
-                // can't take this mutex meanwhile, so the plugin passes
-                // audio through while its editor attaches.
+                // Synchronous, on the plugin host thread.
                 let result = crash_protection::protected_call(AssertUnwindSafe(|| {
-                    proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd)
+                    crate::plugins::gui::vst3::win::open_gui_window(&controller, &plugin_name, gui_flag.clone(), gui_hwnd)
                 }));
                 match result {
                     Ok(Ok(())) => return Ok(()),

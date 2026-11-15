@@ -720,17 +720,11 @@ mod win {
             }
         }
 
-        /// Open the plugin's editor (on the plugin host thread — see
-        /// plugins::gui::vst3). Returns once it is attached and shown.
-        pub fn open_gui(
-            &self,
-            plugin_name: &str,
-            gui_flag: Arc<std::sync::atomic::AtomicBool>,
-            gui_hwnd: Arc<std::sync::atomic::AtomicIsize>,
-        ) -> Result<()> {
-            let controller = self.controller.as_ref()
-                .ok_or_else(|| anyhow!("Plugin '{}' has no IEditController (GUI not supported)", plugin_name))?;
-            crate::plugins::gui::vst3::win::open_gui_window(controller, plugin_name, gui_flag, gui_hwnd)
+        /// The edit controller, for opening the editor (plugins::gui::vst3)
+        /// without holding the processor mutex: an editor can take hundreds
+        /// of ms to attach, and the audio thread would pass audio dry meanwhile.
+        pub fn editor_controller(&self) -> Option<ComPtr<IEditController>> {
+            self.controller.clone()
         }
     }
 

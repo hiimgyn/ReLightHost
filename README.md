@@ -17,7 +17,7 @@ ReLightHost is a desktop audio host for loading external plugins into a linear c
 
 ## Overview
 
-ReLightHost is a lightweight plugin host with a focus on live audio routing, session restore, and a clean workflow for managing plugins. It supports VST3, VST2, CLAP, and built-in processors, and it keeps the audio chain, device configuration, mute state, and loopback state in sync with the backend.
+ReLightHost is a lightweight plugin host with a focus on live audio routing, session restore, and a clean workflow for managing plugins. It supports VST3, VST2, CLAP, and its own add-ons, and it keeps the audio chain, device configuration, mute state, and loopback state in sync with the backend.
 
 The app is centered around a drag-and-drop signal chain, a searchable plugin library, native plugin GUI support where available, and a footer that surfaces latency, plugin count, CPU, RAM, and VU metering in real time.
 
@@ -33,7 +33,7 @@ VST3, VST2, and CLAP hosting are all implemented as raw FFI against each format'
 |---|---|
 | Plugin chain | Add, remove, reorder, swap, bypass, and rename plugins in a linear processing chain |
 | Plugin library | Search, filter, and group plugins by manufacturer before adding them to the chain |
-| Multi-format support | VST3, VST2 (.dll), CLAP, and built-in processors — all hosted via raw FFI, no per-format SDK dependency |
+| Multi-format support | VST3, VST2 (.dll), CLAP, and add-ons — all hosted via raw FFI, no per-format SDK dependency |
 | Native GUI support | Open plugin editors in native windows when the plugin exposes one |
 | Crash resilience | Plugin scanning runs in a child process, panics inside a plugin call bypass that plugin, and after an unclean exit the app names the plugin that was loaded (see [Crash Resilience](#crash-resilience)) |
 | Audio routing | Select input/output devices, monitor live audio, and toggle hardware loopback |
@@ -43,7 +43,7 @@ VST3, VST2, and CLAP hosting are all implemented as raw FFI against each format'
 | System tray | Minimize to tray, restore from the tray, and a full iconized tray menu (mute/monitor-output toggles reflect live state, one-click Reload Audio) |
 | Startup options | Windows startup registration and show-hidden behavior on launch |
 | Theme support | Persistent dark and light theme toggle |
-| Built-in AI & DSP processors | DeepFilterNet 3 (AI SOTA speech denoiser), Compressor, RNNoise, and Voice Designer |
+| AI & DSP add-ons | DeepFilterNet 3 (AI SOTA speech denoiser), Compressor, RNNoise, and Voice Designer |
 | Pro-Audio Modern GUI | Metal rotary dials (`AudioKnob` with 5x fine-tuning), interactive dynamic transfer curves, 3-band Bode plots, dual oscilloscopes, and neural VAD orbs |
 
 ---
@@ -86,7 +86,7 @@ VST3, VST2, and CLAP hosting are all implemented as raw FFI against each format'
 | ringbuf | Lock-free audio buffers |
 | parking_lot | Fast synchronization primitives |
 | deep_filter & tract | DeepFilterNet 3 ONNX neural inference engine with dedicated MMCSS Pro Audio worker thread |
-| nnnoiseless | Built-in RNNoise suppression |
+| nnnoiseless | RNNoise suppression (Noise Suppressor add-on) |
 | serde / serde_json | Session, preset, and IPC serialization |
 | sysinfo | CPU and RAM monitoring |
 
@@ -159,7 +159,7 @@ $env:CPAL_ASIO_DIR = "C:\ASIO_SDK"
 | VST3 | `.vst3` | `vst3-rs` (COM/vtable bindings) | Native when supported | Binary state persistence |
 | VST2 | `.dll` | Raw FFI, no crate | Plugin-provided, native window | Chunk-based state persistence (`effGetChunk`/`effSetChunk`) |
 | CLAP | `.clap` | Raw FFI, no crate | Plugin-provided | Native plugin format support |
-| Built-in | - | Native Rust DSP | React UI | Bundled processors shipped with the app |
+| Add-ons | - | Native Rust DSP | React UI | Processors shipped with the app (`addons/`) |
 
 ### Default Scan Paths
 
@@ -191,16 +191,16 @@ A plugin crashing the whole app is the worst failure mode for a live audio host,
 
 ---
 
-## Built-in Processors & Pro-Audio GUI
+## Add-ons & Pro-Audio GUI
 
-The bundled processors are compiled directly into the host with dedicated low-latency algorithms and high-end hardware-inspired visual editors (rotary knobs with 5x precision `Shift` fine-tuning, dynamic interactive curves, real-time oscilloscopes, and neural energy meters):
+The add-ons (one crate plus its React UI each, under `addons/`) are compiled into the host with dedicated low-latency algorithms and high-end hardware-inspired visual editors (rotary knobs with 5x precision `Shift` fine-tuning, dynamic interactive curves, real-time oscilloscopes, and neural energy meters):
 
 ### AI Noise Suppressor (DeepFilterNet 3 Pro)
 
 State-of-the-Art speech enhancement powered by [DeepFilterNet 3](https://github.com/Rikorose/DeepFilterNet) with deep complex-valued spectrogram filtering and ERB psychoacoustic denoising.
 - **Embedded low-latency model** (`DeepFilterNet3_ll_onnx` at 10ms frame hop, 48 kHz).
 - **Lock-free real-time audio isolation**: In-flight audio never blocks; neural inference executes asynchronously on an MMCSS *Pro Audio* priority worker thread via lock-free SPSC ring buffers.
-- **Visuals & Controls**: High-res dual oscilloscope (raw noise floor vs clean voice), pulsating neural VAD speech energy orb, max attenuation limit (0–60 dB), post-filter beta threshold, wet/dry mix, and output trim.
+- **Visuals & Controls**: High-res dual oscilloscope (raw noise floor vs clean voice), pulsating neural VAD speech energy orb, max attenuation limit (0–60 dB), Post-filter Strength, wet/dry mix, and output trim.
 
 ### Compressor Pro
 
@@ -230,6 +230,12 @@ ReLightHost/
 │   ├── components/             # Layout, chain, audio, plugin, settings, GUI panels
 │   ├── stores/                 # Zustand state stores
 │   └── lib/                    # Tauri wrappers and shared types
+├── addons/                     # Add-ons: one crate + React UI each
+│   ├── api/                    # AddonProcessor trait and descriptors
+│   ├── compressor/  deep-filter/  noise-suppressor/  voice/
+│   ├── ui-common/              # Shared GUI components (knobs, meters, host.ts)
+│   ├── golden/                 # Golden renders for the DSP regression tests
+│   └── registry.ts             # Add-on GUI registry
 └── src-tauri/                  # Backend (Rust)
     ├── src/
     │   ├── lib.rs               # App state, commands, tray setup
@@ -242,7 +248,7 @@ ReLightHost/
     │       ├── core/             # Scanner, instance manager, crash protection
     │       ├── processor/        # VST3 / VST2 / CLAP hosting (raw FFI)
     │       ├── gui/               # Native plugin editor window embedding
-    │       └── builtin/          # Compressor, noise suppressor, Voice Designer
+    │       └── addons.rs          # Add-on registry (wires in addons/*)
     └── icons/tray/               # Tray menu icons
 ```
 

@@ -18,7 +18,7 @@ interface Props {
   onClose: () => void;
 }
 
-// Parameter IDs match builtin/compressor.rs
+// Parameter IDs match addons/compressor/src/lib.rs
 const P_THRESHOLD = 0;
 const P_RATIO     = 1;
 const P_ATTACK    = 2;

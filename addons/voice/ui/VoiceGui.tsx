@@ -17,7 +17,7 @@ interface Props {
   onClose: () => void;
 }
 
-// Parameter IDs — must match builtin/voice.rs
+// Parameter IDs — must match addons/voice/src/lib.rs
 const P_LOW     = 0;
 const P_MID     = 1;
 const P_HIGH    = 2;

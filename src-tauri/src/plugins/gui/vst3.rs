@@ -242,11 +242,24 @@ pub mod win {
                 0
             }
             WM_DPICHANGED => {
-                // Moved to a monitor with another scale: tell the view, then
-                // size the window to whatever the view now wants.
+                // Moved to a monitor with another scale: tell the view, take
+                // the rect Windows suggests (lParam; keeps the window on that
+                // monitor), size it to whatever the view now wants, then give
+                // the view its client size.
                 if let Some(ed) = editor(hwnd) {
                     set_scale(&ed.view, (wparam & 0xffff) as u32);
+                    let r = *(lparam as *const RECT);
+                    SetWindowPos(
+                        hwnd, ptr::null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
                     fit_to_view(hwnd, &ed.view);
+                    if ed.attached.get() {
+                        let mut client: RECT = std::mem::zeroed();
+                        GetClientRect(hwnd, &mut client);
+                        let mut vr = ViewRect { left: 0, top: 0, right: client.right, bottom: client.bottom };
+                        ed.view.onSize(&mut vr);
+                    }
                 }
                 0
             }

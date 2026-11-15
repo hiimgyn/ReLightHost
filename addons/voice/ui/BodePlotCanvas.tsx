@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
-import { useThemeStore } from '../../ui-common/host';
+import { useThemeStore, useAudioStore } from '../../ui-common/host';
+import { voiceEqDb } from './eqResponse';
 
 interface BodePlotCanvasProps {
   lowGain: number;   // -12 to +12 dB
@@ -40,32 +41,7 @@ export const BodePlotCanvas: React.FC<BodePlotCanvasProps> = ({
   const MAX_DB = 14;
   const DB_SPAN = MAX_DB - MIN_DB;
 
-  // Calculate estimated filter gain at frequency `f` (Hz)
-  const calculateGainAtFreq = (f: number) => {
-    // 1. Low shelf at 200 Hz
-    let gLow = 0;
-    if (f < F_LOW) {
-      gLow = lowGain;
-    } else if (f < F_LOW * 3) {
-      const t = (Math.log10(f) - Math.log10(F_LOW)) / (Math.log10(F_LOW * 3) - Math.log10(F_LOW));
-      gLow = lowGain * (1 - t * t * (3 - 2 * t)); // smoothstep
-    }
-
-    // 2. Mid peak at 2000 Hz (Q approx 1.0, bandwidth ~1 octave)
-    const logRatio = Math.abs(Math.log2(f / F_MID));
-    const gMid = midGain * Math.exp(-0.5 * (logRatio * logRatio) / 0.4);
-
-    // 3. High shelf at 8000 Hz
-    let gHigh = 0;
-    if (f > F_HIGH) {
-      gHigh = highGain;
-    } else if (f > F_HIGH / 3) {
-      const t = (Math.log10(f) - Math.log10(F_HIGH / 3)) / (Math.log10(F_HIGH) - Math.log10(F_HIGH / 3));
-      gHigh = highGain * (t * t * (3 - 2 * t));
-    }
-
-    return gLow + gMid + gHigh;
-  };
+  const sampleRate = useAudioStore((s) => s.sampleRate) || 48000;
 
   const isDark = useThemeStore((s) => s.theme === 'dark');
 
@@ -152,7 +128,7 @@ export const BodePlotCanvas: React.FC<BodePlotCanvasProps> = ({
     for (let i = 0; i <= numPoints; i++) {
       const logF = LOG_MIN + (i / numPoints) * LOG_SPAN;
       const f = Math.pow(10, logF);
-      const totalDb = calculateGainAtFreq(f);
+      const totalDb = voiceEqDb(lowGain, midGain, highGain, f, sampleRate);
       curvePoints.push([toX(f), toY(totalDb)]);
     }
 
@@ -212,7 +188,7 @@ export const BodePlotCanvas: React.FC<BodePlotCanvasProps> = ({
     });
 
     ctx.restore();
-  }, [lowGain, midGain, highGain, accentColor, isDark]);
+  }, [lowGain, midGain, highGain, accentColor, isDark, sampleRate]);
 
   // Pointer drag on nodes
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {

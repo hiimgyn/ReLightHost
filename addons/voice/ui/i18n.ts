@@ -24,7 +24,10 @@ const en = {
     ceilingLeft: '−12 dB (heavy limit)',
     ceilingRight: '0 dB (unity / safety)',
     responseTitle: 'Frequency Response (20 Hz — 20 kHz)',
-    tubeSaturationActive: 'Tube Saturation Active',
+    saturationActive: 'Saturation Active',
+    subtitle: '4-Stage Vocal Processing: 3-Band EQ • Saturation • Stereo Doubler • Peak Limiter',
+    badge: 'VOCAL CHANNEL',
+    warmthHeader: 'Warmth, Width & Dynamics',
   },
 };
 
@@ -54,7 +57,10 @@ export const vi: { [S in keyof typeof en]: { [K in keyof (typeof en)[S]]: string
     ceilingLeft: '−12 dB (nén mạnh)',
     ceilingRight: '0 dB (an toàn)',
     responseTitle: 'Đáp tuyến tần số (20 Hz — 20 kHz)',
-    tubeSaturationActive: 'Bão hòa đèn điện tử đang bật',
+    saturationActive: 'Bão hòa đang bật',
+    subtitle: 'Xử lý giọng 4 tầng: EQ 3 băng tần • Bão hòa • Nhân đôi stereo • Giới hạn đỉnh',
+    badge: 'KÊNH GIỌNG',
+    warmthHeader: 'Độ ấm, độ rộng & động lực',
   },
 };
 

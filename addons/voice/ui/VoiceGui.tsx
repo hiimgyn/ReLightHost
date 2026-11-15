@@ -70,8 +70,8 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
         {/* Header */}
         <PluginHeader
           title={t('voice.title') || 'Voice Designer Pro'}
-          subtitle="4-Stage Vocal Processing: 3-Band EQ • Tube Saturation • Stereo Doubler • Peak Limiter"
-          badgeText="VOCAL CHANNEL"
+          subtitle={t('voice.subtitle')}
+          badgeText={t('voice.badge')}
           badgeColor="#6366f1"
           onResetAll={handleResetAll}
           icon={<Mic size={18} className="text-indigo-400" />}
@@ -193,12 +193,12 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
                 isDark ? 'text-white/60' : 'text-slate-600'
               }`}
             >
-              Warmth, Width & Dynamics
+              {t('voice.warmthHeader')}
             </span>
             {drive > 0.05 && (
               <span className="flex items-center gap-1 text-[10px] text-amber-400 font-mono">
                 <Flame size={10} className="fill-amber-400 text-amber-400" />
-                {t('voice.tubeSaturationActive')}
+                {t('voice.saturationActive')}
               </span>
             )}
           </div>

@@ -183,24 +183,30 @@ pub struct DeepFilterProcessor {
     /// into permanent extra latency.
     trimmer: relight_addon_api::rt::BacklogTrimmer,
 
-    /// Dry copy of everything in the pipeline: one entry per worker output
-    /// sample still to come (primed with the hop of zeros the worker's first
-    /// output is aligned to), popped in step with `cons_from_worker`. Its
-    /// length less `dry_ahead` is the latency, and it supplies the aligned
-    /// dry continuation played when the worker underruns.
+    /// Dry copy of everything in the pipeline: the `warmup` entries, then one
+    /// entry per worker output sample still to come, popped in step with
+    /// `cons_from_worker`. Its length less `dry_ahead` is the latency, and it
+    /// supplies the aligned dry continuation played when the worker
+    /// underruns or the pipeline resyncs.
     dry_l: VecDeque<f32>,
     dry_r: VecDeque<f32>,
     /// Underrun samples played from `dry_*`, skipped from the worker output
     /// when it resumes so nothing repeats and the latency doesn't grow.
     dry_ahead: usize,
-    /// Start-up silence still to play before the first worker sample is due.
+    /// `dry_*` entries to play before the first worker sample is due.
     warmup: usize,
+    /// Worker samples still to play as their `dry_*` entry, then fade to wet:
+    /// after a resync, the ones the model made from the priming zeros.
+    dry_only: usize,
     /// Wet samples left in the dry→wet crossfade after an underrun.
     xfade: usize,
     /// Shared with the worker: see `Worker::flush`.
     flush: Arc<AtomicBool>,
-    /// Waiting for the worker to finish a flush: push nothing, play silence.
+    /// Waiting for the worker to finish a flush: push nothing to it, play
+    /// silence (a reset) or the aligned dry (a resync).
     flushing: bool,
+    /// The flush is a resync after a stall, not a reset: keep playing dry.
+    resync: bool,
     latency: u32,
 
     // Parameters (shared with worker thread)
@@ -319,9 +325,11 @@ impl DeepFilterProcessor {
             dry_r: VecDeque::with_capacity(RB_CAPACITY + HOP_SIZE),
             dry_ahead: 0,
             warmup: 0,
+            dry_only: 0,
             xfade: 0,
             flush,
             flushing: true,
+            resync: false,
             latency: pipeline_latency(HOP_SIZE) as u32,
 
             atten_lim_bits: bits(24.0),
@@ -337,23 +345,37 @@ impl DeepFilterProcessor {
     }
 
     /// Fresh pipeline for block size `n`, right after a flush (the worker's
-    /// input is empty). `dry_*` gets the hop of zeros the worker's first
-    /// output is aligned to, `e` zeros go to both, and `warmup` covers the
-    /// blocks before the first hop can be back plus the margin: the latency
-    /// is `pipeline_latency(n)` from the first block. The first worker
-    /// sample is due on a fixed block, so a late one is an ordinary underrun.
+    /// input is empty), `pipeline_latency(n)` long from the first block:
+    /// `warmup` entries cover the blocks before the first hop can be back
+    /// plus the margin, then the hop the worker's first output is aligned
+    /// to, then `e` zeros that also go to the worker. After a reset `dry_*`
+    /// is all zeros (silence). After a resync it holds the aligned dry
+    /// already queued, played as is until the model has real input. The
+    /// first worker sample is due on a fixed block, so a late one is an
+    /// ordinary underrun.
     fn prime(&mut self, n: usize) {
+        let len = pipeline_latency(n);
         let warmup = HOP_SIZE.div_ceil(n) * n + margin(n);
-        let e = pipeline_latency(n) - HOP_SIZE - warmup;
+        let e = len - HOP_SIZE - warmup;
         for q in [&mut self.dry_l, &mut self.dry_r] {
-            q.clear();
-            q.resize(HOP_SIZE + e, 0.0);
+            if !self.resync {
+                q.clear();
+            }
+            // Same block size: already `len`. Otherwise keep the newest.
+            while q.len() > len {
+                q.pop_front();
+            }
+            while q.len() < len {
+                q.push_front(0.0);
+            }
         }
         for _ in 0..e {
             let _ = self.prod_to_worker.try_push([0.0; 2]);
         }
         self.dry_ahead = 0;
         self.warmup = warmup;
+        self.dry_only = if self.resync { len - warmup } else { 0 };
+        self.resync = false;
         self.xfade = 0;
         self.trimmer = relight_addon_api::rt::BacklogTrimmer::new(48_000, HOP_SIZE / 2);
     }
@@ -388,6 +410,11 @@ impl AddonProcessor for DeepFilterProcessor {
         if !self.flushing && self.dry_l.len() + n > max_pipeline {
             self.flush.store(true, Ordering::Release);
             self.flushing = true;
+            self.resync = true;
+            // The debt is played already: what is left is the aligned dry.
+            self.dry_l.drain(..self.dry_ahead);
+            self.dry_r.drain(..self.dry_ahead);
+            self.dry_ahead = 0;
         }
         if self.flushing {
             // Load, then drain: once the flag reads clear, every hop the
@@ -395,9 +422,25 @@ impl AddonProcessor for DeepFilterProcessor {
             let busy = self.flush.load(Ordering::Acquire);
             self.cons_from_worker.clear();
             if busy {
-                left.fill(0.0);
-                right.fill(0.0);
-                self.latency = pipeline_latency(n) as u32;
+                if self.resync {
+                    // `dry_*` as a delay line: the aligned dry, no gap.
+                    for i in 0..n {
+                        if self.dry_l.len() < self.dry_l.capacity() {
+                            self.dry_l.push_back(finite_or_zero(left[i]));
+                            self.dry_r.push_back(finite_or_zero(right[i]));
+                        }
+                    }
+                    let gain = self.output_gain;
+                    for i in 0..n {
+                        left[i] = self.dry_l.pop_front().unwrap_or(0.0) * gain;
+                        right[i] = self.dry_r.pop_front().unwrap_or(0.0) * gain;
+                    }
+                    self.latency = self.dry_l.len() as u32;
+                } else {
+                    left.fill(0.0);
+                    right.fill(0.0);
+                    self.latency = pipeline_latency(n) as u32;
+                }
                 return;
             }
             self.flushing = false;
@@ -430,11 +473,13 @@ impl AddonProcessor for DeepFilterProcessor {
         self.dry_l.drain(..trimmed);
         self.dry_r.drain(..trimmed);
         self.dry_ahead = self.dry_ahead.saturating_sub(trimmed);
+        self.dry_only = self.dry_only.saturating_sub(trimmed);
         for i in 0..n {
             if self.warmup > 0 {
+                // No worker sample yet: zeros after a reset, dry after a resync.
                 self.warmup -= 1;
-                left[i] = 0.0;
-                right[i] = 0.0;
+                left[i] = self.dry_l.pop_front().unwrap_or(0.0) * gain;
+                right[i] = self.dry_r.pop_front().unwrap_or(0.0) * gain;
                 continue;
             }
             if self.dry_ahead > 0 {
@@ -443,10 +488,20 @@ impl AddonProcessor for DeepFilterProcessor {
                 self.dry_l.drain(..k);
                 self.dry_r.drain(..k);
                 self.dry_ahead -= k;
+                self.dry_only = self.dry_only.saturating_sub(k);
                 self.xfade = XFADE;
             }
             let frame = if self.dry_ahead == 0 { self.cons_from_worker.try_pop() } else { None };
             match frame {
+                Some(_) if self.dry_only > 0 => {
+                    // Made from the priming zeros: play the queued dry instead.
+                    self.dry_only -= 1;
+                    if self.dry_only == 0 {
+                        self.xfade = XFADE;
+                    }
+                    left[i] = self.dry_l.pop_front().unwrap_or(0.0) * gain;
+                    right[i] = self.dry_r.pop_front().unwrap_or(0.0) * gain;
+                }
                 Some([wl, wr, dl, dr]) => {
                     self.dry_l.pop_front();
                     self.dry_r.pop_front();
@@ -470,7 +525,7 @@ impl AddonProcessor for DeepFilterProcessor {
                 }
             }
         }
-        self.latency = (self.dry_l.len() - self.dry_ahead + self.warmup) as u32;
+        self.latency = (self.dry_l.len() - self.dry_ahead) as u32;
         meters[0] = self.get_vad(); // after the block, so the meter isn't one block stale
     }
 
@@ -505,6 +560,7 @@ impl AddonProcessor for DeepFilterProcessor {
     fn reset(&mut self) {
         self.flush.store(true, Ordering::Release);
         self.flushing = true;
+        self.resync = false; // silence, not the stale dry
         self.last_vad_bits.store(0.0f32.to_bits(), Ordering::Relaxed);
     }
 
@@ -806,7 +862,8 @@ mod tests {
 
     /// A stall long enough to overflow the pipeline cap resyncs (flush and
     /// re-prime) instead of dropping hops, so the latency comes back to
-    /// exactly `want_latency` and stays there without underruns.
+    /// exactly `want_latency` and stays there without underruns. The
+    /// resync plays the aligned dry, so the ramp never has a gap or a jump.
     #[test]
     fn long_stall_resyncs_to_pipeline_latency() {
         for n in [128, 256, 512, 4096] {
@@ -827,8 +884,7 @@ mod tests {
                 }
             }
             assert!(resynced, "n={n}: a {stall}-block stall should resync");
-            let t = out.len() - 1;
-            assert_eq!(out[t], (t + 1 - want_latency(n)) as f32, "n={n}: final alignment");
+            assert_same(&out, &ideal(n, out.len()), &format!("n={n}: output through the stall and resync"));
         }
     }
 
@@ -985,8 +1041,8 @@ mod tests {
     }
 
     /// Inference at ~60% of real time: underruns play dry, and when the
-    /// debt outgrows the pipeline cap the processor resyncs (a short
-    /// silence) instead of letting the pipeline ratchet up.
+    /// debt outgrows the pipeline cap the processor resyncs (still playing
+    /// dry, never silence) instead of letting the pipeline ratchet up.
     #[test]
     fn a_worker_slower_than_real_time_keeps_the_pipeline_bounded() {
         let mut h = Harness::new();
@@ -999,6 +1055,10 @@ mod tests {
             let was_flushing = h.df.flushing;
             h.df.process(&mut l, &mut r, &mut [0.0]);
             resyncs += usize::from(!was_flushing && h.df.flushing);
+            // Past the start-up silence (the pipeline).
+            if k * block > want_latency(block) {
+                assert!(l.iter().all(|&s| s > 0.3), "block {k}: gap in the output");
+            }
             assert!(h.df.dry_l.len() <= cap, "block {k}: pipeline piled up to {}", h.df.dry_l.len());
             assert!(h.df.latency_samples() as usize <= want_latency(block), "block {k}: latency {}", h.df.latency_samples());
             // One step every third block (480 per 768 samples).

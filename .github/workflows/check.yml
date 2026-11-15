@@ -45,10 +45,10 @@ jobs:
 
       - name: Clippy
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # Skipped: tests that need real audio hardware / the MMCSS service,
       # which CI runners don't have.
       - name: Unit tests
         working-directory: src-tauri
-        run: cargo test --lib -- --skip enum_tests --skip mmcss::tests
+        run: cargo test --workspace --lib -- --skip enum_tests --skip mmcss

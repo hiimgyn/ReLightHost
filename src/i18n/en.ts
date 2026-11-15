@@ -234,7 +234,7 @@ export const en: TranslationSchema = {
     runOnStartup: 'Run on System Startup',
     runOnStartupDesc: 'Automatically launch ReLightHost when your computer starts',
     parallelVst3Loading: 'Parallel VST3 loading (experimental)',
-    parallelVst3LoadingDesc: 'Loads VST3 plugins at the same time instead of one by one — faster restore with a heavy plugin in the chain, but if one crashes natively it can now happen while others are mid-load instead of at a predictable point, and it still takes the whole app down either way.',
+    parallelVst3LoadingDesc: 'No effect in this version: VST3, VST2 and CLAP plugins are always loaded one by one on the plugin thread (plugins built with JUCE need this), and add-ons always load in parallel.',
     wasapiExclusive: 'WASAPI exclusive mode',
     wasapiExclusiveDesc: 'Lower latency on WASAPI devices, but the device is taken away from every other app — no system, browser or Discord sound on that output, and other apps cannot use that microphone. Falls back to shared mode if the device refuses.',
     showOnStartup: 'Show App Window on Startup',

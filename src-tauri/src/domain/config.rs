@@ -16,11 +16,10 @@ pub struct AppConfig {
     pub minimize_to_tray: bool,
     #[serde(default = "default_true")]
     pub show_app_on_startup: bool,
-    /// Experimental: load VST3 plugins in parallel during a batch restore
-    /// instead of one at a time. Off by default — see
-    /// PluginInstanceManager::load_plugins_parallel_results for the
-    /// trade-off (faster restore, but a native crash in one plugin can now
-    /// happen while others are mid-load instead of at a predictable point).
+    /// No longer has an effect: every VST3/VST2/CLAP plugin is created on
+    /// the plugin host thread (see
+    /// PluginInstanceManager::load_plugins_parallel_results) and add-ons
+    /// always load in parallel. Kept so saved configs and the setting stay.
     #[serde(default)]
     pub parallel_vst3_loading: bool,
     /// Try WASAPI exclusive mode (lower latency) before shared mode. Off by

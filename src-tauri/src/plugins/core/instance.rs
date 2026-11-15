@@ -702,13 +702,6 @@ impl PluginInstance {
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
-        // Clean drop = clean shutdown for this plugin's crash marker (see
-        // crash_marker docs) — a native crash never reaches here at all,
-        // which is exactly how the marker tells the two apart on next launch.
-        if self.plugin_info.format == PluginFormat::VST3 {
-            crate::core::crash_marker::mark_inactive(&self.plugin_info.path);
-        }
-
         // If GUI teardown gets stuck, leaking processors is safer than dropping
         // while plugin UI threads may still execute through freed code/vtables.
         if !self.request_close_gui(Duration::from_secs(3)) {
@@ -727,6 +720,16 @@ impl Drop for PluginInstance {
             if let Some(proc) = self.addon_proc.get_mut().take() {
                 std::mem::forget(proc);
             }
+        }
+
+        // Clean drop = clean shutdown for this plugin's crash marker (see
+        // crash_marker docs) — a native crash never reaches here at all,
+        // which is exactly how the marker tells the two apart on next launch.
+        // Cleared only after terminate() (the processor's drop, inline on
+        // the host thread), so a crash inside it is still attributed.
+        drop(self.vst3_processor.get_mut().take());
+        if self.plugin_info.format == PluginFormat::VST3 {
+            crate::core::crash_marker::mark_inactive(&self.plugin_info.path);
         }
     }
 }
@@ -765,11 +768,10 @@ fn unpack_status(v: u64) -> AddonStatus {
     }
 }
 
-/// Splits job indices into (sequential, parallel) groups. VST3 jobs go
-/// in `sequential` unless `parallel_vst3` is true, in which case every
-/// job (VST3 included) goes in `parallel` — this is the entire behavior
-/// difference the setting controls; everything downstream just iterates
-/// whichever group a job landed in.
+/// Splits job indices into (sequential, parallel) groups: flagged jobs go
+/// in `sequential` unless `parallel_vst3` is true, in which case every job
+/// goes in `parallel`. The loader always passes false (see
+/// `load_plugins_parallel_results`).
 fn split_load_groups(is_vst3: &[bool], parallel_vst3: bool) -> (Vec<usize>, Vec<usize>) {
     let mut sequential = Vec::new();
     let mut parallel = Vec::new();
@@ -836,33 +838,21 @@ impl PluginInstanceManager {
 
     /// Load many plugins for preset/session restore. Preserves chain order.
     ///
-    /// VST3 factories are initialised **sequentially** by default (COM +
-    /// host stability), unless `parallel_vst3` is true, in which case they
-    /// join the same Rayon batch as CLAP/VST2/built-ins. See
-    /// `Vst3Processor::load()`'s `FACTORY_CREATE_LOCK` for what's still
-    /// serialized even when this is on. Off by default; see
-    /// `ConfigManager::get_parallel_vst3_loading`.
+    /// VST3, VST2 and CLAP plugins are created one at a time on the plugin
+    /// host thread; add-ons are created in parallel on Rayon. `parallel_vst3`
+    /// (`ConfigManager::get_parallel_vst3_loading`) is kept so the saved
+    /// setting survives, but no longer changes anything — see below.
     ///
     /// Return value aligns 1:1 with `infos`: `Ok(id)` on success, `Err` when
     /// that plugin failed to construct (same semantics as skipping a failed
     /// `load_plugin` in a loop).
     ///
-    /// CAVEAT (review finding, "Important #1"): callers (session restore,
-    /// preset load) run on the plugin host thread (see core::host_thread).
-    /// With `parallel_vst3` off (default), every VST3 plugin is therefore
-    /// created on that one thread, like a single-plugin load. With it on and more than one VST3 plugin, those
-    /// `createInstance`/`initialize()` calls move to Rayon worker threads
-    /// instead. Some plugin frameworks (JUCE is the common one) assume the
-    /// thread that first creates a plugin is *the* UI/message thread and set
-    /// up internal timers or later editor calls relative to it; moving that
-    /// identity for such a plugin is a real, undocumented-by-this-comment-
-    /// until-now risk this feature does not otherwise account for. No code
-    /// fix ships for this — doing so would mean either not actually
-    /// parallelizing plugin creation, or verifying against real JUCE
-    /// plugins, neither of which this change attempts. Before ever
-    /// defaulting this setting on: test with real JUCE-based plugins and
-    /// watch the `thread=` field in debug logs during `createInstance`/
-    /// `initialize()` for exactly this class of hang.
+    /// Why not parallel: JUCE (and other frameworks) bind their message
+    /// thread to the thread that creates the plugin, and every later editor
+    /// or controller call must come from that thread — the plugin host
+    /// thread (see core::host_thread). Creating plugins on Rayon workers
+    /// would split that identity (the Xvox/Clear crashes), and a worker
+    /// waiting on the busy host thread in `on_host` would deadlock.
     pub fn load_plugins_parallel_results(
         &self,
         infos: Vec<PluginInfo>,
@@ -930,9 +920,9 @@ impl PluginInstanceManager {
         // thread, whatever `parallel_vst3` says: JUCE binds its message
         // thread to the thread that creates the plugin (an editor/controller
         // driven from any other thread crashes: Xvox, Clear), and CLAP
-        // init/activate are main-thread calls. Only built-ins go to Rayon —
+        // init/activate are main-thread calls. Only add-ons go to Rayon —
         // a worker creating a plugin would wait on this (busy) thread in
-        // `on_host` and deadlock. See the CAVEAT above.
+        // `on_host` and deadlock. See the doc comment above.
         let _ = parallel_vst3;
         let (sequential_idx, parallel_idx) = split_load_groups(&needs_host, false);
 

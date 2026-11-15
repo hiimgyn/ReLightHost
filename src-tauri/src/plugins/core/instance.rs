@@ -173,7 +173,7 @@ impl PluginInstance {
 
         let crash_protection = crash_protection::create_shared();
         if plugin_info.format == PluginFormat::Builtin && addon_proc.is_none() {
-            // NoiseSuppressorGui keys its rate alert on "needs 48000 Hz".
+            // NoiseSuppressorGui and DeepFilterNetGui key their rate alert on "needs 48000 Hz".
             crash_protection.lock().status = crash_protection::PluginStatus::Error(format!(
                 "'{}' cannot run at {} Hz (needs 48000 Hz) — passing audio through",
                 plugin_info.name, sample_rate
@@ -1290,9 +1290,7 @@ mod state_tests {
                 assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{}", d.id);
             }
             let want = match d.id {
-                "builtin::noise_suppressor" => 960,
-                // 960 + n − gcd(n, 480) at block n = 480
-                "builtin::deep_filter" => 960,
+                "builtin::noise_suppressor" | "builtin::deep_filter" => 960, // deep_filter: 960 + n − gcd(n, 480), no margin at n = 480
                 _ => 0,
             };
             assert_eq!(inst.latency_samples(), want, "{}", d.id);

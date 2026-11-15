@@ -62,11 +62,20 @@ const fn gcd(a: usize, b: usize) -> usize {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
-/// Shortest latency at block size `n` that never underruns with an instant
-/// worker: the model's hop, one hop of input buffering and the block, less
-/// what the block grid shares with the hop grid.
+/// Time the worker gets per hop beyond one block: whole blocks covering
+/// 5 ms below 480-sample blocks (inference p99 plus the 1 ms poll exceeds a
+/// short block), none from 480 up. At most 480, or BacklogTrimmer (which
+/// trims once occupancy stays above a block + 480) would take it back.
+const fn margin(n: usize) -> usize {
+    if n < HOP_SIZE { (HOP_SIZE / 2).div_ceil(n) * n } else { 0 }
+}
+
+/// Latency at block size `n`: the model's hop, one hop of input buffering
+/// and the block, less what the block grid shares with the hop grid (the
+/// shortest that never underruns with an instant worker), plus `margin`.
+/// n = 64: 1248, 128: 1312, 256: 1440, 441: 1839, 480: 960, 512: 1440.
 const fn pipeline_latency(n: usize) -> usize {
-    2 * HOP_SIZE + n - gcd(n, HOP_SIZE)
+    2 * HOP_SIZE + n - gcd(n, HOP_SIZE) + margin(n)
 }
 
 fn finite_or_zero(v: f32) -> f32 {
@@ -188,8 +197,6 @@ pub struct DeepFilterProcessor {
     warmup: usize,
     /// Wet samples left in the dry→wet crossfade after an underrun.
     xfade: usize,
-    /// Incoming samples still to drop (whole hops) to shed backlog.
-    drop_in: usize,
     /// Shared with the worker: see `Worker::flush`.
     flush: Arc<AtomicBool>,
     /// Waiting for the worker to finish a flush: push nothing, play silence.
@@ -313,7 +320,6 @@ impl DeepFilterProcessor {
             dry_ahead: 0,
             warmup: 0,
             xfade: 0,
-            drop_in: 0,
             flush,
             flushing: true,
             latency: pipeline_latency(HOP_SIZE) as u32,
@@ -333,11 +339,11 @@ impl DeepFilterProcessor {
     /// Fresh pipeline for block size `n`, right after a flush (the worker's
     /// input is empty). `dry_*` gets the hop of zeros the worker's first
     /// output is aligned to, `e` zeros go to both, and `warmup` covers the
-    /// blocks before the first hop can be back: the latency is
-    /// `pipeline_latency(n)` from the first block. The first worker sample
-    /// is due on a fixed block, so a late one is an ordinary underrun.
+    /// blocks before the first hop can be back plus the margin: the latency
+    /// is `pipeline_latency(n)` from the first block. The first worker
+    /// sample is due on a fixed block, so a late one is an ordinary underrun.
     fn prime(&mut self, n: usize) {
-        let warmup = HOP_SIZE.div_ceil(n) * n;
+        let warmup = HOP_SIZE.div_ceil(n) * n + margin(n);
         let e = pipeline_latency(n) - HOP_SIZE - warmup;
         for q in [&mut self.dry_l, &mut self.dry_r] {
             q.clear();
@@ -349,7 +355,6 @@ impl DeepFilterProcessor {
         self.dry_ahead = 0;
         self.warmup = warmup;
         self.xfade = 0;
-        self.drop_in = 0;
         self.trimmer = relight_addon_api::rt::BacklogTrimmer::new(48_000, HOP_SIZE / 2);
     }
 }
@@ -375,6 +380,15 @@ impl AddonProcessor for DeepFilterProcessor {
             return;
         }
 
+        // A worker stall leaves a debt of samples played dry (`dry_ahead`)
+        // in `dry_*`. Past the normal pipeline + this block + 3 hops, resync
+        // instead of letting it ratchet toward the 1 s ring size: flush the
+        // backlog and re-prime to exactly `pipeline_latency(n)`.
+        let max_pipeline = pipeline_latency(n) + gcd(n, HOP_SIZE) + n + 3 * HOP_SIZE;
+        if !self.flushing && self.dry_l.len() + n > max_pipeline {
+            self.flush.store(true, Ordering::Release);
+            self.flushing = true;
+        }
         if self.flushing {
             // Load, then drain: once the flag reads clear, every hop the
             // worker pushed before clearing it is visible and goes here.
@@ -393,22 +407,10 @@ impl AddonProcessor for DeepFilterProcessor {
         let mix = self.mix;
         let gain = self.output_gain;
 
-        // Inference slower than real time piles input up in the pipeline
-        // (each underrun sample adds one dry entry). Past the normal
-        // pipeline + this block + 3 hops, drop whole incoming hops so it
-        // comes back down instead of ratcheting toward the 1 s ring size.
-        let max_pipeline = n + 2 * HOP_SIZE + n + 3 * HOP_SIZE;
         for i in 0..n {
             // Sanitised in place: the live-input fallback below plays it.
             left[i] = finite_or_zero(left[i]);
             right[i] = finite_or_zero(right[i]);
-            if self.drop_in == 0 && self.dry_l.len() > max_pipeline {
-                self.drop_in = HOP_SIZE;
-            }
-            if self.drop_in > 0 {
-                self.drop_in -= 1;
-                continue;
-            }
             // `dry_*` never outgrows its preallocation (no RT allocation),
             // and only samples the worker accepted are mirrored.
             if self.dry_l.len() < self.dry_l.capacity() && self.prod_to_worker.try_push([left[i], right[i]]).is_ok() {
@@ -688,10 +690,12 @@ mod tests {
 
     fn gcd(a: usize, b: usize) -> usize { if b == 0 { a } else { gcd(b, a % b) } }
 
-    /// The shortest latency a block size allows with an instant worker: the
-    /// hop the model delays by, plus a hop and a block, less what the block
-    /// grid shares with the hop grid.
-    fn want_latency(n: usize) -> usize { 960 + n - gcd(n, 480) }
+    /// Inference margin below 480-sample blocks: whole blocks covering 5 ms.
+    fn want_margin(n: usize) -> usize { if n < 480 { 240usize.div_ceil(n) * n } else { 0 } }
+
+    /// The hop the model delays by, plus a hop and a block, less what the
+    /// block grid shares with the hop grid, plus the inference margin.
+    fn want_latency(n: usize) -> usize { 960 + n - gcd(n, 480) + want_margin(n) }
 
     /// The audio side driven against the real worker loop with a `PrevHop`
     /// model, run by hand between blocks (an instant worker).
@@ -800,6 +804,63 @@ mod tests {
         }
     }
 
+    /// A stall long enough to overflow the pipeline cap resyncs (flush and
+    /// re-prime) instead of dropping hops, so the latency comes back to
+    /// exactly `want_latency` and stays there without underruns.
+    #[test]
+    fn long_stall_resyncs_to_pipeline_latency() {
+        for n in [128, 256, 512, 4096] {
+            let mut h = Harness::new();
+            // Drain the backlog (up to a block + margin + a hop), then overflow the 1440 + g slack.
+            let stall = (n + want_margin(n) + 480 + 1440 + gcd(n, 480)) / n + 2;
+            let (from, to) = (60, 60 + stall);
+            let blocks = to + 96_000 / n;
+            let mut out = Vec::new();
+            let mut resynced = false;
+            for k in 0..blocks {
+                out.extend(h.ramp_block(n, k, (from..to).contains(&k)));
+                resynced |= h.df.flushing;
+                // One block after the stall the worker has flushed; from the next on, steady.
+                if k > to {
+                    assert_eq!(h.df.latency_samples() as usize, want_latency(n), "n={n} block {k}: latency");
+                    assert_eq!(h.df.dry_ahead, 0, "n={n} block {k}: underrun");
+                }
+            }
+            assert!(resynced, "n={n}: a {stall}-block stall should resync");
+            let t = out.len() - 1;
+            assert_eq!(out[t], (t + 1 - want_latency(n)) as f32, "n={n}: final alignment");
+        }
+    }
+
+    /// A worker that takes 5 ms per hop (release p99 inference plus the
+    /// 1 ms poll), stepped on a fixed schedule: half of real time, but more
+    /// than a short block. The margin means it never underruns.
+    #[test]
+    fn slow_real_time_worker_never_underruns() {
+        for n in [64, 128, 256] {
+            let mut h = Harness::new();
+            let busy = 240.0f64; // samples per hop
+            let mut done_at: VecDeque<f64> = VecDeque::new(); // finish time of each started hop
+            let mut free = 0.0f64;
+            let mut out = Vec::new();
+            for k in 0..96_000 / n {
+                let now = (k * n) as f64;
+                while done_at.front().is_some_and(|&t| t <= now) {
+                    done_at.pop_front();
+                    assert!(h.w.step(&mut h.model));
+                }
+                out.extend(h.ramp_block(n, k, true));
+                // Hops that became complete with this block start when the worker is free.
+                for _ in done_at.len()..h.w.input.occupied_len() / HOP_SIZE {
+                    free = free.max(now) + busy;
+                    done_at.push_back(free);
+                }
+                assert_eq!(h.df.dry_ahead, 0, "n={n} block {k}: underrun");
+            }
+            assert_same(&out, &ideal(n, out.len()), &format!("n={n}"));
+        }
+    }
+
     #[test]
     fn reset_drains_pipeline() {
         let n = 256;
@@ -864,7 +925,7 @@ mod tests {
             block(&mut h);
             h.worker();
         }
-        for _ in 0..3 {
+        for _ in 0..5 {
             block(&mut h); // worker stalled
         }
         assert!(h.df.dry_ahead > 0, "the stall never underran");
@@ -923,26 +984,28 @@ mod tests {
         assert_eq!(p, [(1, 0.05)], "already v2");
     }
 
-    /// Inference at ~60% of real time: underruns must play dry (never
-    /// silence at mix=1) and the pipeline must stay bounded, not ratchet.
+    /// Inference at ~60% of real time: underruns play dry, and when the
+    /// debt outgrows the pipeline cap the processor resyncs (a short
+    /// silence) instead of letting the pipeline ratchet up.
     #[test]
-    fn a_worker_slower_than_real_time_neither_gaps_nor_piles_up_latency() {
+    fn a_worker_slower_than_real_time_keeps_the_pipeline_bounded() {
         let mut h = Harness::new();
         let block = 256;
-        let cap = 2 * block + 5 * HOP_SIZE;
+        let cap = want_latency(block) + gcd(block, 480) + block + 3 * HOP_SIZE;
+        let mut resyncs = 0;
         for k in 0..2000 {
             let input: Vec<f32> = (0..block).map(|i| 0.5 + 0.1 * (((k * block + i) as f32) * 0.01).sin()).collect();
             let (mut l, mut r) = (input.clone(), input);
+            let was_flushing = h.df.flushing;
             h.df.process(&mut l, &mut r, &mut [0.0]);
-            // Past the start-up silence (one flushing block plus the pipeline).
-            if k * block > 2 * want_latency(block) {
-                assert!(l.iter().all(|&s| s > 0.3), "block {k}: gap in the output");
-            }
-            assert!(h.df.dry_l.len() <= cap + 1, "block {k}: latency piled up to {}", h.df.dry_l.len());
-            // One hop every third block (480 per 768 samples).
+            resyncs += usize::from(!was_flushing && h.df.flushing);
+            assert!(h.df.dry_l.len() <= cap, "block {k}: pipeline piled up to {}", h.df.dry_l.len());
+            assert!(h.df.latency_samples() as usize <= want_latency(block), "block {k}: latency {}", h.df.latency_samples());
+            // One step every third block (480 per 768 samples).
             if k % 3 == 0 {
                 h.w.step(&mut h.model);
             }
         }
+        assert!(resyncs > 0, "never resynced");
     }
 }

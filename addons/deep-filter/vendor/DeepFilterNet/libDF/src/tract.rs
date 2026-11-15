@@ -405,7 +405,7 @@ impl DfTract {
             self.rolling_spec_buf_y
                 .push_back(tensor0(0f32).broadcast_scalar_to_shape(&spec_shape)?);
         }
-        // ReLightHost patch: re-init must not grow the noisy buffer (it
+        // Local vendor patch: re-init must not grow the noisy buffer (it
         // would delay the noisy path by df_order hops after every reset).
         self.rolling_spec_buf_x.clear();
         for _ in 0..self.df_order.max(self.lookahead) {

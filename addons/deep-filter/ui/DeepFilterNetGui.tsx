@@ -21,20 +21,22 @@ interface Props {
   onClose: () => void;
 }
 
-const DEFAULTS = { 0: 24.0, 1: 0.2, 2: 1.0, 3: 0.0 };
+const DEFAULTS = { 0: 24.0, 1: 0.02, 2: 1.0, 3: 0.0 };
 
 export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
   const { t } = useTranslation();
   const sampleRate = useAudioStore(state => state.sampleRate);
-  // Add-ons that cannot run at the current rate report status Error.
-  const isSampleRateMismatch = usePluginStore(
-    (s) => s.crashStatusByInstanceId[plugin.instance_id]?.type === 'Error',
-  );
+  // Error text set by the host (instance.rs); only the rate one mentions 48000 Hz.
+  const errorText = usePluginStore((s) => {
+    const status = s.crashStatusByInstanceId[plugin.instance_id];
+    return status?.type === 'Error' ? status.data : null;
+  });
+  const isSampleRateMismatch = errorText?.includes('needs 48000 Hz') ?? false;
   const modalWidth = typeof window === 'undefined' ? 580 : 'clamp(540px, 54vw, 620px)';
 
   // Parameters:
   // 0: Max Attenuation (dB) [0..60] def: 24.0
-  // 1: Post-filter Threshold Beta [0..1] def: 0.2
+  // 1: Post-filter Strength (libDF beta) [0..0.1] def: 0.02
   // 2: Mix [0..1] def: 1.0
   // 3: Output Gain (dB) [-24..+12] def: 0.0
 
@@ -83,15 +85,17 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
           icon={<Sparkles size={18} className="text-purple-400" />}
         />
 
-        {/* 48kHz Warning if mismatched */}
-        {isSampleRateMismatch && (
+        {/* 48 kHz warning, or the host's error text for any other error */}
+        {errorText && (
           <Alert
             type="warning"
             showIcon
             icon={<AlertTriangle size={15} />}
             message={
               <span className="text-xs">
-                {t('deepFilter.sampleRateMismatch')} ({t('deepFilter.sampleRateRequired', { rate: sampleRate })})
+                {isSampleRateMismatch
+                  ? `${t('deepFilter.sampleRateMismatch')} (${t('deepFilter.sampleRateRequired', { rate: sampleRate })})`
+                  : errorText}
               </span>
             }
             className="py-1 px-3 border border-amber-500/30 bg-amber-500/10 rounded-lg text-amber-200"
@@ -157,16 +161,15 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
           />
 
           <AudioKnob
-            label={t('deepFilter.postFilterBeta') || 'Post-Filter Beta'}
+            label={t('deepFilter.postFilterStrength') || 'Post-filter Strength'}
             value={postFilter}
-            defaultValue={0.2}
+            defaultValue={0.02}
             min={0}
-            max={1}
-            step={0.01}
-            unit="%"
+            max={0.1}
+            step={0.001}
             size="md"
             color="#06b6d4"
-            format={(v) => Math.round(v * 100).toString()}
+            format={(v) => v.toFixed(3)}
             onChange={(v) => {
               set(1, v);
             }}
@@ -216,7 +219,7 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
             <span>DeepFilterNet3 ONNX • Tract Runtime</span>
           </span>
           <span className={`text-[10px] font-mono ${isDark ? 'text-zinc-400/60' : 'text-slate-400'}`}>
-            Atten: -{attenLim.toFixed(0)} dB • Beta: {postFilter.toFixed(2)}
+            Atten: -{attenLim.toFixed(0)} dB • PF: {postFilter.toFixed(3)}
           </span>
         </div>
 

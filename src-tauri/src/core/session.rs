@@ -439,6 +439,27 @@ mod tests {
     }
 
     #[test]
+    fn old_deep_filter_preset_migrates_post_filter() {
+        let _flag = crate::core::autosave::tests::FLAG_LOCK.lock();
+        let preset: crate::domain::preset::Preset = serde_json::from_str(r#"{
+            "name": "old", "description": "", "created_at": "2025-01-01T00:00:00Z",
+            "plugin_chain": [{
+                "plugin_id": "builtin::deep_filter", "plugin_name": "AI Noise Suppressor (DeepFilterNet)",
+                "plugin_path": "builtin::deep_filter", "plugin_format": "builtin",
+                "plugin_version": "2.8.0", "bypassed": false,
+                "parameters": [{"id":0,"name":"Max Attenuation","value":30.0},{"id":1,"name":"Post-filter Threshold","value":0.2}]
+            }]
+        }"#).unwrap();
+        let target = Arc::new(PluginInstanceManager::new());
+        assert_eq!(load_preset_into_chain(&target, &preset, 48_000.0, 512, false), 1);
+        let chain = target.get_instances();
+        let val = |id| chain[0].parameters.iter().find(|p| p.id == id).unwrap().value;
+        assert_eq!((val(0), val(1)), (30.0, 0.02));
+        let again = crate::core::snapshot::build_chain_preset_from_manager(&target, "old");
+        assert_eq!(again.plugin_chain[0].plugin_version.as_deref(), Some("2"));
+    }
+
+    #[test]
     fn unknown_addon_keeps_saved_params() {
         let _flag = crate::core::autosave::tests::FLAG_LOCK.lock();
         let preset: crate::domain::preset::Preset = serde_json::from_str(r#"{

@@ -16,11 +16,12 @@ const fn p(id: u32, name: &'static str, min: f32, max: f32, default: f32, unit: 
 
 pub const ID: &str = "builtin::deep_filter";
 
-const POST_FILTER_DEFAULT: f32 = 0.2;
+/// libDF's post-filter beta, upstream default.
+const POST_FILTER_DEFAULT: f32 = 0.02;
 
 static ADDON_PARAMS: &[ParamSpec] = &[
     p(0, "Max Attenuation", 0.0, 60.0, 24.0, "dB", Scale::Db),
-    p(1, "Post-filter Threshold", 0.0, 1.0, POST_FILTER_DEFAULT, "", Scale::Linear),
+    p(1, "Post-filter Strength", 0.0, 0.1, POST_FILTER_DEFAULT, "", Scale::Linear),
     p(2, "Mix", 0.0, 1.0, 1.0, "", Scale::Linear),
     p(3, "Output Gain", -24.0, 12.0, 0.0, "dB", Scale::Db),
 ];
@@ -30,14 +31,27 @@ pub static ADDON: AddonDescriptor = AddonDescriptor {
     id: ID,
     name: "AI Noise Suppressor (DeepFilterNet)",
     category: "Noise Reduction",
-    version: 1,
+    version: 2,
     params: ADDON_PARAMS,
     meters: ADDON_METERS,
     sample_rates: &[48000],
     create: |sr| DeepFilterProcessor::new(sr).map(|p| Box::new(p) as Box<dyn AddonProcessor>),
-    migrate: None,
+    migrate: Some(migrate),
 };
 const _: () = assert!(relight_addon_api::check_params(ADDON_PARAMS, ADDON_METERS));
+
+/// v1 → v2: the post-filter went from 0–1 (default 0.2) to libDF's own
+/// 0–0.1 scale (default 0.02).
+#[allow(clippy::ptr_arg)] // must match MigrateFn
+fn migrate(from: u32, params: &mut Vec<(u32, f32)>) {
+    if from < 2 {
+        for (id, v) in params.iter_mut() {
+            if *id == 1 {
+                *v = (*v / 10.0).clamp(0.0, 0.1);
+            }
+        }
+    }
+}
 
 const HOP_SIZE: usize = 480; // 10ms frame at 48kHz
 const RB_CAPACITY: usize = 48000; // 1 second buffer
@@ -466,8 +480,8 @@ impl AddonProcessor for DeepFilterProcessor {
                 self.atten_lim_bits.store(val.to_bits(), Ordering::Relaxed);
             }
             1 => {
-                // Post-filter threshold beta (0.0 to 1.0)
-                let val = value.clamp(0.0, 1.0);
+                // Post-filter strength = libDF's beta (0.0 to 0.1)
+                let val = value.clamp(0.0, 0.1);
                 self.post_filter_bits.store(val.to_bits(), Ordering::Relaxed);
             }
             2 => {
@@ -890,6 +904,23 @@ mod tests {
         h.df.process(&mut l, &mut r, &mut [0.0]);
         assert_eq!(l, input, "passes audio through");
         assert_eq!(h.df.latency_samples(), 0);
+    }
+
+    #[test]
+    fn migrate_v1_post_filter() {
+        let migrate = ADDON.migrate.expect("version 2 migrates the post-filter");
+        assert_eq!(ADDON.version, 2);
+        let mut p = vec![(0, 24.0), (1, 0.2), (2, 0.5)];
+        migrate(1, &mut p);
+        assert_eq!(p, [(0, 24.0), (1, 0.02), (2, 0.5)]);
+        for (v1, v2) in [(1.0, 0.1), (0.0, 0.0), (0.05, 0.005)] {
+            let mut p = vec![(1, v1)];
+            migrate(1, &mut p);
+            assert_eq!(p, [(1, v2)], "{v1}");
+        }
+        let mut p = vec![(1, 0.05)];
+        migrate(2, &mut p);
+        assert_eq!(p, [(1, 0.05)], "already v2");
     }
 
     /// Inference at ~60% of real time: underruns must play dry (never

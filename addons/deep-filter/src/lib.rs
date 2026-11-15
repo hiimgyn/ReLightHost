@@ -244,9 +244,9 @@ impl Drop for DeepFilterProcessor {
 
 impl AddonProcessor for DeepFilterProcessor {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], meters: &mut [f32]) {
-        meters[0] = self.get_vad();
         let n = left.len().min(right.len());
         if n == 0 || !self.running.load(Ordering::Relaxed) {
+            meters[0] = self.get_vad();
             return; // empty block, or the model failed to load: pass through
         }
 
@@ -314,6 +314,7 @@ impl AddonProcessor for DeepFilterProcessor {
                 }
             }
         }
+        meters[0] = self.get_vad(); // after the block, so the meter isn't one block stale
     }
 
     fn set_parameter(&mut self, id: u32, value: f32) {

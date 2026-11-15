@@ -187,6 +187,23 @@ impl AddonProcessor for NoiseSuppressor {
         }
     }
 
+    /// Back to the just-created state without reallocating: queues re-primed
+    /// as in `new`, three frames of silence flush RNNoise's internal history.
+    fn reset(&mut self) {
+        for (q, frames) in [(&mut self.in_l, 0), (&mut self.in_r, 0), (&mut self.out_l, 1), (&mut self.out_r, 1), (&mut self.dry_l, 2), (&mut self.dry_r, 2)] {
+            q.clear();
+            q.resize(FRAME_SIZE * frames, 0.0);
+        }
+        let zeros = [0.0f32; FRAME_SIZE];
+        let mut discard = [0.0f32; FRAME_SIZE];
+        for _ in 0..3 {
+            self.state_l.process_frame(&mut discard, &zeros);
+            self.state_r.process_frame(&mut discard, &zeros);
+        }
+        self.gate_gain = 1.0;
+        self.last_vad = 0.0;
+    }
+
     /// Output lags input by exactly one RNNoise frame (see `new`).
     fn latency_samples(&self) -> u32 { (FRAME_SIZE * 2) as u32 }
 }

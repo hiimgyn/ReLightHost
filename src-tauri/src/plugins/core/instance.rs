@@ -1,14 +1,14 @@
 use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use arc_swap::ArcSwap;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, PluginFormat};
 use crate::plugins::processor::clap::ClapProcessor;
 use crate::plugins::processor::vst2::Vst2Processor;
 use crate::plugins::processor::vst3::Vst3Processor;
-use relight_addon_api::AddonProcessor;
+use relight_addon_api::{AddonDescriptor, AddonProcessor};
 use crate::plugins::crash_protection::{self, SharedCrashProtection};
 use anyhow::{Error, Result};
 use rayon::prelude::*;
@@ -36,8 +36,18 @@ pub struct PluginInstance {
     vst2_processor: Mutex<Option<Vst2Processor>>,
     /// CLAP audio processor — present when format == CLAP.
     clap_processor: Mutex<Option<ClapProcessor>>,
-    /// Built-in processor — present when format == Builtin.
-    builtin_processor: Mutex<Option<BuiltinSlot>>,
+    /// Add-on descriptor — present when format == Builtin and the id is known.
+    addon: Option<&'static AddonDescriptor>,
+    /// Add-on DSP. Only the audio thread (try_lock), un-bypass reset and
+    /// Drop take this lock; params, meters and latency go through the
+    /// atomics below so a control thread never makes the audio thread skip a block.
+    addon_proc: Mutex<Option<Box<dyn AddonProcessor>>>,
+    /// Latest value per param id (f32 bits); `param_dirty` bit i = id i changed.
+    param_values: [AtomicU32; 64],
+    param_dirty: AtomicU64,
+    /// Meter values (f32 bits) written by the audio thread after each block.
+    meter_values: [AtomicU32; 8],
+    addon_latency: AtomicU32,
     /// Last state blob successfully read from (or written to) the plugin.
     /// Returned by `get_state_binary` when a live read isn't possible right
     /// now (processor busy) so an
@@ -57,26 +67,6 @@ pub struct PluginInstance {
     crash_notice_pending: AtomicBool,
     /// Before/after level history for the plugin GUI's waveform.
     scope: crate::plugins::core::scope::Scope,
-    /// Last VAD reading (f32 bits), returned while the audio thread holds
-    /// the processor so the meter doesn't drop to 0.
-    last_vad: AtomicU32,
-}
-
-/// A built-in add-on plus its fixed meter buffer (no per-block allocation).
-struct BuiltinSlot {
-    proc: Box<dyn AddonProcessor>,
-    meters: [f32; 8],
-    n: usize,
-}
-
-impl BuiltinSlot {
-    fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let n = self.n;
-        self.proc.process(left, right, &mut self.meters[..n]);
-    }
-    fn latency_samples(&self) -> u32 {
-        self.proc.latency_samples()
-    }
 }
 
 impl PluginInstance {
@@ -162,24 +152,27 @@ impl PluginInstance {
             None
         };
         let initial_params = addon.map(crate::plugins::addons::initial_params).unwrap_or_default();
-        let builtin_processor: Option<BuiltinSlot> = addon.and_then(|d| {
+        let param_values: [AtomicU32; 64] = std::array::from_fn(|_| AtomicU32::new(0));
+        let addon_proc = addon.and_then(|d| {
             let mut proc = (d.create)(sample_rate as f32);
             if proc.is_some() {
                 log::info!("{} Built-in processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
             } else {
                 log::warn!("{} Built-in '{}' ({}) unavailable at {} Hz", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, plugin_info.path, sample_rate);
             }
-            // Apply default parameter values so the processor matches the frontend.
-            if let Some(ref mut p) = proc {
-                for param in &initial_params {
-                    p.set_parameter(param.id, param.value as f32);
+            // Defaults go straight to the processor (nothing dirty) so it matches the frontend.
+            for (i, spec) in d.params.iter().enumerate() {
+                param_values[i].store(spec.default.to_bits(), Ordering::Relaxed);
+                if let Some(ref mut p) = proc {
+                    p.set_parameter(spec.id, spec.default);
                 }
             }
-            proc.map(|proc| BuiltinSlot { proc, meters: [0.0; 8], n: d.meters.len() })
+            proc
         });
+        let addon_latency = addon_proc.as_ref().map_or(0, |p| p.latency_samples());
 
         let crash_protection = crash_protection::create_shared();
-        if plugin_info.format == PluginFormat::Builtin && builtin_processor.is_none() {
+        if plugin_info.format == PluginFormat::Builtin && addon_proc.is_none() {
             crash_protection.lock().status = crash_protection::PluginStatus::Error(format!(
                 "'{}' cannot run at {} Hz (needs 48000 Hz) — passing audio through",
                 plugin_info.name, sample_rate
@@ -199,14 +192,18 @@ impl PluginInstance {
             vst3_processor:    Mutex::new(vst3_processor),
             vst2_processor:    Mutex::new(vst2_processor),
             clap_processor:    Mutex::new(clap_processor),
-            builtin_processor: Mutex::new(builtin_processor),
+            addon,
+            addon_proc:        Mutex::new(addon_proc),
+            param_values,
+            param_dirty:       AtomicU64::new(0),
+            meter_values:      std::array::from_fn(|_| AtomicU32::new(0)),
+            addon_latency:     AtomicU32::new(addon_latency),
             last_state:        RwLock::new(None),
             gui_open:          Arc::new(AtomicBool::new(false)),
             gui_hwnd:          Arc::new(AtomicIsize::new(0)),
             crash_protection,
             crash_notice_pending: AtomicBool::new(false),
             scope: crate::plugins::core::scope::Scope::new((sample_rate / 100.0).round() as usize),
-            last_vad: AtomicU32::new(0),
         })
     }
 
@@ -215,8 +212,17 @@ impl PluginInstance {
         &self.instance_id
     }
 
-    /// Set bypass state
+    /// Set bypass state. Un-bypassing an add-on resets it first (control
+    /// thread; the audio thread doesn't take the lock while bypassed) so
+    /// audio queued before the bypass is not replayed.
     pub fn set_bypassed(&self, bypassed: bool) {
+        if !bypassed && self.is_bypassed() {
+            if let Some(mut guard) = self.addon_proc.try_lock_for(STATE_LOCK_TIMEOUT) {
+                if let Some(proc) = guard.as_mut() {
+                    proc.reset();
+                }
+            }
+        }
         self.bypassed.store(bypassed, Ordering::Release);
     }
 
@@ -271,14 +277,15 @@ impl PluginInstance {
             PluginFormat::VST3 => self.vst3_processor.try_lock_for(t).and_then(|g| g.as_ref().map(|p| p.latency_samples())),
             PluginFormat::VST => self.vst2_processor.try_lock_for(t).and_then(|g| g.as_ref().map(|p| p.latency_samples())),
             PluginFormat::CLAP => self.clap_processor.try_lock_for(t).and_then(|g| g.as_ref().map(|p| p.latency_samples())),
-            PluginFormat::Builtin => self.builtin_processor.try_lock_for(t).and_then(|g| g.as_ref().map(|p| p.latency_samples())),
+            PluginFormat::Builtin => Some(self.addon_latency.load(Ordering::Relaxed)),
         };
         reported.unwrap_or(0)
     }
 
-    #[cfg(test)]
-    fn meters_len(&self) -> usize {
-        self.builtin_processor.lock().as_ref().map_or(0, |s| s.n)
+    /// Add-on meter values from the last processed block (empty for non-add-ons).
+    pub fn addon_meters(&self) -> Vec<f32> {
+        let n = self.addon.map_or(0, |d| d.meters.len());
+        self.meter_values[..n].iter().map(|m| f32::from_bits(m.load(Ordering::Relaxed))).collect()
     }
 
     /// (input, output) peak per 10 ms window, oldest first (≈2 s).
@@ -309,10 +316,13 @@ impl PluginInstance {
         // Lock contended on any path → pass through (real-time safe).
         macro_rules! run_processor {
             ($guard:expr, $label:expr) => {
+                run_processor!($guard, $label, |proc| proc.process_stereo(left, right))
+            };
+            ($guard:expr, $label:expr, |$proc:ident| $body:expr) => {
                 if let Some(mut guard) = $guard {
-                    if let Some(ref mut proc) = *guard {
+                    if let Some(ref mut $proc) = *guard {
                         if let Err(crash_msg) = crash_protection::protected_call(AssertUnwindSafe(|| {
-                            proc.process_stereo(left, right);
+                            $body;
                         })) {
                             log::error!("{} plugin crashed during processing: {}", $label, crash_msg);
                             if let Some(mut protection) = self.crash_protection.try_lock() {
@@ -335,9 +345,34 @@ impl PluginInstance {
         match self.plugin_info.format {
             PluginFormat::VST3    => run_processor!(self.vst3_processor.try_lock(), "VST3"),
             PluginFormat::VST     => run_processor!(self.vst2_processor.try_lock(),    "VST2"),
-            PluginFormat::Builtin => run_processor!(self.builtin_processor.try_lock(), "Built-in"),
+            PluginFormat::Builtin => run_processor!(self.addon_proc.try_lock(), "Built-in", |proc| self.run_addon(proc.as_mut(), left, right)),
             PluginFormat::CLAP    => run_processor!(self.clap_processor.try_lock(),    "CLAP"),
         }
+    }
+
+    /// One add-on block on the audio thread, with `addon_proc` held: apply
+    /// changed params, process, publish meters and latency. No allocation.
+    fn run_addon(&self, proc: &mut dyn AddonProcessor, left: &mut [f32], right: &mut [f32]) {
+        // Writers store the value, then set its bit (Release). Taking the bits
+        // (Acquire) before loading the values means every bit we see comes
+        // with its value. A write landing after this swap re-sets its bit, so
+        // it is applied next block (at worst applied twice) — never lost.
+        let mut dirty = self.param_dirty.swap(0, Ordering::Acquire);
+        while dirty != 0 {
+            let i = dirty.trailing_zeros();
+            dirty &= dirty - 1;
+            proc.set_parameter(i, f32::from_bits(self.param_values[i as usize].load(Ordering::Relaxed)));
+        }
+        let n = self.addon.map_or(0, |d| d.meters.len());
+        let mut buf = [0.0f32; 8];
+        for (b, m) in buf.iter_mut().zip(&self.meter_values) {
+            *b = f32::from_bits(m.load(Ordering::Relaxed));
+        }
+        proc.process(left, right, &mut buf[..n]);
+        for (m, b) in self.meter_values.iter().zip(&buf[..n]) {
+            m.store(b.to_bits(), Ordering::Relaxed);
+        }
+        self.addon_latency.store(proc.latency_samples(), Ordering::Relaxed);
     }
 
     /// Serialize plugin state as raw bytes (mirrors LightHost's `getStateInformation`).
@@ -442,6 +477,12 @@ impl PluginInstance {
             let mut params = self.parameters.write();
             if let Some(param) = params.iter_mut().find(|p| p.id == param_id) {
                 param.value = value.clamp(param.min, param.max);
+                // Add-on: hand the value to the audio thread (see `run_addon`).
+                // Add-on param ids are 0..len <= 64 (`check_params`).
+                if self.addon.is_some() {
+                    self.param_values[param_id as usize].store((param.value as f32).to_bits(), Ordering::Relaxed);
+                    self.param_dirty.fetch_or(1 << param_id, Ordering::Release);
+                }
                 if param.max > param.min {
                     (param.value - param.min) / (param.max - param.min)
                 } else {
@@ -463,31 +504,12 @@ impl PluginInstance {
                 }
             });
         }
-        // Built-ins receive the raw (clamped) value; internal unit conversion is per-processor.
-        if let Some(mut guard) = self.builtin_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
-            if let Some(ref mut proc) = *guard {
-                // Re-read raw value from the now-updated parameters list.
-                let raw = self.parameters.read()
-                    .iter()
-                    .find(|p| p.id == param_id)
-                    .map(|p| p.value as f32)
-                    .unwrap_or(0.0);
-                proc.proc.set_parameter(param_id, raw);
-            }
-        }
     }
 
-    /// Return the last voice-activity probability from the built-in noise suppressor
-    /// (0.0 = silence / noise, 1.0 = clear speech).  Returns 0.0 for non-builtin plugins.
+    /// First add-on meter (the noise suppressor's VAD, 0.0 = noise, 1.0 =
+    /// speech); 0.0 when there is none. Backs `get_noise_suppressor_vad`.
     pub fn get_builtin_vad(&self) -> f32 {
-        if let Some(guard) = self.builtin_processor.try_lock() {
-            if let Some(ref proc) = *guard {
-                let vad = proc.meters[0];
-                self.last_vad.store(vad.to_bits(), Ordering::Relaxed);
-                return vad;
-            }
-        }
-        f32::from_bits(self.last_vad.load(Ordering::Relaxed))
+        self.addon_meters().first().copied().unwrap_or(0.0)
     }
 
     /// Open the plugin's native GUI editor using the existing VST3 processor.
@@ -657,7 +679,7 @@ impl Drop for PluginInstance {
             if let Some(proc) = self.clap_processor.lock().take() {
                 std::mem::forget(proc);
             }
-            if let Some(proc) = self.builtin_processor.lock().take() {
+            if let Some(proc) = self.addon_proc.get_mut().take() {
                 std::mem::forget(proc);
             }
         }
@@ -1121,7 +1143,6 @@ fn on_host<'a, R: Send + 'static>(f: impl FnOnce() -> R + Send + 'a) -> R {
 /// Process-unique instance id suffix (a counter — ids only need to be
 /// unique within one run; presets identify plugins by path, not by id).
 fn next_instance_id() -> String {
-    use std::sync::atomic::AtomicU64;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     format!("{:016x}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
@@ -1235,7 +1256,15 @@ mod state_tests {
                 _ => 0,
             };
             assert_eq!(inst.latency_samples(), want, "{}", d.id);
-            assert_eq!(inst.meters_len(), d.meters.len(), "{}", d.id);
+            match d.id {
+                "builtin::noise_suppressor" => {
+                    let vad = inst.addon_meters()[0];
+                    assert!((0.0..=1.0).contains(&vad), "vad {vad}");
+                    assert_eq!(inst.get_builtin_vad(), vad, "get_noise_suppressor_vad path");
+                }
+                "builtin::compressor" | "builtin::voice" => assert!(inst.addon_meters().is_empty(), "{}", d.id),
+                _ => {}
+            }
         }
     }
 
@@ -1260,27 +1289,78 @@ mod state_tests {
         assert_eq!(inst.get_state_binary(), vec![1, 2, 3]);
     }
 
+    fn noise_suppressor() -> Arc<PluginInstance> {
+        let info = crate::plugins::addons::plugin_info(&relight_addon_noise_suppressor::ADDON);
+        Arc::new(PluginInstance::new(info, 48_000.0, 512).unwrap())
+    }
+
     #[test]
-    fn set_parameter_reaches_processor_despite_brief_lock_contention() {
+    fn set_parameter_never_needs_the_processor_lock() {
         let inst = compressor();
-        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
-        let holder = {
-            let inst = Arc::clone(&inst);
-            std::thread::spawn(move || {
-                let _g = inst.builtin_processor.lock();
-                locked_tx.send(()).unwrap();
-                std::thread::sleep(Duration::from_millis(20));
-            })
-        };
-        locked_rx.recv().unwrap();
+        let guard = inst.addon_proc.lock();
         inst.set_parameter(4, 30.0); // Makeup Gain +30 dB
-        holder.join().unwrap();
+        drop(guard);
 
         // 0.001 is far below threshold → output = input × makeup (≈31.6×).
-        let mut l = vec![0.001f32; 64];
-        let mut r = vec![0.001f32; 64];
+        let (mut l, mut r) = (vec![0.001f32; 64], vec![0.001f32; 64]);
         inst.process_stereo(&mut l, &mut r);
         assert!(l[63] > 0.02, "makeup gain never reached the processor: {}", l[63]);
+    }
+
+    #[test]
+    fn latency_and_meters_read_without_the_lock() {
+        let inst = noise_suppressor();
+        let _guard = inst.addon_proc.lock();
+        assert_eq!(inst.latency_samples(), 960);
+        assert_eq!(inst.addon_meters().len(), 1);
+    }
+
+    #[test]
+    fn knob_moves_never_skip_an_addon_block() {
+        let inst = compressor();
+        inst.set_parameter(4, 12.0);
+        let (mut l, mut r) = (vec![0.1f32; 4800], vec![0.1f32; 4800]);
+        inst.process_stereo(&mut l, &mut r); // 100 ms warm-up: envelope settles below threshold
+
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let knob = {
+            let (inst, start) = (Arc::clone(&inst), Arc::clone(&start));
+            std::thread::spawn(move || {
+                start.wait();
+                for i in 0..10_000 {
+                    inst.set_parameter(4, 6.0 + (i % 25) as f64); // makeup ∈ [6, 30] dB
+                }
+            })
+        };
+        let (lo, hi) = (0.1 * 10f32.powf(6.0 / 20.0), 0.1 * 10f32.powf(30.0 / 20.0));
+        start.wait();
+        for block in 0..2_000 {
+            let (mut l, mut r) = ([0.1f32; 64], [0.1f32; 64]);
+            inst.process_stereo(&mut l, &mut r);
+            assert!(l.iter().chain(&r).all(|v| (lo..=hi).contains(v)), "block {block} skipped the add-on: {l:?}");
+        }
+        knob.join().unwrap();
+    }
+
+    #[test]
+    fn unbypass_does_not_replay_stale_audio() {
+        let inst = noise_suppressor();
+        inst.set_parameter(0, 0.0); // mix 0: dry path only
+        for _ in 0..4 {
+            let (mut l, mut r) = ([0.5f32; 256], [0.5f32; 256]);
+            inst.process_stereo(&mut l, &mut r);
+        }
+        inst.set_bypassed(true);
+        inst.set_bypassed(false);
+        let (mut out_l, mut out_r) = (Vec::new(), Vec::new());
+        for _ in 0..4 {
+            let (mut l, mut r) = ([0.0f32; 256], [0.0f32; 256]);
+            inst.process_stereo(&mut l, &mut r);
+            out_l.extend(l);
+            out_r.extend(r);
+        }
+        let stale = out_l.iter().chain(&out_r).filter(|&&v| v != 0.0).count();
+        assert_eq!(stale, 0, "{stale} of 2048 samples replayed pre-bypass audio");
     }
 
     /// Stands in for the audio thread: holds the chain snapshot (as

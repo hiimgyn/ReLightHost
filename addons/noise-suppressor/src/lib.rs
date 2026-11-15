@@ -41,6 +41,23 @@ fn glide(cur: &mut f32, target: f32, k: f32) {
     if (target - *cur).abs() < 1e-6 { *cur = target; }
 }
 
+/// One gate decision per frame from that frame's `vad`: returns (open, new hold).
+/// A frame at/above `thr` opens and arms the hold; the gate then stays open
+/// for `GATE_HOLD_FRAMES` more frames below the close point (200 ms) and only
+/// counts down while below it — between the two points it keeps its state.
+fn gate_step(hold: u32, vad: f32, thr: f32) -> (bool, u32) {
+    // At thr ≤ 0.1 a fixed 0.1 band would put the close point at or below 0,
+    // where VAD can never go, so the gate could never close: use thr / 2 there.
+    let close_below = if thr > GATE_HYSTERESIS { thr - GATE_HYSTERESIS } else { thr * 0.5 };
+    if vad >= thr {
+        (true, GATE_HOLD_FRAMES)
+    } else if vad < close_below {
+        (hold > 0, hold.saturating_sub(1))
+    } else {
+        (hold > 0, hold)
+    }
+}
+
 pub const ID: &str = "builtin::noise_suppressor";
 
 static ADDON_PARAMS: &[ParamSpec] = &[
@@ -91,7 +108,7 @@ pub struct NoiseSuppressor {
     /// VAD of the frame whose audio RNNoise emits on the next call.
     pending_vad:  f32,
     gate_gain:    f32, // current (smoothed) gate multiplier
-    hold:         u32, // frames the gate stays open; 0 = closing
+    hold:         u32, // frames below the close point the gate stays open for
     mix_s:        f32, // smoothed mix
     gain_s:       f32, // smoothed output gain
 }
@@ -186,13 +203,9 @@ impl AddonProcessor for NoiseSuppressor {
             // frame's VAD, with this frame's VAD as lookahead.
             let vad = self.pending_vad.max(self.last_vad);
             self.pending_vad = self.last_vad;
-            if vad >= self.vad_gate_threshold {
-                self.hold = GATE_HOLD_FRAMES;
-            } else if vad < self.vad_gate_threshold - GATE_HYSTERESIS.min(self.vad_gate_threshold * 0.5) {
-                // (hysteresis capped at half the threshold so a low threshold can still close)
-                self.hold = self.hold.saturating_sub(1);
-            }
-            let (target, k) = if self.hold > 0 { (1.0, k_open) } else { (closed, k_close) };
+            let open;
+            (open, self.hold) = gate_step(self.hold, vad, self.vad_gate_threshold);
+            let (target, k) = if open { (1.0, k_open) } else { (closed, k_close) };
             for _ in 0..FRAME_SIZE {
                 glide(&mut self.gate_gain, target, k);
                 self.gate_q.push_back(self.gate_gain);
@@ -341,6 +354,7 @@ mod tests {
         let after = ratio(s + 1200, s + 1440);
         let before = ratio(s - 2400, s);
         assert!(after >= 0.708, "post-onset ratio {after}");
+        // The gate starts open (as after `new`/`reset`): this measures its 150 ms decay.
         assert!(before <= 0.05, "pre-onset ratio {before}");
     }
 
@@ -376,6 +390,30 @@ mod tests {
             let corr = |lag: usize| -> f32 { (lag..n).map(|t| out[t] * input[t - lag]).sum() };
             let best = (0..3 * FRAME_SIZE).max_by(|&a, &b| corr(a).total_cmp(&corr(b))).unwrap();
             assert!(best.abs_diff(960) <= 4, "block {block}: wet lag {best}");
+        }
+    }
+
+    #[test]
+    fn hysteresis_is_exactly_0_1_above_threshold_0_1() {
+        // thr 0.15: close point 0.05, not 0.075 — 0.06 holds, 0.04 counts down.
+        assert_eq!(gate_step(5, 0.06, 0.15), (true, 5));
+        assert_eq!(gate_step(5, 0.04, 0.15), (true, 4));
+        assert_eq!(gate_step(0, 0.06, 0.15), (false, 0));
+        // thr ≤ 0.1: close point thr / 2, so the gate can still close.
+        assert_eq!(gate_step(1, 0.03, 0.08), (true, 0));
+        assert_eq!(gate_step(0, 0.03, 0.08), (false, 0));
+        assert_eq!(gate_step(5, 0.0, 0.0), (true, GATE_HOLD_FRAMES)); // thr 0: always open
+    }
+
+    #[test]
+    fn gate_holds_open_for_200ms_after_the_last_open_frame() {
+        let (open, mut hold) = gate_step(0, 0.9, 0.5);
+        assert!(open);
+        // Frame j (1-based) after the last open frame spans [(j−1)·10, j·10) ms.
+        for j in 1..=21 {
+            let open;
+            (open, hold) = gate_step(hold, 0.0, 0.5);
+            assert_eq!(open, j <= 20, "frame {j} ({}–{} ms after the last open frame)", (j - 1) * 10, j * 10);
         }
     }
 

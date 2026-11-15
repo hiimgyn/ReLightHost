@@ -178,7 +178,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
             icon={<AlertTriangle size={15} />}
             message={
               <span className="text-xs">
-                {t('noise.sampleRateMismatch')} (48 kHz required, current: {sampleRate} Hz)
+                {t('noise.sampleRateMismatch')} ({t('noise.sampleRateRequired', { rate: sampleRate })})
               </span>
             }
             className="py-1 px-3 border border-amber-500/30 bg-amber-500/10 rounded-lg text-amber-200"
@@ -206,7 +206,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
                 isDark ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-100/50'
               }`}
             >
-              <NeuralVADOrb vad={vad} size={74} label="VAD CONFIDENCE" />
+              <NeuralVADOrb vad={vad} size={74} label={t('noise.vadConfidence')} />
             </div>
           </div>
         </VisualStageContainer>

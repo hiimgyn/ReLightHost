@@ -23,7 +23,7 @@ export function usePluginLibraryFilters({
       const matchesSearch =
         plugin.name.toLowerCase().includes(query) ||
         (plugin.format === 'builtin'
-          ? (t('common.system') || 'System').toLowerCase().includes(query) || 'system'.includes(query)
+          ? (t('common.system') || 'System').toLowerCase().includes(query) || 'add-ons'.includes(query) || 'addon'.includes(query)
           : (plugin.manufacture?.toLowerCase().includes(query) ?? false)) ||
         (plugin.category?.toLowerCase().includes(query) ?? false);
       const matchesFormat = filterFormat === 'all' || plugin.format === filterFormat;

@@ -279,7 +279,7 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
             {drive > 0.05 && (
               <span className="flex items-center gap-1 text-[10px] text-amber-400 font-mono">
                 <Flame size={10} className="fill-amber-400 text-amber-400" />
-                Tube Saturation Active
+                {t('voice.tubeSaturationActive')}
               </span>
             )}
           </div>

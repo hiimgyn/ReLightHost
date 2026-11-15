@@ -1,6 +1,8 @@
+import type { ADDON_STRINGS } from '../../addons/registry';
+
 export type SupportedLocale = 'en' | 'vi';
 
-export interface TranslationSchema {
+export interface HostSchema {
   app: {
     installRestart: string;
     sessionRestored: string;
@@ -13,7 +15,6 @@ export interface TranslationSchema {
     unreadableFilesDesc: string;
   };
   common: {
-    builtin: string;
     resetToDefault: string;
     reset: string;
     cancel: string;
@@ -259,98 +260,6 @@ export interface TranslationSchema {
     description: string;
     appDescription: string;
   };
-  compressor: {
-    title: string;
-    dynamicsProfile: string;
-    limiting: string;
-    standard: string;
-    gentle: string;
-    linear: string;
-    threshold: string;
-    thresholdLeft: string;
-    thresholdRight: string;
-    ratio: string;
-    ratioLeft: string;
-    ratioRight: string;
-    attack: string;
-    attackLeft: string;
-    attackRight: string;
-    release: string;
-    releaseLeft: string;
-    releaseRight: string;
-    makeupGain: string;
-    knee: string;
-    kneeLeft: string;
-    kneeRight: string;
-    parallelMix: string;
-    parallelMixLeft: string;
-    parallelMixRight: string;
-    transferTitle: string;
-  };
-  voice: {
-    title: string;
-    eqSection: string;
-    low: string;
-    lowLeft: string;
-    lowRight: string;
-    mid: string;
-    midLeft: string;
-    midRight: string;
-    high: string;
-    highLeft: string;
-    highRight: string;
-    saturationSection: string;
-    drive: string;
-    driveLeft: string;
-    driveRight: string;
-    doublerSection: string;
-    width: string;
-    widthLeft: string;
-    widthRight: string;
-    limiterSection: string;
-    ceiling: string;
-    ceilingLeft: string;
-    ceilingRight: string;
-    responseTitle: string;
-  };
-  noise: {
-    title: string;
-    sampleRateMismatch: string;
-    sampleRateMismatchDesc: string;
-    voiceActivity: string;
-    voiceDetected: string;
-    uncertain: string;
-    backgroundNoise: string;
-    mixTitle: string;
-    mixDry: string;
-    mixFull: string;
-    advancedSettings: string;
-    vadGateThreshold: string;
-    gateAtten: string;
-    outputGain: string;
-    footerDesc: string;
-    off: string;
-    gateOff: string;
-    gateAll: string;
-    attenNone: string;
-    attenFull: string;
-    subtitle: string;
-    levelsTitle: string;
-  };
-  deepFilter: {
-    title: string;
-    subtitle: string;
-    badgeText: string;
-    sampleRateMismatch: string;
-    maxAttenuation: string;
-    postFilterBeta: string;
-    mix: string;
-    outputGain: string;
-    attenuationDb: string;
-    oscilloscopeTitle: string;
-    vadConfidence: string;
-    footerDesc: string;
-  };
   footer: {
     cpuTooltip: string;
     ramTooltip: string;
@@ -359,3 +268,5 @@ export interface TranslationSchema {
     latencyTooltip: string;
   };
 }
+
+export type TranslationSchema = HostSchema & typeof ADDON_STRINGS.en;

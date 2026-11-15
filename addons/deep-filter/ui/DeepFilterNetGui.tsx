@@ -183,7 +183,7 @@ export default function DeepFilterNetGui({ plugin, isOpen, onClose }: Props) {
             icon={<AlertTriangle size={15} />}
             message={
               <span className="text-xs">
-                {t('deepFilter.sampleRateMismatch')} (48 kHz required, current: {sampleRate} Hz)
+                {t('deepFilter.sampleRateMismatch')} ({t('deepFilter.sampleRateRequired', { rate: sampleRate })})
               </span>
             }
             className="py-1 px-3 border border-amber-500/30 bg-amber-500/10 rounded-lg text-amber-200"

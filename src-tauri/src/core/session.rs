@@ -336,9 +336,7 @@ fn apply_saved_settings(instance: &crate::plugins::core::instance::PluginInstanc
     if let Some(ref blob) = saved.vst3_state {
         instance.set_state_binary(blob);
     }
-    for p in &saved.parameters {
-        instance.set_parameter(p.id, p.value);
-    }
+    instance.restore_parameters(saved.plugin_version.as_deref(), &saved.parameters);
 }
 
 /// Replaces the whole chain with `preset`'s plugins and applies their
@@ -438,5 +436,53 @@ mod tests {
         let want: Vec<(u32, f64)> = chain[0].parameters.iter().map(|p| (p.id, p.value)).collect();
         assert_eq!(got, want);
         assert_eq!(again.plugin_chain[0].plugin_path.as_deref(), Some("builtin::compressor"));
+    }
+
+    #[test]
+    fn unknown_addon_keeps_saved_params() {
+        let _flag = crate::core::autosave::tests::FLAG_LOCK.lock();
+        let preset: crate::domain::preset::Preset = serde_json::from_str(r#"{
+            "name": "gone", "description": "", "created_at": "2025-01-01T00:00:00Z",
+            "plugin_chain": [{
+                "plugin_id": "builtin::gone", "plugin_name": "Gone",
+                "plugin_path": "builtin::gone", "plugin_format": "builtin",
+                "plugin_version": "7", "bypassed": false,
+                "parameters": [{"id":0,"name":"X","value":3.0}]
+            }]
+        }"#).unwrap();
+        let target = Arc::new(PluginInstanceManager::new());
+        let mut cur = preset;
+        for _ in 0..2 {
+            assert_eq!(load_preset_into_chain(&target, &cur, 48_000.0, 512, false), 1);
+            let inst = target.get_instances_arc();
+            match inst[0].get_crash_status() {
+                crate::plugins::core::crash_protection::PluginStatus::Error(m) => {
+                    assert_eq!(m, "add-on 'builtin::gone' is not available in this version")
+                }
+                s => panic!("status {s:?}"),
+            }
+            cur = crate::core::snapshot::build_chain_preset_from_manager(&target, "gone");
+            let e = &cur.plugin_chain[0];
+            assert_eq!(e.plugin_version.as_deref(), Some("7"));
+            assert_eq!(e.parameters.len(), 1);
+            assert_eq!((e.parameters[0].id, e.parameters[0].name.as_str(), e.parameters[0].value), (0, "X", 3.0));
+        }
+    }
+
+    #[test]
+    fn resave_writes_current_addon_version() {
+        let _flag = crate::core::autosave::tests::FLAG_LOCK.lock();
+        let preset: crate::domain::preset::Preset = serde_json::from_str(r#"{
+            "name": "old", "description": "", "created_at": "2025-01-01T00:00:00Z",
+            "plugin_chain": [{
+                "plugin_id": "builtin::compressor", "plugin_name": "Compressor",
+                "plugin_path": "builtin::compressor", "plugin_format": "builtin",
+                "plugin_version": "2.8.0", "bypassed": false, "parameters": []
+            }]
+        }"#).unwrap();
+        let target = Arc::new(PluginInstanceManager::new());
+        load_preset_into_chain(&target, &preset, 48_000.0, 512, false);
+        let again = crate::core::snapshot::build_chain_preset_from_manager(&target, "old");
+        assert_eq!(again.plugin_chain[0].plugin_version.as_deref(), Some("1"));
     }
 }

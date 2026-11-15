@@ -168,6 +168,10 @@ export async function getNoiseSuppressorVad(instanceId: string): Promise<number>
   return invoke('get_noise_suppressor_vad', { instanceId });
 }
 
+export async function getAddonMeters(instanceIds: string[]): Promise<[string, number[]][]> {
+  return invoke('get_addon_meters', { instanceIds });
+}
+
 /** (input, output) peak per 10 ms window, oldest first (~2 s). */
 export async function getPluginScope(instanceId: string): Promise<[number, number][]> {
   return invoke('get_plugin_scope', { instanceId });

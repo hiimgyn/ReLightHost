@@ -292,6 +292,15 @@ pub fn get_noise_suppressor_vad(state: tauri::State<AppState>, instance_id: Stri
     }
 }
 
+/// Live meter values of add-on instances; unknown ids are skipped.
+#[tauri::command(async)]
+pub fn get_addon_meters(state: tauri::State<AppState>, instance_ids: Vec<String>) -> Vec<(String, Vec<f32>)> {
+    instance_ids
+        .into_iter()
+        .filter_map(|id| state.plugin_manager.get_instance(&id).map(|i| (id, i.addon_meters())))
+        .collect()
+}
+
 #[tauri::command]
 pub fn reset_plugin_crash_protection(state: tauri::State<AppState>, instance_id: String) -> Result<(), String> {
     let manager = &state.plugin_manager;

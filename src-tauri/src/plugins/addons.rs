@@ -14,7 +14,7 @@ pub fn find(id: &str) -> Option<&'static AddonDescriptor> {
 }
 
 /// f32 -> f64 through its shortest decimal form, so 0.1 stays 0.1.
-fn f(v: f32) -> f64 {
+pub(crate) fn f(v: f32) -> f64 {
     v.to_string().parse().unwrap_or(v as f64)
 }
 

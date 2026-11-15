@@ -509,6 +509,31 @@ impl PluginInstance {
         }
     }
 
+    /// Applies saved parameters (preset, session, autosave). `saved_version`
+    /// is the `plugin_version` stored with them, not the current one.
+    pub fn restore_parameters(&self, saved_version: Option<&str>, saved: &[crate::domain::preset::PresetParameter]) {
+        if let Some(d) = self.addon {
+            let pairs = saved.iter().map(|p| (p.id, p.value as f32)).collect();
+            for (id, v) in migrated_params(d, saved_version, pairs) {
+                self.set_parameter(id, crate::plugins::addons::f(v));
+            }
+        } else if self.plugin_info.format == PluginFormat::Builtin {
+            // Add-on removed: keep what was saved so a re-save loses nothing.
+            *self.parameters.write() = saved
+                .iter()
+                .map(|p| PluginParameter { id: p.id, name: p.name.clone(), value: p.value, min: p.value, max: p.value, default: p.value })
+                .collect();
+            self.crash_protection.lock().status = crash_protection::PluginStatus::Error(format!(
+                "add-on '{}' is not available in this version",
+                self.plugin_info.path
+            ));
+        } else {
+            for p in saved {
+                self.set_parameter(p.id, p.value);
+            }
+        }
+    }
+
     /// First add-on meter (the noise suppressor's VAD, 0.0 = noise, 1.0 =
     /// speech); 0.0 when there is none. Backs `get_noise_suppressor_vad`.
     pub fn get_builtin_vad(&self) -> f32 {
@@ -1150,6 +1175,16 @@ fn next_instance_id() -> String {
     format!("{:016x}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
+/// Saved `(id, value)` pairs brought up to the add-on's current version.
+/// Non-numeric or missing saved version counts as 1.
+fn migrated_params(d: &AddonDescriptor, saved_version: Option<&str>, mut saved: Vec<(u32, f32)>) -> Vec<(u32, f32)> {
+    let from = saved_version.and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
+    if let (true, Some(migrate)) = (from < d.version, d.migrate) {
+        migrate(from, &mut saved);
+    }
+    saved
+}
+
 #[cfg(test)]
 mod state_tests {
     use super::*;
@@ -1465,5 +1500,27 @@ mod parallel_flag_tests {
         let is_vst3 = vec![true];
         assert_eq!(split_load_groups(&is_vst3, false), (vec![0], vec![]));
         assert_eq!(split_load_groups(&is_vst3, true), (vec![], vec![0]));
+    }
+
+    #[test]
+    fn migrate_runs_only_from_older_versions() {
+        use relight_addon_api::{AddonDescriptor, ParamSpec, Scale};
+        #[allow(clippy::ptr_arg)] // must match MigrateFn
+        fn double(_from: u32, p: &mut Vec<(u32, f32)>) {
+            for x in p.iter_mut() {
+                x.1 *= 2.0;
+            }
+        }
+        static P: [ParamSpec; 1] = [ParamSpec { id: 0, name: "p", min: 0.0, max: 10.0, default: 0.0, unit: "", scale: Scale::Linear, step: 0.0, choices: &[] }];
+        static D: AddonDescriptor = AddonDescriptor {
+            id: "t", name: "t", category: "", version: 2, params: &P, meters: &[], sample_rates: &[],
+            create: |_| None, migrate: Some(double),
+        };
+        let run = |v: Option<&str>| super::migrated_params(&D, v, vec![(0, 1.0)]);
+        assert_eq!(run(Some("2.8.0")), vec![(0, 2.0)]);
+        assert_eq!(run(Some("1")), vec![(0, 2.0)]);
+        assert_eq!(run(None), vec![(0, 2.0)]);
+        assert_eq!(run(Some("2")), vec![(0, 1.0)]);
+        assert_eq!(run(Some("3")), vec![(0, 1.0)]);
     }
 }

@@ -284,7 +284,8 @@ impl AddonProcessor for Voice {
                 if self.cur[k] != t {
                     let v = t + (self.cur[k] - t) * self.smooth;
                     let eps = if k < 3 { 1e-3 } else { 1e-6 };
-                    self.cur[k] = if (v - t).abs() < eps { t } else { v };
+                    // `v == cur`: f32 stalled short of t (worse at high sr).
+                    self.cur[k] = if (v - t).abs() < eps || v == self.cur[k] { t } else { v };
                     if k < 3 { self.set_band(k); }
                 }
             }
@@ -388,6 +389,18 @@ mod tests {
                 assert!(after <= 1.5 * before, "band {band} -> {end} dB: step {after} vs {before}");
             }
         }
+    }
+
+    #[test]
+    fn smoothers_reach_target_exactly_at_192k() {
+        let mut v = Voice::new(192_000.0);
+        render(&mut v, &[0.0; 480], &[0.0; 480]); // started: params now glide
+        for (id, val) in [(P_LOW, 12.0), (P_MID, -12.0), (P_HIGH, 7.0), (P_DRIVE, 0.5), (P_WIDTH, 1.0), (P_CEILING, -12.0)] {
+            v.set_parameter(id, val);
+        }
+        let x = sine(192_000, 100.0, 0.25);
+        render(&mut v, &x, &x);
+        assert_eq!(v.cur, v.target);
     }
 
     #[test]

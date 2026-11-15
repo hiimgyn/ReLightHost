@@ -1276,7 +1276,8 @@ mod state_tests {
         for d in crate::plugins::addons::ADDONS {
             let info = crate::plugins::addons::plugin_info(d);
             let inst = PluginInstance::new(info, 48_000.0, 480).unwrap();
-            // Sentinel: only a published meter (always 0..=1) can replace it.
+            // Sentinels: values each add-on's real meters cannot take (vad 0..=1, in_db <= -6,
+            // limiter_gr_db >= 0), so the per-add-on asserts below prove the meter was published.
             inst.meter_values[0].store((-1.0f32).to_bits(), Ordering::Relaxed);
             inst.meter_values[1].store(1.0f32.to_bits(), Ordering::Relaxed); // gate_db is always <= 0
             inst.meter_values[2].store(1.0f32.to_bits(), Ordering::Relaxed); // compressor out_db is always <= 0

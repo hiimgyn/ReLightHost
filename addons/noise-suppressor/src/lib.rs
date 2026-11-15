@@ -35,10 +35,11 @@ const PARAM_SMOOTH_MS: f32 = 10.0;
 /// One-pole step per sample for a time constant of `ms` at 48 kHz.
 fn one_pole(ms: f32) -> f32 { 1.0 - (-1000.0 / (ms * 48_000.0)).exp() }
 
-/// Moves `cur` toward `target` by `k`, snapping once within 1e-6.
+/// Moves `cur` toward `target` by `k`, snapping once within 1e-6 or once
+/// f32 stops making progress (it stalls short of `target`).
 fn glide(cur: &mut f32, target: f32, k: f32) {
-    *cur += (target - *cur) * k;
-    if (target - *cur).abs() < 1e-6 { *cur = target; }
+    let v = *cur + (target - *cur) * k;
+    *cur = if (target - v).abs() < 1e-6 || v == *cur { target } else { v };
 }
 
 /// One gate decision per frame from that frame's `vad`: returns (open, new hold).
@@ -324,6 +325,17 @@ mod tests {
             ms.push(m);
         }
         (ol, or, ms)
+    }
+
+    #[test]
+    fn smoothers_reach_target_exactly() {
+        let mut ns = NoiseSuppressor::new(48_000.0).unwrap();
+        ns.set_parameter(0, 0.3);
+        ns.set_parameter(3, -6.0);
+        let x = gliding_voice(24_000, 0);
+        render(&mut ns, &x, &x, FRAME_SIZE);
+        assert_eq!(ns.mix_s, ns.mix);
+        assert_eq!(ns.gain_s, ns.output_gain);
     }
 
     fn rms(x: &[f32]) -> f32 { (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt() }

@@ -120,7 +120,8 @@ impl AddonProcessor for Compressor {
         let sm = (-1.0_f32 / (0.010 * sr)).exp();
         let follow = |cur: f32, target: f32| {
             let v = target + (cur - target) * sm;
-            if (v - target).abs() < 1e-6 { target } else { v }
+            // `v == cur`: f32 stalled short of target.
+            if (v - target).abs() < 1e-6 || v == cur { target } else { v }
         };
         let (mut in_pk, mut out_pk, mut min_red) = (0.0_f32, 0.0_f32, 1.0_f32);
 
@@ -243,6 +244,18 @@ mod tests {
         let (mut l, mut r) = (vec![0.001f32; 16], vec![0.001f32; 16]);
         c.process(&mut l, &mut r, &mut [0.0; 3]);
         assert!(l.iter().all(|v| (v - 0.001).abs() < 1e-6));
+    }
+
+    #[test]
+    fn smoothers_reach_target_exactly() {
+        let mut c = Compressor::new(SR);
+        c.process(&mut [0.0; 480], &mut [0.0; 480], &mut [0.0; 3]); // started: params now glide
+        c.set_parameter(4, 30.0);
+        c.set_parameter(6, 0.3);
+        let (mut l, mut r) = (sine(24_000, 0.1), sine(24_000, 0.1));
+        c.process(&mut l, &mut r, &mut [0.0; 3]);
+        assert_eq!(c.makeup_s, 10f32.powf(30.0 / 20.0));
+        assert_eq!(c.mix_s, 0.3);
     }
 
     #[test]

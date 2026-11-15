@@ -129,6 +129,8 @@ fn set_input_device_on_host(state: &AppState, device_id: Option<String>) -> Resu
         .audio_manager
         .set_input_device(device_id)
         .map_err(|e| format!("Failed to set input device: {}", e))?;
+    // A choice made in the UI, "None (No Input)" included, is never migrated.
+    let _ = state.config_manager.set_input_choice_settled();
     sync_chain_to_audio_rate(state);
     crate::save_audio_session_to_disk(state);
     Ok(())

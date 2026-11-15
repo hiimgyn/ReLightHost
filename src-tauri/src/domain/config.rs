@@ -29,6 +29,11 @@ pub struct AppConfig {
     /// others).
     #[serde(default)]
     pub wasapi_exclusive: bool,
+    /// The input device is a real choice: None means "None (No Input)".
+    /// False for configs from before that, where None meant the default
+    /// mic — see core::session::pin_never_set_input.
+    #[serde(default)]
+    pub input_choice_settled: bool,
 }
 
 /// Persisted per-session state: audio device config + mute + loopback.
@@ -52,6 +57,7 @@ impl Default for AppConfig {
             show_app_on_startup: true,
             parallel_vst3_loading: false,
             wasapi_exclusive: false,
+            input_choice_settled: false,
         }
     }
 }
@@ -123,6 +129,19 @@ impl ConfigManager {
         let mut config = self.config.write();
         config.show_app_on_startup = enabled;
         self.save_config(&config)?;
+        Ok(())
+    }
+
+    pub fn get_input_choice_settled(&self) -> bool {
+        self.config.read().input_choice_settled
+    }
+
+    pub fn set_input_choice_settled(&self) -> Result<()> {
+        let mut config = self.config.write();
+        if !config.input_choice_settled {
+            config.input_choice_settled = true;
+            self.save_config(&config)?;
+        }
         Ok(())
     }
 
@@ -251,5 +270,15 @@ mod tests {
         assert!(reloaded.wasapi_exclusive);
         let old: AppConfig = serde_json::from_str(r#"{"custom_scan_paths":[]}"#).unwrap();
         assert!(!old.wasapi_exclusive, "configs saved before this setting existed stay shared");
+    }
+
+    #[test]
+    fn input_choice_is_unsettled_in_old_configs_and_settles_once() {
+        let old: AppConfig = serde_json::from_str(r#"{"custom_scan_paths":[]}"#).unwrap();
+        assert!(!old.input_choice_settled, "old configs: a None input meant the default mic");
+        let (scratch, manager) = scratch_manager();
+        manager.set_input_choice_settled().unwrap();
+        let reloaded: AppConfig = serde_json::from_str(&fs::read_to_string(&scratch.0).unwrap()).unwrap();
+        assert!(reloaded.input_choice_settled);
     }
 }

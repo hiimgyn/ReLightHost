@@ -62,6 +62,16 @@ pub(crate) fn restore_session_impl(
         audio_restored = true;
         log::info!("{} ✅ Audio session restored", crate::core::threading::thread_prefix("restore/main"));
     }
+    if !state.config_manager.get_input_choice_settled() {
+        let mut audio = state.audio_manager.get_config();
+        if pin_never_set_input(&mut audio, crate::audio::AudioDevice::default_input_device_id) {
+            if audio.input_device_id != state.audio_manager.get_config().input_device_id {
+                let _ = state.audio_manager.set_input_device(audio.input_device_id);
+                crate::save_audio_session_to_disk(state);
+            }
+            let _ = state.config_manager.set_input_choice_settled();
+        }
+    }
 
     // buffer handed to Voicemeeter Insert already has the full chain active.
     // Guard: do not reload if the chain already has items (StrictMode double-invoke).
@@ -374,6 +384,25 @@ pub(crate) fn load_preset_into_chain(
     loaded
 }
 
+/// Before this version a never-chosen input (None) meant the system default
+/// mic; None now means "None (No Input)". Once per install a None input is
+/// pinned to the current default mic, so upgraded and fresh installs keep
+/// monitoring. Returns false when there is no default mic yet (try again
+/// next launch).
+fn pin_never_set_input(audio: &mut crate::audio::AudioConfig, default_input: impl FnOnce() -> Option<String>) -> bool {
+    let asio_output = audio.output_device_id.as_deref().is_some_and(|id| id.starts_with("asio_"));
+    if audio.input_device_id.is_some() || asio_output {
+        return true;
+    }
+    match default_input() {
+        Some(id) => {
+            audio.input_device_id = Some(id);
+            true
+        }
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +419,23 @@ mod tests {
             category: String::new(),
             sub_index: 0,
         }
+    }
+
+    #[test]
+    fn a_never_chosen_input_is_pinned_to_the_default_mic_once() {
+        let pin = |input: Option<&str>, output: Option<&str>, default: Option<&str>| {
+            let mut audio = crate::audio::AudioConfig {
+                input_device_id: input.map(Into::into),
+                output_device_id: output.map(Into::into),
+                ..Default::default()
+            };
+            let settled = pin_never_set_input(&mut audio, || default.map(Into::into));
+            (audio.input_device_id, settled)
+        };
+        assert_eq!(pin(None, Some("out_spk"), Some("in_mic")), (Some("in_mic".into()), true), "never chosen: default mic");
+        assert_eq!(pin(Some("in_usb"), None, Some("in_mic")), (Some("in_usb".into()), true), "a chosen mic is kept");
+        assert_eq!(pin(None, None, None), (None, false), "no mic yet: retry next launch");
+        assert_eq!(pin(None, Some("asio_X"), Some("in_mic")), (None, true), "ASIO setups are left alone");
     }
 
     #[test]

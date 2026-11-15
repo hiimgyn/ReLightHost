@@ -228,9 +228,10 @@ impl AddonProcessor for NoiseSuppressor {
         }
     }
 
-    /// Back to the just-created state without reallocating: queues re-primed
-    /// as in `new`, three frames of silence flush RNNoise's internal history,
-    /// gate open with no hold, smoothed params snapped to their targets.
+    /// Back to the just-created state: queues re-primed as in `new` (no
+    /// reallocation), fresh RNNoise states (reset runs on a control thread,
+    /// so allocating is allowed), gate open with no hold, smoothed params
+    /// snapped to their targets.
     fn reset(&mut self) {
         for (q, frames, v) in [
             (&mut self.in_l, 0, 0.0), (&mut self.in_r, 0, 0.0),
@@ -241,12 +242,8 @@ impl AddonProcessor for NoiseSuppressor {
             q.clear();
             q.resize(FRAME_SIZE * frames, v);
         }
-        let zeros = [0.0f32; FRAME_SIZE];
-        let mut discard = [0.0f32; FRAME_SIZE];
-        for _ in 0..3 {
-            self.state_l.process_frame(&mut discard, &zeros);
-            self.state_r.process_frame(&mut discard, &zeros);
-        }
+        self.state_l = DenoiseState::new();
+        self.state_r = DenoiseState::new();
         self.gate_gain = 1.0;
         self.hold = 0;
         self.last_vad = 0.0;

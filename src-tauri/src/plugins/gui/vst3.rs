@@ -19,7 +19,6 @@
 pub mod win {
     use anyhow::{anyhow, Result};
     use std::cell::Cell;
-    use std::ffi::c_void;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
     use std::sync::Arc;
@@ -128,7 +127,7 @@ pub mod win {
         gui_flag: Arc<AtomicBool>,
         gui_hwnd: Arc<AtomicIsize>,
     ) -> Result<()> {
-        let view_raw = controller.createView(b"editor\0".as_ptr() as *const _);
+        let view_raw = controller.createView(c"editor".as_ptr());
         let view = ComPtr::<IPlugView>::from_raw(view_raw)
             .ok_or_else(|| anyhow!("'{}' has no editor (createView returned null)", name))?;
         if view.isPlatformTypeSupported(kPlatformTypeHWND) != kResultOk {
@@ -171,7 +170,7 @@ pub mod win {
         SetForegroundWindow(hwnd);
         set_scale(&view, GetDpiForWindow(hwnd));
 
-        let res = view.attached(hwnd as *mut c_void, kPlatformTypeHWND);
+        let res = view.attached(hwnd, kPlatformTypeHWND);
         // Looked up again: the plugin may have pumped messages inside
         // attached() (e.g. a licence dialog) and the window closed meanwhile.
         match editor(hwnd) {

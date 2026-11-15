@@ -674,7 +674,11 @@ impl ClapProcessor {
     }
 
     /// Serialise plugin state (CLAP state extension `save`). Main thread.
-    /// SAFETY: `plugin`/`ext` from [`Self::state_handles`] of a live processor.
+    ///
+    /// # Safety
+    /// `plugin` and `ext` must come from [`Self::state_handles`] of a
+    /// `ClapProcessor` that is still alive (not dropped) for the whole call,
+    /// and this must be called on the host main thread.
     pub unsafe fn save_state(plugin: usize, ext: usize) -> Vec<u8> {
         let ext = ext as *const ClapPluginState;
         let save_fn = match (*ext).save { Some(f) => f, None => return Vec::new() };
@@ -685,7 +689,10 @@ impl ClapProcessor {
     }
 
     /// Restore plugin state (CLAP state extension `load`). Main thread.
-    /// SAFETY: as [`Self::save_state`].
+    ///
+    /// # Safety
+    /// Same preconditions as [`Self::save_state`]: live `plugin`/`ext` from
+    /// [`Self::state_handles`], called on the host main thread.
     pub unsafe fn load_state(plugin: usize, ext: usize, data: &[u8]) {
         if data.is_empty() { return; }
         let ext = ext as *const ClapPluginState;

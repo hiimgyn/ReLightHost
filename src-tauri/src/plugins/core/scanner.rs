@@ -811,7 +811,7 @@ fn pe_x64_exports_any(path: &Path, wanted: &[&[u8]]) -> bool {
     fn rd<const N: usize>(f: &mut fs::File, off: u64) -> Option<[u8; N]> {
         f.seek(SeekFrom::Start(off)).ok()?;
         let mut b = [0u8; N];
-        f.read(&mut b).ok()?; // short read at EOF leaves zeros
+        f.read_exact(&mut b).ok()?; // short read = truncated/invalid image
         Some(b)
     }
     let u16_at = |f: &mut fs::File, off| rd::<2>(f, off).map(u16::from_le_bytes);

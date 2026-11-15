@@ -330,6 +330,30 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore]
+    fn golden_deep_filter() {
+        use super::super::golden_tests::*;
+        for (suffix, params) in [("default", &[][..]), ("custom", CUSTOM_DEEP)] {
+            let mut df = DeepFilterProcessor::new(48000.0).unwrap();
+            for &(id, v) in params {
+                df.set_parameter(id, v);
+            }
+            // Wait for the worker after each block so timing can't change the output.
+            let (mut l, mut r) = golden_input();
+            for (cl, cr) in l.chunks_mut(480).zip(r.chunks_mut(480)) {
+                df.process_stereo(cl, cr);
+                let t = std::time::Instant::now();
+                while df.cons_from_worker.occupied_len() < 480 {
+                    assert!(t.elapsed() < Duration::from_secs(5), "worker stalled");
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            let out: Vec<f32> = l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]).collect();
+            check_or_write(&format!("deep_filter_{suffix}"), &out);
+        }
+    }
+
+    #[test]
     fn deep_filter_rejects_non_48k() {
         assert!(DeepFilterProcessor::new(44100.0).is_none());
         assert!(DeepFilterProcessor::new(96000.0).is_none());

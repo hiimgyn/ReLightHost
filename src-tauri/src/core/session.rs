@@ -409,4 +409,29 @@ mod tests {
         assert!(chain[0].bypassed);
         assert_eq!(chain[0].parameters.iter().find(|p| p.id == 4).unwrap().value, 12.0);
     }
+
+    #[test]
+    fn old_builtin_preset_round_trips_identically() {
+        let _flag = crate::core::autosave::tests::FLAG_LOCK.lock();
+        let preset: crate::domain::preset::Preset = serde_json::from_str(r#"{
+            "name": "old", "description": "", "created_at": "2025-01-01T00:00:00Z",
+            "plugin_chain": [{
+                "plugin_id": "builtin::compressor", "plugin_name": "Compressor",
+                "plugin_path": "builtin::compressor", "plugin_format": "builtin",
+                "plugin_version": "2.8.0", "bypassed": false,
+                "parameters": [{"id":0,"name":"Threshold","value":-24.0},{"id":1,"name":"Ratio","value":6.0}]
+            }]
+        }"#).unwrap();
+        let target = Arc::new(PluginInstanceManager::new());
+        assert_eq!(load_preset_into_chain(&target, &preset, 48_000.0, 512, false), 1);
+        let chain = target.get_instances();
+        let val = |id| chain[0].parameters.iter().find(|p| p.id == id).unwrap().value;
+        assert_eq!((val(0), val(1)), (-24.0, 6.0));
+
+        let again = crate::core::snapshot::build_chain_preset_from_manager(&target, "old");
+        let got: Vec<(u32, f64)> = again.plugin_chain[0].parameters.iter().map(|p| (p.id, p.value)).collect();
+        let want: Vec<(u32, f64)> = chain[0].parameters.iter().map(|p| (p.id, p.value)).collect();
+        assert_eq!(got, want);
+        assert_eq!(again.plugin_chain[0].plugin_path.as_deref(), Some("builtin::compressor"));
+    }
 }

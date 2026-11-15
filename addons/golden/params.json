@@ -1,0 +1,178 @@
+{
+  "builtin::compressor": [
+    {
+      "default": -18.0,
+      "id": 0,
+      "max": 0.0,
+      "min": -60.0,
+      "name": "Threshold",
+      "value": -18.0
+    },
+    {
+      "default": 4.0,
+      "id": 1,
+      "max": 20.0,
+      "min": 1.0,
+      "name": "Ratio",
+      "value": 4.0
+    },
+    {
+      "default": 10.0,
+      "id": 2,
+      "max": 200.0,
+      "min": 0.1,
+      "name": "Attack",
+      "value": 10.0
+    },
+    {
+      "default": 100.0,
+      "id": 3,
+      "max": 2000.0,
+      "min": 10.0,
+      "name": "Release",
+      "value": 100.0
+    },
+    {
+      "default": 0.0,
+      "id": 4,
+      "max": 30.0,
+      "min": 0.0,
+      "name": "Makeup Gain",
+      "value": 0.0
+    },
+    {
+      "default": 3.0,
+      "id": 5,
+      "max": 12.0,
+      "min": 0.0,
+      "name": "Knee",
+      "value": 3.0
+    },
+    {
+      "default": 1.0,
+      "id": 6,
+      "max": 1.0,
+      "min": 0.0,
+      "name": "Mix",
+      "value": 1.0
+    }
+  ],
+  "builtin::deep_filter": [
+    {
+      "default": 24.0,
+      "id": 0,
+      "max": 60.0,
+      "min": 0.0,
+      "name": "Max Attenuation",
+      "value": 24.0
+    },
+    {
+      "default": 0.2,
+      "id": 1,
+      "max": 1.0,
+      "min": 0.0,
+      "name": "Post-filter Threshold",
+      "value": 0.2
+    },
+    {
+      "default": 1.0,
+      "id": 2,
+      "max": 1.0,
+      "min": 0.0,
+      "name": "Mix",
+      "value": 1.0
+    },
+    {
+      "default": 0.0,
+      "id": 3,
+      "max": 12.0,
+      "min": -24.0,
+      "name": "Output Gain",
+      "value": 0.0
+    }
+  ],
+  "builtin::noise_suppressor": [
+    {
+      "default": 1.0,
+      "id": 0,
+      "max": 1.0,
+      "min": 0.0,
+      "name": "Mix",
+      "value": 1.0
+    },
+    {
+      "default": 0.0,
+      "id": 1,
+      "max": 1.0,
+      "min": 0.0,
+      "name": "VAD Gate Threshold",
+      "value": 0.0
+    },
+    {
+      "default": 0.0,
+      "id": 2,
+      "max": 1.0,
+      "min": 0.0,
+      "name": "Gate Attenuation",
+      "value": 0.0
+    },
+    {
+      "default": 0.0,
+      "id": 3,
+      "max": 12.0,
+      "min": -24.0,
+      "name": "Output Gain",
+      "value": 0.0
+    }
+  ],
+  "builtin::voice": [
+    {
+      "default": 0.0,
+      "id": 0,
+      "max": 12.0,
+      "min": -12.0,
+      "name": "Low",
+      "value": 0.0
+    },
+    {
+      "default": 0.0,
+      "id": 1,
+      "max": 12.0,
+      "min": -12.0,
+      "name": "Mid",
+      "value": 0.0
+    },
+    {
+      "default": 0.0,
+      "id": 2,
+      "max": 12.0,
+      "min": -12.0,
+      "name": "High",
+      "value": 0.0
+    },
+    {
+      "default": 0.0,
+      "id": 3,
+      "max": 1.0,
+      "min": 0.0,
+      "name": "Drive",
+      "value": 0.0
+    },
+    {
+      "default": 0.0,
+      "id": 4,
+      "max": 1.0,
+      "min": 0.0,
+      "name": "Width",
+      "value": 0.0
+    },
+    {
+      "default": 0.0,
+      "id": 5,
+      "max": 0.0,
+      "min": -12.0,
+      "name": "Ceiling",
+      "value": 0.0
+    }
+  ]
+}

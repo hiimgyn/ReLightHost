@@ -6,6 +6,8 @@ pub mod noise_suppressor;
 pub mod deep_filter;
 pub mod compressor;
 pub mod voice;
+#[cfg(test)]
+mod golden_tests;
 
 pub use noise_suppressor::NoiseSuppressor;
 pub use deep_filter::DeepFilterProcessor;

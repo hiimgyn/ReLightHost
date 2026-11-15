@@ -37,13 +37,16 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
     } else if (x >= threshold + halfKnee) {
       y = threshold + (x - threshold) / ratio;
     }
-    return Math.min(0, Math.max(-60, y + makeup));
+    return y + makeup;
   }, [threshold, ratio, knee, makeup]);
 
   // Coordinate mapping (-60 dB to 0 dB)
   const MIN_DB = -60;
   const MAX_DB = 0;
   const DB_SPAN = MAX_DB - MIN_DB;
+  // Y axis grows past 0 dBFS when makeup/ratio push the curve above it (6 dB steps).
+  const maxYDb = Math.max(0, Math.ceil(computeOutputDb(0) / 6) * 6);
+  const ySpan = maxYDb - MIN_DB;
 
   const isDark = useThemeStore((s) => s.theme === 'dark');
 
@@ -78,7 +81,7 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
     const plotH = height - padT - padB;
 
     const toX = (db: number) => padL + ((db - MIN_DB) / DB_SPAN) * plotW;
-    const toY = (db: number) => padT + (1 - (db - MIN_DB) / DB_SPAN) * plotH;
+    const toY = (db: number) => padT + (1 - (db - MIN_DB) / ySpan) * plotH;
 
     // 1. Grid & dB labels
     const gridDbs = [-48, -36, -24, -12, 0];
@@ -89,14 +92,18 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
 
-    gridDbs.forEach((db) => {
+    const yGrid = [...gridDbs];
+    for (let g = 6; g <= maxYDb; g += 6) yGrid.push(g);
+    yGrid.forEach((db) => {
       const y = toY(db);
       ctx.beginPath();
       ctx.moveTo(padL, y);
       ctx.lineTo(padL + plotW, y);
       ctx.stroke();
+      ctx.textAlign = 'right';
       ctx.fillText(`${db}`, padL - 4, y);
-
+    });
+    gridDbs.forEach((db) => {
       const x = toX(db);
       ctx.beginPath();
       ctx.moveTo(x, padT);
@@ -107,6 +114,16 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
         ctx.fillText(`${db}`, x, height - 8);
       }
     });
+
+    // 0 dBFS ceiling line
+    const errColor = getComputedStyle(canvas).getPropertyValue('--rh-error').trim() || '#ef4444';
+    ctx.strokeStyle = errColor;
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, toY(0));
+    ctx.lineTo(padL + plotW, toY(0));
+    ctx.stroke();
+    ctx.globalAlpha = 1;
 
     // 2. 1:1 Unity gain reference dashed line
     ctx.setLineDash([3, 3]);
@@ -146,6 +163,19 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
     ctx.strokeStyle = accentColor;
     ctx.lineWidth = 2.5;
     ctx.stroke();
+
+    // Portion above 0 dBFS (would clip) re-stroked in the error colour.
+    if (maxYDb > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(padL, 0, plotW, toY(0));
+      ctx.clip();
+      ctx.beginPath();
+      points.forEach(([px, py], i) => (i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)));
+      ctx.strokeStyle = errColor;
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // 4. Threshold & Knee Interactive Handle
     const threshX = toX(threshold);
@@ -212,7 +242,7 @@ export const TransferCurveCanvas: React.FC<TransferCurveCanvasProps> = ({
     ctx.fillText('GR', grX + grW / 2, height - 8);
 
     ctx.restore();
-  }, [threshold, ratio, knee, makeup, liveInputDb, liveGainReductionDb, accentColor, computeOutputDb, isDark]);
+  }, [threshold, ratio, knee, makeup, liveInputDb, liveGainReductionDb, accentColor, computeOutputDb, maxYDb, ySpan, isDark]);
 
   // Pointer drag to adjust threshold or ratio on the canvas
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {

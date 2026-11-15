@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { tauri, useVisibleInterval } from './host';
 
 const NONE: readonly number[] = [];
@@ -7,12 +7,16 @@ const NONE: readonly number[] = [];
 export function useMeters(instanceId: string, enabled: boolean): readonly number[] {
   const [meters, setMeters] = useState<readonly number[]>(NONE);
   const inFlight = useRef(false);
+  const live = useRef(enabled);
+  live.current = enabled;
+  // Drop stale rows when closed so a reopen never flashes old values.
+  useEffect(() => { if (!enabled) setMeters(NONE); }, [enabled]);
 
   useVisibleInterval(() => {
     if (inFlight.current) return;
     inFlight.current = true;
     tauri.getAddonMeters([instanceId])
-      .then((rows) => setMeters(rows.find(([id]) => id === instanceId)?.[1] ?? NONE))
+      .then((rows) => live.current && setMeters(rows.find(([id]) => id === instanceId)?.[1] ?? NONE))
       .catch(() => {})
       .finally(() => { inFlight.current = false; });
   }, 33, enabled, [instanceId]);

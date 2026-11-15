@@ -57,4 +57,14 @@ const setup = () => {
   clock.advance(500);
   assert.equal(sent.length, 2);
 }
+{ // re-arm: a set right after a trailing send is still rate limited
+  const { clock, sent, s } = setup();
+  s.set(1, 1); s.set(1, 2);
+  clock.advance(40);
+  assert.deepEqual(sent, [[1, 1], [1, 2]]);
+  s.set(1, 3);
+  assert.equal(sent.length, 2);
+  clock.advance(40);
+  assert.deepEqual(sent[2], [1, 3]);
+}
 console.log('addon-ui checks ok');

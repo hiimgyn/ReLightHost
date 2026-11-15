@@ -1279,6 +1279,7 @@ mod state_tests {
             // Sentinel: only a published meter (always 0..=1) can replace it.
             inst.meter_values[0].store((-1.0f32).to_bits(), Ordering::Relaxed);
             inst.meter_values[1].store(1.0f32.to_bits(), Ordering::Relaxed); // gate_db is always <= 0
+            inst.meter_values[2].store(1.0f32.to_bits(), Ordering::Relaxed); // compressor out_db is always <= 0
             for _ in 0..200 {
                 let mut noise = || {
                     (0..480).map(|_| { s = s.wrapping_mul(1664525).wrapping_add(1013904223); (s >> 8) as f32 / 16_777_216.0 - 0.5 }).collect::<Vec<f32>>()
@@ -1304,7 +1305,14 @@ mod state_tests {
                     assert_eq!(meters.len(), 1, "{}", d.id);
                     assert!((0.0..=1.0).contains(&meters[0]), "{}: vad {} never published", d.id, meters[0]);
                 }
-                "builtin::compressor" | "builtin::voice" => assert!(inst.addon_meters().is_empty(), "{}", d.id),
+                "builtin::compressor" => {
+                    let m = inst.addon_meters();
+                    assert_eq!(m.len(), 3, "{}", d.id);
+                    assert!(m[0] <= -6.0, "{}: in_db {} never published", d.id, m[0]);
+                    assert!(m[1].is_finite() && m[1] >= 0.0 && m[1] != 1.0, "{}: gr_db {}", d.id, m[1]);
+                    assert!(m[2] <= 0.0, "{}: out_db {} never published", d.id, m[2]);
+                }
+                "builtin::voice" => assert!(inst.addon_meters().is_empty(), "{}", d.id),
                 other => panic!("no meter check for {other}"),
             }
         }

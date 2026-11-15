@@ -1,7 +1,5 @@
-import { useState, useEffect } from 'react';
 import { Modal } from 'antd';
 import { Activity } from 'lucide-react';
-import { tauri } from '../../ui-common/host';
 import type { PluginInstanceInfo } from '../../ui-common/host';
 import { useTranslation } from '../../ui-common/host';
 import { useThemeStore } from '../../ui-common/host';
@@ -10,6 +8,7 @@ import {
   VisualStageContainer,
   PluginHeader,
   useParams,
+  useMeters,
 } from '../../ui-common';
 import { TransferCurveCanvas } from './TransferCurveCanvas';
 
@@ -47,35 +46,11 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
   const knee = values[P_KNEE];
   const mix = values[P_MIX];
 
-  // Live meter from the instance's real (input, output) peak per 10 ms window.
-  const [livePeaks, setLivePeaks] = useState<[number, number] | null>(null);
-  useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    let timer = 0;
-    const poll = async () => {
-      try {
-        const points = await tauri.getPluginScope(plugin.instance_id);
-        if (!cancelled) setLivePeaks(points[points.length - 1] ?? null);
-      } catch {
-        /* instance removed or backend busy — try again next tick */
-      } finally {
-        if (!cancelled) timer = window.setTimeout(poll, 50);
-      }
-    };
-    poll();
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-      setLivePeaks(null);
-    };
-  }, [isOpen, plugin.instance_id]);
-  const toDb = (peak: number) => 20 * Math.log10(Math.max(peak, 1e-6));
-  // -60 hides the dot (TransferCurveCanvas); GR = in + makeup − out.
-  const liveInputDb = livePeaks ? toDb(livePeaks[0]) : -60;
-  const liveGainReductionDb = livePeaks && liveInputDb > -60
-    ? Math.max(0, liveInputDb + makeup - toDb(livePeaks[1]))
-    : 0;
+  // Real block peaks from the DSP: [in_db, gr_db, out_db]; empty until the first poll.
+  const meters = useMeters(plugin.instance_id, isOpen);
+  // -60 hides the dot (TransferCurveCanvas).
+  const liveInputDb = Math.max(meters[0] ?? -60, -60);
+  const liveGainReductionDb = Math.max(0, meters[1] ?? 0);
 
   const dynamicsProfileText = ratio >= 10
     ? t('compressor.limiting')

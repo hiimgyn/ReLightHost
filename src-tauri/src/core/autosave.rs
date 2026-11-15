@@ -142,13 +142,28 @@ fn save_autosave_snapshot(
     preset_manager: &Arc<crate::domain::preset::PresetManager>,
     autosave_last_hash: &Arc<AtomicU64>,
 ) {
+    save_snapshot_with(|| build_chain_preset_from_manager(plugin_manager, "autosave"), preset_manager, autosave_last_hash);
+}
+
+/// Serialises the hash check + write (the worker and the exit flush share a
+/// tmp file) and holds the sequence number of the last snapshot written.
+/// Never held while a snapshot is built: building reads plugin state on the
+/// plugin host thread, and the exit flush saves *from* that thread — holding
+/// it across the build deadlocked exit (see core::host_thread).
+static SAVE_LOCK: parking_lot::Mutex<u64> = parking_lot::Mutex::new(0);
+/// Order in which snapshots started building; a later one wins.
+static SNAPSHOT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn save_snapshot_with(
+    build: impl FnOnce() -> crate::domain::preset::Preset,
+    preset_manager: &Arc<crate::domain::preset::PresetManager>,
+    autosave_last_hash: &Arc<AtomicU64>,
+) {
     if RESTORE_IN_PROGRESS.load(Ordering::Acquire) {
         return;
     }
-    // The worker and the exit flush both write through the same tmp file.
-    static SAVE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-    let _save = SAVE_LOCK.lock();
-    let mut preset = build_chain_preset_from_manager(plugin_manager, "autosave");
+    let seq = SNAPSHOT_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+    let mut preset = build();
     // Hash without the timestamp — it changes on every snapshot, so the
     // dedupe would never match. Serialized again with it only on a change.
     let created_at = std::mem::take(&mut preset.created_at);
@@ -164,9 +179,6 @@ fn save_autosave_snapshot(
             return;
         }
     };
-    if hash == autosave_last_hash.load(Ordering::Acquire) {
-        return;
-    }
     preset.created_at = created_at;
     let json = match preset.to_json() {
         Ok(j) => j,
@@ -176,8 +188,19 @@ fn save_autosave_snapshot(
         }
     };
 
+    let mut last_written = SAVE_LOCK.lock();
+    if seq < *last_written {
+        return; // a newer snapshot is already on disk
+    }
+    if hash == autosave_last_hash.load(Ordering::Acquire) {
+        *last_written = seq;
+        return;
+    }
     match preset_manager.save_preset_json(&preset.name, &json) {
-        Ok(_) => autosave_last_hash.store(hash, Ordering::Release),
+        Ok(_) => {
+            *last_written = seq;
+            autosave_last_hash.store(hash, Ordering::Release);
+        }
         Err(e) => log::warn!("Failed to auto-save plugin chain: {e}"),
     }
 }
@@ -250,6 +273,79 @@ pub(crate) mod tests {
         std::fs::remove_file(&file).unwrap();
         save_autosave_snapshot(&plugins, &presets, &hash);
         assert!(!file.exists(), "identical chain rewritten (timestamp in the hash?)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The exit deadlock: the worker builds a snapshot (reading plugin state
+    /// on the host thread) while the host thread runs the exit flush, which
+    /// saves too. Neither may wait on the other.
+    #[test]
+    fn a_save_on_the_host_thread_never_waits_on_a_save_that_is_building() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        let _flag = FLAG_LOCK.lock();
+        let dir = std::env::temp_dir().join(format!("rh-autosave-deadlock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let presets = Arc::new(crate::domain::preset::PresetManager::with_dir(dir.clone()));
+        let hash = Arc::new(AtomicU64::new(0));
+        let snapshot = || crate::core::snapshot::build_chain_preset_from_manager(&Arc::new(crate::plugins::PluginInstanceManager::new()), "autosave");
+
+        let (building_tx, building_rx) = channel();
+        let (host_done_tx, host_done_rx) = channel();
+        // Host job: waits until the worker is mid-build, then saves (exit flush).
+        {
+            let (presets, hash) = (Arc::clone(&presets), Arc::clone(&hash));
+            crate::core::host_thread::post(move || {
+                let _ = building_rx.recv_timeout(Duration::from_secs(5));
+                save_snapshot_with(snapshot, &presets, &hash);
+                let _ = host_done_tx.send(());
+            });
+        }
+        // Worker: its build reads plugin state on the (busy) host thread.
+        let (worker_done_tx, worker_done_rx) = channel();
+        {
+            let (presets, hash) = (Arc::clone(&presets), Arc::clone(&hash));
+            std::thread::spawn(move || {
+                save_snapshot_with(
+                    || {
+                        building_tx.send(()).unwrap();
+                        crate::core::host_thread::run_blocking(|| ());
+                        snapshot()
+                    },
+                    &presets,
+                    &hash,
+                );
+                let _ = worker_done_tx.send(());
+            });
+        }
+        assert!(host_done_rx.recv_timeout(Duration::from_secs(10)).is_ok(), "exit save deadlocked against the worker");
+        assert!(worker_done_rx.recv_timeout(Duration::from_secs(10)).is_ok(), "worker save deadlocked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_snapshot_finished_after_a_newer_one_is_discarded() {
+        let _flag = FLAG_LOCK.lock();
+        let dir = std::env::temp_dir().join(format!("rh-autosave-order-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let presets = Arc::new(crate::domain::preset::PresetManager::with_dir(dir.clone()));
+        let hash = Arc::new(AtomicU64::new(0));
+        let snapshot = |d: &str| {
+            let mut p = crate::core::snapshot::build_chain_preset_from_manager(&Arc::new(crate::plugins::PluginInstanceManager::new()), "autosave");
+            p.description = d.into();
+            p
+        };
+        // The older snapshot starts building; a newer one is built and written meanwhile.
+        save_snapshot_with(
+            || {
+                save_snapshot_with(|| snapshot("newer"), &presets, &hash);
+                snapshot("older")
+            },
+            &presets,
+            &hash,
+        );
+        let saved = std::fs::read_to_string(dir.join("autosave.json")).unwrap();
+        assert!(saved.contains("newer"), "stale snapshot overwrote a newer one: {saved}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

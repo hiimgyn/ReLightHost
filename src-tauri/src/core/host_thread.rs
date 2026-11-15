@@ -11,6 +11,11 @@
 //! It is also every plugin's UI/main thread: VST3 and CLAP editor windows
 //! live here and are driven by this pump (see plugins::gui), because JUCE
 //! binds its MessageManager to the thread that created the plugin.
+//!
+//! Lock rule: never hold a lock while waiting on this thread (`run_blocking`,
+//! `on_host`, anything that reads plugin state) if a host job can take that
+//! same lock — the job waits for the lock, the lock holder waits for the job,
+//! and both hang forever (this is how exit used to hang on the autosave lock).
 
 use std::cell::Cell;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};

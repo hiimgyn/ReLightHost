@@ -64,6 +64,9 @@ pub struct PluginInstance {
     gui_hwnd:       Arc<AtomicIsize>,
     /// Crash protection state
     crash_protection: SharedCrashProtection,
+    /// Why no processor could be created (load failure, unknown add-on,
+    /// unsupported rate) — survives a crash-protection reset.
+    load_error: Option<String>,
     /// Set by the audio thread when the crash limit is hit; the event is
     /// emitted from a normal thread (see `get_crash_statuses`).
     crash_notice_pending: AtomicBool,
@@ -174,17 +177,17 @@ impl PluginInstance {
         let addon_latency = addon_proc.as_ref().map_or(0, |p| p.latency_samples());
         let addon_status = addon_proc.as_ref().map_or(0, |p| pack_status(p.status()));
 
-        let crash_protection = crash_protection::create_shared();
-        if plugin_info.format == PluginFormat::Builtin && addon_proc.is_none() {
+        let load_error = if plugin_info.format == PluginFormat::Builtin && addon.is_none() {
+            Some(format!("add-on '{}' is not available in this version", plugin_info.path))
+        } else if plugin_info.format == PluginFormat::Builtin && addon_proc.is_none() {
             // NoiseSuppressorGui and DeepFilterNetGui key their rate alert on "needs 48000 Hz".
-            crash_protection.lock().status = crash_protection::PluginStatus::Error(format!(
-                "'{}' cannot run at {} Hz (needs 48000 Hz) — passing audio through",
-                plugin_info.name, sample_rate
-            ));
-        }
-        if let Some(err) = load_error {
-            crash_protection.lock().status =
-                crash_protection::PluginStatus::Error(load_error_message(&plugin_info, &err));
+            Some(format!("'{}' cannot run at {} Hz (needs 48000 Hz) — passing audio through", plugin_info.name, sample_rate))
+        } else {
+            load_error.map(|err| load_error_message(&plugin_info, &err))
+        };
+        let crash_protection = crash_protection::create_shared();
+        if let Some(e) = &load_error {
+            crash_protection.lock().status = crash_protection::PluginStatus::Error(e.clone());
         }
 
         Ok(Self {
@@ -207,6 +210,7 @@ impl PluginInstance {
             gui_open:          Arc::new(AtomicBool::new(false)),
             gui_hwnd:          Arc::new(AtomicIsize::new(0)),
             crash_protection,
+            load_error,
             crash_notice_pending: AtomicBool::new(false),
             scope: crate::plugins::core::scope::Scope::new((sample_rate / 100.0).round() as usize),
         })
@@ -530,14 +534,11 @@ impl PluginInstance {
             }
         } else if self.plugin_info.format == PluginFormat::Builtin {
             // Add-on removed: keep what was saved so a re-save loses nothing.
+            // (Its "not available" status is set in `new`.)
             *self.parameters.write() = saved
                 .iter()
                 .map(|p| PluginParameter { id: p.id, name: p.name.clone(), value: p.value, min: p.value, max: p.value, default: p.value })
                 .collect();
-            self.crash_protection.lock().status = crash_protection::PluginStatus::Error(format!(
-                "add-on '{}' is not available in this version",
-                self.plugin_info.path
-            ));
         } else {
             for p in saved {
                 self.set_parameter(p.id, p.value);
@@ -693,9 +694,14 @@ impl PluginInstance {
         }
     }
     
-    /// Reset crash protection status
+    /// Reset crash protection status. A load/availability error stays:
+    /// nothing was loaded, so there is nothing to recover.
     pub fn reset_crash_protection(&self) {
-        self.crash_protection.lock().reset();
+        let mut protection = self.crash_protection.lock();
+        protection.reset();
+        if let Some(e) = &self.load_error {
+            protection.status = crash_protection::PluginStatus::Error(e.clone());
+        }
     }
     
 }
@@ -1302,6 +1308,20 @@ mod state_tests {
         inst.process_stereo(&mut l, &mut r);
         assert_eq!((l[31], r[31]), (0.25, -0.25));
         assert!(matches!(inst.get_crash_status(), crash_protection::PluginStatus::Error(_)), "status must survive processing");
+    }
+
+    #[test]
+    fn unknown_addon_says_unavailable_and_reset_keeps_it() {
+        let info = PluginInfo { path: "builtin::gone".into(), ..compressor().plugin_info.clone() };
+        let inst = PluginInstance::new(info, 44_100.0, 512).unwrap();
+        let status = |i: &PluginInstance| match i.get_crash_status() {
+            crash_protection::PluginStatus::Error(e) => e,
+            s => format!("{s:?}"),
+        };
+        let want = "add-on 'builtin::gone' is not available in this version";
+        assert_eq!(status(&inst), want, "not a sample-rate problem");
+        inst.reset_crash_protection();
+        assert_eq!(status(&inst), want, "reset must not clear an availability error");
     }
 
     struct FakeAddon(Arc<AtomicU32>);

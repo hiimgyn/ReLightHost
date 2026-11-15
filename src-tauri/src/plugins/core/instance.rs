@@ -1290,7 +1290,9 @@ mod state_tests {
                 assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{}", d.id);
             }
             let want = match d.id {
-                "builtin::noise_suppressor" | "builtin::deep_filter" => 960,
+                "builtin::noise_suppressor" => 960,
+                // 960 + n − gcd(n, 480) at block n = 480
+                "builtin::deep_filter" => 960,
                 _ => 0,
             };
             assert_eq!(inst.latency_samples(), want, "{}", d.id);

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 const SR: usize = 48_000;
 
-fn lcg(seed: u32, n: usize) -> Vec<f32> {
+pub(crate) fn lcg(seed: u32, n: usize) -> Vec<f32> {
     let mut s = seed;
     (0..n)
         .map(|_| {

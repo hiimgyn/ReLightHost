@@ -6,6 +6,7 @@ pub mod gui;
 pub mod processor;
 pub use core::crash_protection;
 pub mod builtin;
+pub mod addons;
 
 pub use scanner::PluginScanner;
 pub use instance::PluginInstanceManager;

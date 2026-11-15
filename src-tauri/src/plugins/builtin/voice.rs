@@ -12,9 +12,36 @@
 /// | 4  | Width    |  0.0 … 1.0   |   0.0   | Doubler     |
 /// | 5  | Ceiling  | −12 … 0 dB   |   0.0   | Limiter     |
 use std::f64::consts::PI;
-use super::BuiltinProcessor;
+use relight_addon_api::{AddonDescriptor, AddonProcessor, ParamSpec, Scale};
+
+const fn p(id: u32, name: &'static str, min: f32, max: f32, default: f32, unit: &'static str, scale: Scale) -> ParamSpec {
+    ParamSpec { id, name, min, max, default, unit, scale, step: 0.0, choices: &[] }
+}
 
 pub const ID: &str = "builtin::voice";
+
+static ADDON_PARAMS: &[ParamSpec] = &[
+    p(0, "Low", -12.0, 12.0, 0.0, "dB", Scale::Db),
+    p(1, "Mid", -12.0, 12.0, 0.0, "dB", Scale::Db),
+    p(2, "High", -12.0, 12.0, 0.0, "dB", Scale::Db),
+    p(3, "Drive", 0.0, 1.0, 0.0, "", Scale::Linear),
+    p(4, "Width", 0.0, 1.0, 0.0, "", Scale::Linear),
+    p(5, "Ceiling", -12.0, 0.0, 0.0, "dB", Scale::Db),
+];
+static ADDON_METERS: &[&str] = &[];
+
+pub static ADDON: AddonDescriptor = AddonDescriptor {
+    id: ID,
+    name: "Voice Designer",
+    category: "Voice",
+    version: 1,
+    params: ADDON_PARAMS,
+    meters: ADDON_METERS,
+    sample_rates: &[],
+    create: |sr| Some(Box::new(Voice::new(sr))),
+    migrate: None,
+};
+const _: () = assert!(relight_addon_api::check_params(ADDON_PARAMS, ADDON_METERS));
 
 const P_LOW:     u32 = 0;
 const P_MID:     u32 = 1;
@@ -253,8 +280,8 @@ impl Voice {
     }
 }
 
-impl BuiltinProcessor for Voice {
-    fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+impl AddonProcessor for Voice {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], _meters: &mut [f32]) {
         let ceiling = 10_f32.powf(self.ceiling_db / 20.0);
         for i in 0..left.len() {
             // 1. EQ
@@ -306,7 +333,7 @@ mod tests {
         let mut v = Voice::new(48_000.0);
         let run = |v: &mut Voice, x: f32, n: usize| {
             let (mut l, mut r) = (vec![x; n], vec![x; n]);
-            v.process_stereo(&mut l, &mut r);
+            v.process(&mut l, &mut r, &mut []);
             r
         };
         v.set_parameter(P_WIDTH, 1.0);

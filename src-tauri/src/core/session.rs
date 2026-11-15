@@ -321,6 +321,11 @@ fn preset_load_plan(preset: &crate::domain::preset::Preset) -> Vec<(crate::plugi
                 category: p.plugin_category.clone().unwrap_or_default(),
                 sub_index: p.plugin_index,
             };
+            // Built-ins: the registry is the source of truth for display metadata.
+            let info = match crate::plugins::addons::find(path).filter(|_| format == crate::plugins::PluginFormat::Builtin) {
+                Some(d) => crate::plugins::PluginInfo { id: info.id, path: info.path, sub_index: info.sub_index, ..crate::plugins::addons::plugin_info(d) },
+                None => info,
+            };
             Some((info, p))
         })
         .collect()

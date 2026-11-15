@@ -1,6 +1,7 @@
 //! Golden renders: pin the built-in DSP's exact output so a refactor can
 //! prove nothing changed. Regenerate with `GOLDEN_WRITE=1`.
-use super::{builtin_initial_params, create_builtin, BuiltinProcessor};
+use crate::plugins::addons::{find, initial_params};
+use relight_addon_api::AddonProcessor;
 use std::path::PathBuf;
 
 const SR: usize = 48_000;
@@ -41,10 +42,10 @@ pub(crate) fn golden_input() -> (Vec<f32>, Vec<f32>) {
     (chan(220.0, 1), chan(330.0, 2))
 }
 
-pub(crate) fn render(p: &mut dyn BuiltinProcessor) -> Vec<f32> {
+pub(crate) fn render(p: &mut dyn AddonProcessor) -> Vec<f32> {
     let (mut l, mut r) = golden_input();
     for (cl, cr) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
-        p.process_stereo(cl, cr);
+        p.process(cl, cr, &mut [0.0]);
     }
     l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]).collect()
 }
@@ -76,7 +77,7 @@ pub(crate) const CUSTOM_DEEP: &[(u32, f32)] = &[(0, 18.0), (1, 0.1), (2, 0.7), (
 
 fn run(id: &str, short: &str, custom: &[(u32, f32)]) {
     for (suffix, params) in [("default", &[][..]), ("custom", custom)] {
-        let mut p = create_builtin(id, SR as f32).unwrap();
+        let mut p = (find(id).unwrap().create)(SR as f32).unwrap();
         for &(pid, v) in params {
             p.set_parameter(pid, v);
         }
@@ -116,7 +117,7 @@ fn builtin_param_tables_match_golden() {
     ];
     let got: serde_json::Value = ids
         .iter()
-        .map(|id| (id.to_string(), serde_json::to_value(builtin_initial_params(id)).unwrap()))
+        .map(|id| (id.to_string(), serde_json::to_value(initial_params(find(id).unwrap())).unwrap()))
         .collect::<serde_json::Map<_, _>>()
         .into();
     let path = golden_dir().join("params.json");

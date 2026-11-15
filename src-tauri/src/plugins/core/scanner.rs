@@ -529,50 +529,7 @@ impl PluginScanner {
     /// Returns the list of processors built into the application.
     /// These are always available and do not need file scanning.
     pub fn builtin_plugins() -> Vec<PluginInfo> {
-        use crate::plugins::types::PluginFormat;
-        use crate::plugins::builtin::{noise_suppressor, deep_filter, compressor, voice};
-        vec![
-            PluginInfo {
-                id:       noise_suppressor::ID.to_string(),
-                name:     "Noise Suppressor (RNNoise)".to_string(),
-                vendor:   "System".to_string(),
-                version:  env!("CARGO_PKG_VERSION").to_string(),
-                path:     noise_suppressor::ID.to_string(),
-                format:   PluginFormat::Builtin,
-                category: "Noise Reduction".to_string(),
-            sub_index: 0,
-            },
-            PluginInfo {
-                id:       deep_filter::ID.to_string(),
-                name:     "AI Noise Suppressor (DeepFilterNet)".to_string(),
-                vendor:   "System".to_string(),
-                version:  env!("CARGO_PKG_VERSION").to_string(),
-                path:     deep_filter::ID.to_string(),
-                format:   PluginFormat::Builtin,
-                category: "Noise Reduction".to_string(),
-            sub_index: 0,
-            },
-            PluginInfo {
-                id:       compressor::ID.to_string(),
-                name:     "Compressor".to_string(),
-                vendor:   "System".to_string(),
-                version:  env!("CARGO_PKG_VERSION").to_string(),
-                path:     compressor::ID.to_string(),
-                format:   PluginFormat::Builtin,
-                category: "Dynamics".to_string(),
-            sub_index: 0,
-            },
-            PluginInfo {
-                id:       voice::ID.to_string(),
-                name:     "Voice Designer".to_string(),
-                vendor:   "System".to_string(),
-                version:  env!("CARGO_PKG_VERSION").to_string(),
-                path:     voice::ID.to_string(),
-                format:   PluginFormat::Builtin,
-                category: "Voice".to_string(),
-            sub_index: 0,
-            },
-        ]
+        crate::plugins::addons::ADDONS.iter().map(|d| crate::plugins::addons::plugin_info(d)).collect()
     }
 }
 

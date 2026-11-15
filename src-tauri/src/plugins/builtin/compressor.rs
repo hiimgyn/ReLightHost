@@ -13,9 +13,37 @@
 ///
 /// Topology: feed-forward peak detector → soft-knee gain computer →
 /// asymmetric envelope follower → makeup gain → parallel wet/dry blend.
-use super::BuiltinProcessor;
+use relight_addon_api::{AddonDescriptor, AddonProcessor, ParamSpec, Scale};
+
+const fn p(id: u32, name: &'static str, min: f32, max: f32, default: f32, unit: &'static str, scale: Scale) -> ParamSpec {
+    ParamSpec { id, name, min, max, default, unit, scale, step: 0.0, choices: &[] }
+}
 
 pub const ID: &str = "builtin::compressor";
+
+static ADDON_PARAMS: &[ParamSpec] = &[
+    p(0, "Threshold", -60.0, 0.0, -18.0, "dB", Scale::Db),
+    p(1, "Ratio", 1.0, 20.0, 4.0, ":1", Scale::Log),
+    p(2, "Attack", 0.1, 200.0, 10.0, "ms", Scale::Log),
+    p(3, "Release", 10.0, 2000.0, 100.0, "ms", Scale::Log),
+    p(4, "Makeup Gain", 0.0, 30.0, 0.0, "dB", Scale::Db),
+    p(5, "Knee", 0.0, 12.0, 3.0, "dB", Scale::Db),
+    p(6, "Mix", 0.0, 1.0, 1.0, "", Scale::Linear),
+];
+static ADDON_METERS: &[&str] = &[];
+
+pub static ADDON: AddonDescriptor = AddonDescriptor {
+    id: ID,
+    name: "Compressor",
+    category: "Dynamics",
+    version: 1,
+    params: ADDON_PARAMS,
+    meters: ADDON_METERS,
+    sample_rates: &[],
+    create: |sr| Some(Box::new(Compressor::new(sr))),
+    migrate: None,
+};
+const _: () = assert!(relight_addon_api::check_params(ADDON_PARAMS, ADDON_METERS));
 
 pub struct Compressor {
     // Parameters
@@ -68,8 +96,8 @@ impl Compressor {
     }
 }
 
-impl BuiltinProcessor for Compressor {
-    fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+impl AddonProcessor for Compressor {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], _meters: &mut [f32]) {
         let sr = self.sample_rate;
 
         // Pre-compute time-constant coefficients; these are cheap and avoid
@@ -125,6 +153,4 @@ impl BuiltinProcessor for Compressor {
             _ => {}
         }
     }
-
-    fn get_vad(&self) -> f32 { 0.0 }
 }

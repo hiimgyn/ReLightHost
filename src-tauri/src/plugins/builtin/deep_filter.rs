@@ -8,9 +8,34 @@ use ringbuf::{HeapRb, HeapProd, HeapCons, traits::{Producer, Consumer, Split, Ob
 use df::tract::{DfParams, DfTract, RuntimeParams};
 use tract_core::ndarray::Array2;
 
-use super::BuiltinProcessor;
+use relight_addon_api::{AddonDescriptor, AddonProcessor, ParamSpec, Scale};
+
+const fn p(id: u32, name: &'static str, min: f32, max: f32, default: f32, unit: &'static str, scale: Scale) -> ParamSpec {
+    ParamSpec { id, name, min, max, default, unit, scale, step: 0.0, choices: &[] }
+}
 
 pub const ID: &str = "builtin::deep_filter";
+
+static ADDON_PARAMS: &[ParamSpec] = &[
+    p(0, "Max Attenuation", 0.0, 60.0, 24.0, "dB", Scale::Db),
+    p(1, "Post-filter Threshold", 0.0, 1.0, 0.2, "", Scale::Linear),
+    p(2, "Mix", 0.0, 1.0, 1.0, "", Scale::Linear),
+    p(3, "Output Gain", -24.0, 12.0, 0.0, "dB", Scale::Db),
+];
+static ADDON_METERS: &[&str] = &["vad"];
+
+pub static ADDON: AddonDescriptor = AddonDescriptor {
+    id: ID,
+    name: "AI Noise Suppressor (DeepFilterNet)",
+    category: "Noise Reduction",
+    version: 1,
+    params: ADDON_PARAMS,
+    meters: ADDON_METERS,
+    sample_rates: &[48000],
+    create: |sr| DeepFilterProcessor::new(sr).map(|p| Box::new(p) as Box<dyn AddonProcessor>),
+    migrate: None,
+};
+const _: () = assert!(relight_addon_api::check_params(ADDON_PARAMS, ADDON_METERS));
 const HOP_SIZE: usize = 480; // 10ms frame at 48kHz
 const RB_CAPACITY: usize = 48000; // 1 second buffer
 
@@ -33,7 +58,7 @@ pub struct DeepFilterProcessor {
     cons_from_worker: HeapCons<[f32; 4]>,
     /// Keeps worker-output backlog (from late inference hops) from turning
     /// into permanent extra latency.
-    trimmer: crate::audio::mixer::BacklogTrimmer,
+    trimmer: relight_addon_api::rt::BacklogTrimmer,
 
     /// Dry copy of everything in the pipeline: one entry per worker output
     /// sample still to come (primed with the hop of zeros the worker's first
@@ -96,7 +121,7 @@ impl DeepFilterProcessor {
             .spawn(move || {
                 // Boost thread priority on Windows
                 #[cfg(target_os = "windows")]
-                let _mmcss = crate::audio::mmcss::boost_current_thread_to_pro_audio();
+                let _mmcss = relight_addon_api::mmcss::boost_current_thread_to_pro_audio();
 
                 // Initialize DfTract entirely inside the worker thread (DfTract is !Send, so owning
                 // it solely on this thread satisfies Rust safety guarantees with zero unsafe code).
@@ -189,7 +214,7 @@ impl DeepFilterProcessor {
             prod_to_worker,
             cons_from_worker,
             // Headroom: half a hop — inference time varies from hop to hop.
-            trimmer: crate::audio::mixer::BacklogTrimmer::new(48_000, HOP_SIZE / 2),
+            trimmer: relight_addon_api::rt::BacklogTrimmer::new(48_000, HOP_SIZE / 2),
             dry_l: primed_dry(),
             dry_r: primed_dry(),
             dry_ahead: 0,
@@ -217,8 +242,9 @@ impl Drop for DeepFilterProcessor {
     }
 }
 
-impl BuiltinProcessor for DeepFilterProcessor {
-    fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+impl AddonProcessor for DeepFilterProcessor {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], meters: &mut [f32]) {
+        meters[0] = self.get_vad();
         let n = left.len().min(right.len());
         if n == 0 || !self.running.load(Ordering::Relaxed) {
             return; // empty block, or the model failed to load: pass through
@@ -319,7 +345,9 @@ impl BuiltinProcessor for DeepFilterProcessor {
     /// low-latency model (no conv/DF lookahead) ≈ 20 ms at 48 kHz. Inference
     /// hiccups can add more; BacklogTrimmer takes that back out.
     fn latency_samples(&self) -> u32 { (HOP_SIZE * 2) as u32 }
+}
 
+impl DeepFilterProcessor {
     fn get_vad(&self) -> f32 {
         f32::from_bits(self.last_vad_bits.load(Ordering::Relaxed))
     }
@@ -341,7 +369,7 @@ mod tests {
             // Wait for the worker after each block so timing can't change the output.
             let (mut l, mut r) = golden_input();
             for (cl, cr) in l.chunks_mut(480).zip(r.chunks_mut(480)) {
-                df.process_stereo(cl, cr);
+                df.process(cl, cr, &mut [0.0]);
                 let t = std::time::Instant::now();
                 while df.cons_from_worker.occupied_len() < 480 {
                     assert!(t.elapsed() < Duration::from_secs(5), "worker stalled");
@@ -372,7 +400,7 @@ mod tests {
         // Process a block
         let mut left = vec![0.05f32; 480];
         let mut right = vec![-0.05f32; 480];
-        df.process_stereo(&mut left, &mut right);
+        df.process(&mut left, &mut right, &mut [0.0]);
 
         assert_eq!(left.len(), 480);
         assert_eq!(right.len(), 480);
@@ -394,7 +422,7 @@ mod tests {
         let df = DeepFilterProcessor {
             prod_to_worker,
             cons_from_worker,
-            trimmer: crate::audio::mixer::BacklogTrimmer::new(48_000, HOP_SIZE / 2),
+            trimmer: relight_addon_api::rt::BacklogTrimmer::new(48_000, HOP_SIZE / 2),
             dry_l: primed_dry(),
             dry_r: primed_dry(),
             dry_ahead: 0,
@@ -420,7 +448,7 @@ mod tests {
         for k in 0..2000 {
             let input: Vec<f32> = (0..block).map(|i| 0.5 + 0.1 * (((k * block + i) as f32) * 0.01).sin()).collect();
             let (mut l, mut r) = (input.clone(), input);
-            df.process_stereo(&mut l, &mut r);
+            df.process(&mut l, &mut r, &mut [0.0]);
             if df.started {
                 assert!(l.iter().all(|&s| s > 0.3), "block {k}: gap in the output");
             }

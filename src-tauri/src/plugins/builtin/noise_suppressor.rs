@@ -13,7 +13,11 @@
 /// ~70 ms time constant to prevent audible clicks.
 use std::collections::VecDeque;
 use nnnoiseless::DenoiseState;
-use super::BuiltinProcessor;
+use relight_addon_api::{AddonDescriptor, AddonProcessor, ParamSpec, Scale};
+
+const fn p(id: u32, name: &'static str, min: f32, max: f32, default: f32, unit: &'static str, scale: Scale) -> ParamSpec {
+    ParamSpec { id, name, min, max, default, unit, scale, step: 0.0, choices: &[] }
+}
 
 const FRAME_SIZE: usize = nnnoiseless::FRAME_SIZE; // 480
 const SCALE: f32 = 32768.0;
@@ -22,6 +26,27 @@ const SCALE: f32 = 32768.0;
 const GATE_COEFF: f32 = 0.9997;
 
 pub const ID: &str = "builtin::noise_suppressor";
+
+static ADDON_PARAMS: &[ParamSpec] = &[
+    p(0, "Mix", 0.0, 1.0, 1.0, "", Scale::Linear),
+    p(1, "VAD Gate Threshold", 0.0, 1.0, 0.0, "", Scale::Linear),
+    p(2, "Gate Attenuation", 0.0, 1.0, 0.0, "", Scale::Linear),
+    p(3, "Output Gain", -24.0, 12.0, 0.0, "dB", Scale::Db),
+];
+static ADDON_METERS: &[&str] = &["vad"];
+
+pub static ADDON: AddonDescriptor = AddonDescriptor {
+    id: ID,
+    name: "Noise Suppressor (RNNoise)",
+    category: "Noise Reduction",
+    version: 1,
+    params: ADDON_PARAMS,
+    meters: ADDON_METERS,
+    sample_rates: &[48000],
+    create: |sr| NoiseSuppressor::new(sr).map(|p| Box::new(p) as Box<dyn AddonProcessor>),
+    migrate: None,
+};
+const _: () = assert!(relight_addon_api::check_params(ADDON_PARAMS, ADDON_METERS));
 
 pub struct NoiseSuppressor {
     state_l: Box<DenoiseState<'static>>,
@@ -95,8 +120,8 @@ impl NoiseSuppressor {
     }
 }
 
-impl BuiltinProcessor for NoiseSuppressor {
-    fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+impl AddonProcessor for NoiseSuppressor {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], meters: &mut [f32]) {
         let n           = left.len();
         let mix         = self.mix;
         let output_gain = self.output_gain;
@@ -149,6 +174,7 @@ impl BuiltinProcessor for NoiseSuppressor {
             left[i]  = (dry_l + mix * (wet_l - dry_l)) * self.gate_gain * output_gain;
             right[i] = (dry_r + mix * (wet_r - dry_r)) * self.gate_gain * output_gain;
         }
+        meters[0] = self.last_vad;
     }
 
     fn set_parameter(&mut self, id: u32, value: f32) {
@@ -161,8 +187,6 @@ impl BuiltinProcessor for NoiseSuppressor {
         }
     }
 
-    fn get_vad(&self) -> f32 { self.last_vad }
-
     /// Output lags input by exactly one RNNoise frame (see `new`).
     fn latency_samples(&self) -> u32 { (FRAME_SIZE * 2) as u32 }
 }
@@ -173,7 +197,7 @@ impl Default for NoiseSuppressor {
 
 // SAFETY: DenoiseState contains only plain f32 arrays; safe to send across
 // threads as long as only one thread calls it at a time (enforced by the
-// Mutex<Option<Box<dyn BuiltinProcessor>>> in PluginInstance).
+// Mutex in PluginInstance in PluginInstance).
 unsafe impl Send for NoiseSuppressor {}
 
 #[cfg(test)]
@@ -189,7 +213,7 @@ mod tests {
             let mut output = Vec::with_capacity(input.len());
             for chunk in input.chunks(block) {
                 let (mut l, mut r) = (chunk.to_vec(), chunk.to_vec());
-                ns.process_stereo(&mut l, &mut r);
+                ns.process(&mut l, &mut r, &mut [0.0]);
                 output.extend_from_slice(&l);
             }
             for (t, &y) in output.iter().enumerate() {
@@ -214,7 +238,7 @@ mod tests {
         let mut out = Vec::with_capacity(n);
         for chunk in input.chunks(256) {
             let (mut l, mut r) = (chunk.to_vec(), chunk.to_vec());
-            ns.process_stereo(&mut l, &mut r);
+            ns.process(&mut l, &mut r, &mut [0.0]);
             out.extend_from_slice(&l);
         }
         let corr = |lag: usize| -> f32 { (lag..n).map(|t| out[t] * input[t - lag]).sum() };

@@ -8,7 +8,7 @@ use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, Plu
 use crate::plugins::processor::clap::ClapProcessor;
 use crate::plugins::processor::vst2::Vst2Processor;
 use crate::plugins::processor::vst3::Vst3Processor;
-use crate::plugins::builtin::BuiltinProcessor;
+use relight_addon_api::AddonProcessor;
 use crate::plugins::crash_protection::{self, SharedCrashProtection};
 use anyhow::{Error, Result};
 use rayon::prelude::*;
@@ -37,7 +37,7 @@ pub struct PluginInstance {
     /// CLAP audio processor — present when format == CLAP.
     clap_processor: Mutex<Option<ClapProcessor>>,
     /// Built-in processor — present when format == Builtin.
-    builtin_processor: Mutex<Option<Box<dyn BuiltinProcessor>>>,
+    builtin_processor: Mutex<Option<BuiltinSlot>>,
     /// Last state blob successfully read from (or written to) the plugin.
     /// Returned by `get_state_binary` when a live read isn't possible right
     /// now (processor busy) so an
@@ -60,6 +60,23 @@ pub struct PluginInstance {
     /// Last VAD reading (f32 bits), returned while the audio thread holds
     /// the processor so the meter doesn't drop to 0.
     last_vad: AtomicU32,
+}
+
+/// A built-in add-on plus its fixed meter buffer (no per-block allocation).
+struct BuiltinSlot {
+    proc: Box<dyn AddonProcessor>,
+    meters: [f32; 8],
+    n: usize,
+}
+
+impl BuiltinSlot {
+    fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let n = self.n;
+        self.proc.process(left, right, &mut self.meters[..n]);
+    }
+    fn latency_samples(&self) -> u32 {
+        self.proc.latency_samples()
+    }
 }
 
 impl PluginInstance {
@@ -139,34 +156,27 @@ impl PluginInstance {
             None
         };
 
-        let builtin_processor: Option<Box<dyn BuiltinProcessor>> =
-            if plugin_info.format == PluginFormat::Builtin {
-                let mut proc = crate::plugins::builtin::create_builtin(
-                    &plugin_info.path, sample_rate as f32,
-                );
-                if proc.is_some() {
-                    log::info!("{} Built-in processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
-                } else {
-                    log::warn!("{} Built-in '{}' ({}) unavailable at {} Hz", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, plugin_info.path, sample_rate);
-                }
-                // Apply default parameter values to the processor so its internal
-                // state matches what the frontend shows from the first frame.
-                if let Some(ref mut p) = proc {
-                    for param in crate::plugins::builtin::builtin_initial_params(&plugin_info.path) {
-                        p.set_parameter(param.id, param.value as f32);
-                    }
-                }
-                proc
-            } else {
-                None
-            };
-
-        // Pre-populate parameters for built-in plugins.
-        let initial_params = if plugin_info.format == PluginFormat::Builtin {
-            crate::plugins::builtin::builtin_initial_params(&plugin_info.path)
+        let addon = if plugin_info.format == PluginFormat::Builtin {
+            crate::plugins::addons::find(&plugin_info.path)
         } else {
-            Vec::new()
+            None
         };
+        let initial_params = addon.map(crate::plugins::addons::initial_params).unwrap_or_default();
+        let builtin_processor: Option<BuiltinSlot> = addon.and_then(|d| {
+            let mut proc = (d.create)(sample_rate as f32);
+            if proc.is_some() {
+                log::info!("{} Built-in processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
+            } else {
+                log::warn!("{} Built-in '{}' ({}) unavailable at {} Hz", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, plugin_info.path, sample_rate);
+            }
+            // Apply default parameter values so the processor matches the frontend.
+            if let Some(ref mut p) = proc {
+                for param in &initial_params {
+                    p.set_parameter(param.id, param.value as f32);
+                }
+            }
+            proc.map(|proc| BuiltinSlot { proc, meters: [0.0; 8], n: d.meters.len() })
+        });
 
         let crash_protection = crash_protection::create_shared();
         if plugin_info.format == PluginFormat::Builtin && builtin_processor.is_none() {
@@ -264,6 +274,11 @@ impl PluginInstance {
             PluginFormat::Builtin => self.builtin_processor.try_lock_for(t).and_then(|g| g.as_ref().map(|p| p.latency_samples())),
         };
         reported.unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    fn meters_len(&self) -> usize {
+        self.builtin_processor.lock().as_ref().map_or(0, |s| s.n)
     }
 
     /// (input, output) peak per 10 ms window, oldest first (≈2 s).
@@ -457,7 +472,7 @@ impl PluginInstance {
                     .find(|p| p.id == param_id)
                     .map(|p| p.value as f32)
                     .unwrap_or(0.0);
-                proc.set_parameter(param_id, raw);
+                proc.proc.set_parameter(param_id, raw);
             }
         }
     }
@@ -467,7 +482,7 @@ impl PluginInstance {
     pub fn get_builtin_vad(&self) -> f32 {
         if let Some(guard) = self.builtin_processor.try_lock() {
             if let Some(ref proc) = *guard {
-                let vad = proc.get_vad();
+                let vad = proc.meters[0];
                 self.last_vad.store(vad.to_bits(), Ordering::Relaxed);
                 return vad;
             }
@@ -1199,6 +1214,29 @@ mod state_tests {
         assert_eq!(snap.len(), 1);
         assert!((snap[0].0 - 0.1).abs() < 1e-3, "pre {}", snap[0].0);
         assert!((snap[0].1 - 0.398).abs() < 0.01, "post {}", snap[0].1);
+    }
+
+    #[test]
+    fn every_addon_loads_and_processes() {
+        let mut s = 12345u32;
+        for d in crate::plugins::addons::ADDONS {
+            let info = crate::plugins::addons::plugin_info(d);
+            let inst = PluginInstance::new(info, 48_000.0, 480).unwrap();
+            for _ in 0..200 {
+                let mut noise = || {
+                    (0..480).map(|_| { s = s.wrapping_mul(1664525).wrapping_add(1013904223); (s >> 8) as f32 / 16_777_216.0 - 0.5 }).collect::<Vec<f32>>()
+                };
+                let (mut l, mut r) = (noise(), noise());
+                inst.process_stereo(&mut l, &mut r);
+                assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{}", d.id);
+            }
+            let want = match d.id {
+                "builtin::noise_suppressor" | "builtin::deep_filter" => 960,
+                _ => 0,
+            };
+            assert_eq!(inst.latency_samples(), want, "{}", d.id);
+            assert_eq!(inst.meters_len(), d.meters.len(), "{}", d.id);
+        }
     }
 
     #[test]

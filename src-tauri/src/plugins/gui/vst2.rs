@@ -1,15 +1,21 @@
-//! VST2 editor GUI hosting on Windows.
+//! VST2 editor hosting — Win32 host window + `effEditOpen` embedding.
 //!
-//! Opens the plugin editor inside a native Win32 host window, mirroring how
-//! VST3 GUIs are hosted in vst3_gui.rs.  The key mechanics:
-//!   1. Create a regular Win32 window as the "parent frame".
-//!   2. Call `effEditOpen(hwnd)` — the plugin creates a child window inside ours.
-//!   3. Run a standard blocking Win32 message loop.
-//!   4. On close: `effEditClose`, then let the GUI thread exit naturally.
+//! The editor lives on the plugin host thread (see core::host_thread), the
+//! thread that created the plugin: JUCE VST2 plugins bind their
+//! MessageManager to it, so an editor driven from another thread races its
+//! own timers (the same split that crashed VST3 editors). The host thread's
+//! message pump drives the window, like CLAP's and VST3's (gui/clap.rs,
+//! gui/vst3.rs); there is no per-editor thread.
+//!   1. create the host window, `effEditOpen(hwnd)` (the plugin creates a
+//!      child window inside ours), refit to `effEditGetRect`, show
+//!   2. a timer drives `effEditIdle`
+//!   3. WM_CLOSE: `effEditClose` → destroy the host window (the editor goes
+//!      before its parent window does)
+//!   4. WM_NCDESTROY: release the plugin, then clear the GUI-open flag / HWND
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize};
 
 use super::super::processor::vst2::RawPlugin;
 
@@ -22,12 +28,14 @@ pub(crate) fn open_vst2_gui(
     gui_flag: Arc<AtomicBool>,
     _gui_hwnd: Arc<AtomicIsize>,
 ) -> Result<()> {
-    gui_flag.store(false, Ordering::Release);
-    Err(anyhow!("VST2 GUI is only supported on Windows: {}", plugin_name))
+    gui_flag.store(false, std::sync::atomic::Ordering::Release);
+    Err(anyhow::anyhow!("VST2 GUI is only supported on Windows: {}", plugin_name))
 }
 
 // ── Windows implementation ────────────────────────────────────────────────────
 
+/// Creates, opens and shows the editor on the plugin host thread and
+/// returns once it is up. The window owns it from then on.
 #[cfg(target_os = "windows")]
 pub(crate) fn open_vst2_gui(
     plugin: Arc<Mutex<RawPlugin>>,
@@ -35,55 +43,22 @@ pub(crate) fn open_vst2_gui(
     gui_flag: Arc<AtomicBool>,
     gui_hwnd: Arc<AtomicIsize>,
 ) -> Result<()> {
-    // Verify the plugin has an editor before spawning a thread.
-    {
-        let guard = plugin.lock()
-            .map_err(|_| anyhow!("VST2 plugin mutex poisoned for '{}'", plugin_name))?;
-        if !guard.has_editor() {
-            gui_flag.store(false, Ordering::Release);
-            return Err(anyhow!("'{}' has no VST2 editor", plugin_name));
-        }
-    }
-
-    let plugin_clone = Arc::clone(&plugin);
-    let name_owned = plugin_name.to_string();
-
-    std::thread::Builder::new()
-        .name(format!("vst2-gui-{}", plugin_name))
-        .stack_size(4 * 1024 * 1024) // 4 MB — plenty for any plugin GUI
-        .spawn(move || {
-            // GuiFlagGuard clears the "GUI open" flag and the stored HWND when
-            // this thread exits for any reason (normal close, panic, error).
-            struct GuiFlagGuard(Arc<AtomicBool>, Arc<AtomicIsize>);
-            impl Drop for GuiFlagGuard {
-                fn drop(&mut self) {
-                    self.1.store(0, Ordering::Release);
-                    self.0.store(false, Ordering::Release);
-                    crate::app_events::emit_plugin_chain_changed("gui_close", None);
-                    log::debug!("VST2 GUI flag cleared");
-                }
-            }
-            let _guard = GuiFlagGuard(gui_flag, Arc::clone(&gui_hwnd));
-
-            if let Err(e) = win::run_vst2_editor_impl(&plugin_clone, &name_owned, &gui_hwnd) {
-                log::error!("VST2 GUI error for '{}': {}", name_owned, e);
-            }
-        })
-        .map_err(|e| anyhow!("Failed to spawn VST2 GUI thread: {}", e))?;
-
-    Ok(())
+    let name = plugin_name.to_string();
+    crate::core::host_thread::run_blocking(move || win::open(plugin, &name, gui_flag, gui_hwnd))
 }
 
 // ── Win32 GUI implementation ──────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
 mod win {
+    use super::super::super::processor::vst2::EditorIdle;
     use super::RawPlugin;
     use anyhow::{anyhow, Result};
+    use std::cell::Cell;
     use std::ptr;
     use std::sync::{Arc, Mutex};
-    use std::sync::atomic::{AtomicIsize, Ordering};
-    use windows_sys::Win32::Foundation::RECT;
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetModuleHandleA, LoadLibraryA, GetProcAddress};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -93,15 +68,134 @@ mod win {
     const IDLE_TIMER: usize = 1;
     const IDLE_INTERVAL_MS: u32 = 30;
 
-    type CloseHook = Box<dyn FnOnce()>;
-    thread_local! {
-        /// Closes the editor (`effEditClose`) — run from WM_CLOSE *before* the
-        /// host window, and with it the plugin's child window, is destroyed.
-        static TL_CLOSE: std::cell::RefCell<Option<CloseHook>> = const { std::cell::RefCell::new(None) };
+    /// Per-window state, owned by the window (GWLP_USERDATA) and freed on
+    /// WM_NCDESTROY.
+    struct Editor {
+        plugin: Arc<Mutex<RawPlugin>>,
+        idle: EditorIdle,
+        /// effEditClose already sent.
+        closed: Cell<bool>,
+        gui_flag: Arc<AtomicBool>,
+        gui_hwnd: Arc<AtomicIsize>,
     }
 
-    pub(super) fn set_close_hook(hook: CloseHook) {
-        TL_CLOSE.with(|h| *h.borrow_mut() = Some(hook));
+    impl Editor {
+        /// `effEditClose`, while the parent window still exists.
+        fn close_view(&self) {
+            if self.closed.replace(true) {
+                return;
+            }
+            if let Ok(mut p) = self.plugin.lock() {
+                p.editor_close();
+            }
+        }
+    }
+
+    unsafe fn editor<'a>(hwnd: HWND) -> Option<&'a Editor> {
+        (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Editor).as_ref()
+    }
+
+    /// Must run on the plugin host thread.
+    pub(super) fn open(
+        plugin: Arc<Mutex<RawPlugin>>,
+        plugin_name: &str,
+        gui_flag: Arc<AtomicBool>,
+        gui_hwnd: Arc<AtomicIsize>,
+    ) -> Result<()> {
+        // The plugin mutex is held only for these editor calls, not for the
+        // editor's lifetime: the audio thread try_locks it every block.
+        let mut guard = plugin.lock()
+            .map_err(|_| anyhow!("VST2 plugin mutex poisoned for '{}'", plugin_name))?;
+        if !guard.has_editor() {
+            return Err(anyhow!("'{}' has no VST2 editor", plugin_name));
+        }
+        let (mut width, mut height) = guard.editor_size();
+        if width  <= 0 { width  = 640; }
+        if height <= 0 { height = 480; }
+
+        let hwnd = create_host_window(plugin_name, width, height)?;
+        // The plugin creates a child window at (0, 0) inside hwnd.
+        if !guard.editor_open(hwnd) {
+            unsafe { DestroyWindow(hwnd); }
+            return Err(anyhow!("'{}': VST2 effEditOpen returned false", plugin_name));
+        }
+        // The plugin may pump messages inside effEditOpen (a licence
+        // dialog) and the window can be closed meanwhile.
+        if unsafe { IsWindow(hwnd) } == 0 {
+            guard.editor_close();
+            return Err(anyhow!("'{}' editor was closed while opening", plugin_name));
+        }
+        let idle = guard.editor_idle_handle();
+
+        // Some plugins report the correct size only after open().
+        let (post_w, post_h) = guard.editor_size();
+        drop(guard);
+        if post_w > 10 && post_h > 10 && (post_w != width || post_h != height) {
+            let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+            let mut wr = RECT { left: 0, top: 0, right: post_w, bottom: post_h };
+            unsafe {
+                let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd as _);
+                if dpi == 0 || !try_adjust_window_rect_for_dpi(&mut wr as *mut RECT, style, 0, dpi) {
+                    AdjustWindowRect(&mut wr, style, 0);
+                }
+                SetWindowPos(
+                    hwnd, ptr::null_mut(), 0, 0,
+                    wr.right - wr.left, wr.bottom - wr.top,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+
+        // From here on the window owns the editor: closing it (WM_CLOSE, or
+        // DestroyWindow → WM_NCDESTROY) closes the editor and clears the flags.
+        gui_hwnd.store(hwnd as isize, Ordering::Release);
+        let ed = Box::new(Editor { plugin, idle, closed: Cell::new(false), gui_flag, gui_hwnd });
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(ed) as isize);
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+            SetTimer(hwnd, IDLE_TIMER, IDLE_INTERVAL_MS, None);
+        }
+        log::info!("'{}' VST2 GUI opened ({}x{})", plugin_name, width, height);
+        Ok(())
+    }
+
+    unsafe extern "system" fn vst2_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        match msg {
+            WM_TIMER if wparam == IDLE_TIMER => {
+                if let Some(ed) = editor(hwnd) {
+                    if !ed.closed.get() {
+                        ed.idle.idle();
+                    }
+                }
+                0
+            }
+            WM_CLOSE => {
+                KillTimer(hwnd, IDLE_TIMER);
+                if let Some(ed) = editor(hwnd) {
+                    ed.close_view();
+                }
+                DestroyWindow(hwnd);
+                0
+            }
+            WM_NCDESTROY => {
+                let raw = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut Editor;
+                if !raw.is_null() {
+                    let ed = Box::from_raw(raw);
+                    ed.close_view();
+                    let (flag, gui_hwnd) = (Arc::clone(&ed.gui_flag), Arc::clone(&ed.gui_hwnd));
+                    // Releases the plugin reference before the flag tells
+                    // PluginInstance it may tear down.
+                    drop(ed);
+                    gui_hwnd.store(0, Ordering::Release);
+                    flag.store(false, Ordering::Release);
+                    crate::app_events::emit_plugin_chain_changed("gui_close", None);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+            WM_ERASEBKGND => 1, // prevent flicker behind plugin child window
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
     }
 
     // Runtime resolver for AdjustWindowRectForDpi (available on Win10+).
@@ -121,136 +215,7 @@ mod win {
         r != 0
     }
 
-    pub fn run_vst2_editor_impl(
-        plugin: &Arc<Mutex<RawPlugin>>,
-        plugin_name: &str,
-        gui_hwnd_arc: &Arc<AtomicIsize>,
-    ) -> Result<()> {
-        // Hold the lock only long enough to open the window, then release it
-        // so audio-processing / state calls are not blocked for the GUI's
-        // whole lifetime (see Vst2Processor::process_stereo's try_lock()).
-        let mut guard = plugin.lock()
-            .map_err(|_| anyhow!("VST2 plugin mutex poisoned for '{}'", plugin_name))?;
-
-        // Query initial editor size.
-        let (mut width, mut height) = guard.editor_size();
-        if width  <= 0 { width  = 640; }
-        if height <= 0 { height = 480; }
-
-        // Create the host window.
-        let hwnd = create_host_window(plugin_name, width, height)?;
-
-        // Publish HWND so PluginInstance::drop can post WM_CLOSE.
-        gui_hwnd_arc.store(hwnd as isize, Ordering::Release);
-
-        // Open the VST2 editor inside our window (effEditOpen).
-        // The plugin creates a child window at coords (0, 0) inside hwnd.
-        let opened = guard.editor_open(hwnd);
-        if !opened {
-            unsafe { DestroyWindow(hwnd); }
-            return Err(anyhow!("'{}': VST2 effEditOpen returned false", plugin_name));
-        }
-        let idle = guard.editor_idle_handle();
-        set_close_hook({
-            let plugin = Arc::clone(plugin);
-            Box::new(move || {
-                if let Ok(mut guard) = plugin.lock() {
-                    guard.editor_close();
-                }
-            })
-        });
-
-        // Some plugins report the correct size only after open().
-        let (post_w, post_h) = guard.editor_size();
-        if post_w > 10 && post_h > 10 && (post_w != width || post_h != height) {
-            let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-            let mut wr = RECT { left: 0, top: 0, right: post_w, bottom: post_h };
-                let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd as _) };
-            unsafe {
-                    if dpi != 0 {
-                        if !try_adjust_window_rect_for_dpi(&mut wr as *mut RECT, style, 0, dpi) {
-                            AdjustWindowRect(&mut wr, style, 0);
-                        }
-                    } else {
-                        AdjustWindowRect(&mut wr, style, 0);
-                    }
-                SetWindowPos(
-                    hwnd,
-                    ptr::null_mut(),
-                    0, 0,
-                    wr.right - wr.left,
-                    wr.bottom - wr.top,
-                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-            }
-        }
-
-        log::info!("'{}' VST2 GUI opened ({}x{})", plugin_name, width, height);
-        unsafe {
-            ShowWindow(hwnd, SW_SHOW);
-            SetForegroundWindow(hwnd);
-            SetTimer(hwnd, IDLE_TIMER, IDLE_INTERVAL_MS, None);
-        }
-
-        // Release the plugin lock before entering the message loop so that
-        // other threads (e.g. preset save, audio processing) are not blocked
-        // for the entire runtime of the GUI.
-        drop(guard);
-
-        // ── Message loop ──────────────────────────────────────────────────────
-        // Plugin child windows get WM_PAINT etc. via DispatchMessageW; the
-        // idle timer drives effEditIdle.
-        unsafe {
-            let mut msg: MSG = std::mem::zeroed();
-            while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
-                if msg.message == WM_TIMER && msg.hwnd == hwnd && msg.wParam == IDLE_TIMER {
-                    idle.idle();
-                }
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
-
-        // ── Cleanup ───────────────────────────────────────────────────────────
-        // Normally WM_CLOSE already closed the editor (before the window was
-        // destroyed); this covers the loop ending any other way. No-op if closed.
-        TL_CLOSE.with(|h| h.borrow_mut().take());
-        if let Ok(mut guard) = plugin.lock() {
-            guard.editor_close();
-        }
-
-        log::debug!("'{}' VST2 GUI cleanup complete", plugin_name);
-        Ok(())
-    }
-
-    /// Window procedure for the VST2 plugin host window.
-    ///
-    /// Minimal — VST2 plugins manage their own child windows.
-    unsafe extern "system" fn vst2_wnd_proc(
-        hwnd: windows_sys::Win32::Foundation::HWND,
-        msg: u32,
-        wparam: windows_sys::Win32::Foundation::WPARAM,
-        lparam: windows_sys::Win32::Foundation::LPARAM,
-    ) -> windows_sys::Win32::Foundation::LRESULT {
-        match msg {
-            WM_CLOSE => {
-                KillTimer(hwnd, IDLE_TIMER);
-                if let Some(close_editor) = TL_CLOSE.with(|h| h.borrow_mut().take()) {
-                    close_editor();
-                }
-                DestroyWindow(hwnd);
-                0
-            }
-            WM_DESTROY => {
-                PostQuitMessage(0);
-                0
-            }
-            WM_ERASEBKGND => 1, // prevent flicker behind plugin child window
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-        }
-    }
-
-    pub(super) fn create_host_window(title: &str, width: i32, height: i32) -> Result<windows_sys::Win32::Foundation::HWND> {
+    fn create_host_window(title: &str, width: i32, height: i32) -> Result<windows_sys::Win32::Foundation::HWND> {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
 
@@ -333,33 +298,5 @@ mod win {
 
             Ok(hwnd)
         }
-    }
-}
-
-#[cfg(all(test, target_os = "windows"))]
-mod tests {
-    use super::win::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, SendMessageW, WM_CLOSE};
-
-    #[test]
-    fn closing_the_window_closes_the_editor_while_the_window_still_exists() {
-        let saw_live_window = Arc::new(AtomicBool::new(false));
-        let ok = std::thread::spawn({
-            let saw = Arc::clone(&saw_live_window);
-            move || unsafe {
-                let hwnd = create_host_window("test", 100, 100).unwrap();
-                set_close_hook(Box::new(move || {
-                    saw.store(IsWindow(hwnd) != 0, Ordering::SeqCst);
-                }));
-                SendMessageW(hwnd, WM_CLOSE, 0, 0);
-                IsWindow(hwnd) == 0
-            }
-        })
-        .join()
-        .unwrap();
-        assert!(saw_live_window.load(Ordering::SeqCst), "effEditClose must run before the host window is destroyed");
-        assert!(ok, "window destroyed after the editor closed");
     }
 }

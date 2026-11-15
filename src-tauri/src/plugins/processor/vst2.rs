@@ -17,7 +17,7 @@ use anyhow::{anyhow, Result};
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // ── Raw VST 2.4 ABI ──────────────────────────────────────────────────────────
 
@@ -114,7 +114,8 @@ pub(crate) struct RawPlugin {
 }
 
 // SAFETY: all access to `effect` is serialised by the Mutex<RawPlugin> in
-// Vst2Processor — the audio thread and the GUI thread never touch it at once.
+// Vst2Processor — the audio thread and the plugin host thread (editor, state)
+// never touch it at once. `EditorIdle` is the documented exception.
 unsafe impl Send for RawPlugin {}
 
 impl RawPlugin {
@@ -181,7 +182,7 @@ impl RawPlugin {
         ok
     }
 
-    /// Handle for `effEditIdle` calls from the editor's GUI thread.
+    /// Handle for `effEditIdle` calls from the editor's idle timer.
     pub(crate) fn editor_idle_handle(&self) -> EditorIdle {
         EditorIdle(self.effect)
     }
@@ -194,11 +195,11 @@ impl RawPlugin {
     }
 }
 
-/// `effEditIdle` sender for the editor's GUI thread. Called without the
-/// plugin mutex on purpose: the audio thread `try_lock`s that mutex every
-/// block, and holding it for a repaint would drop blocks to dry audio.
-/// Plugins expect editor calls concurrently with processing (as in every
-/// VST2 host); the editor thread exits before the plugin is dropped.
+/// `effEditIdle` sender for the editor's idle timer (plugin host thread).
+/// Called without the plugin mutex on purpose: the audio thread `try_lock`s
+/// that mutex every block, and holding it for a repaint would drop blocks to
+/// dry audio. Plugins expect editor calls concurrently with processing (as in
+/// every VST2 host); the editor window closes before the plugin is dropped.
 pub(crate) struct EditorIdle(pub(crate) *mut AEffect);
 
 unsafe impl Send for EditorIdle {}
@@ -225,8 +226,8 @@ impl Drop for RawPlugin {
 /// Wraps a loaded VST2 plugin instance and exposes the same surface as
 /// `Vst3Processor` so `PluginInstance` can treat them uniformly.
 pub struct Vst2Processor {
-    /// Shared with the GUI thread (see `gui::vst2::open_vst2_gui`) so editor
-    /// open/close never races a concurrent `process_stereo` call.
+    /// Shared with the editor window (see `gui::vst2`) so editor open/close
+    /// never races a concurrent `process_stereo` call.
     plugin: Arc<Mutex<RawPlugin>>,
     /// Scratch buffers — avoids per-block heap allocation.
     in_l:  Vec<f32>,
@@ -360,8 +361,8 @@ impl Vst2Processor {
         self.in_l[..n].copy_from_slice(&left[..n]);
         self.in_r[..n].copy_from_slice(&right[..n]);
 
-        // try_lock: non-blocking so the audio callback never stalls. If the
-        // GUI thread or a state save/restore holds the lock, pass this chunk
+        // try_lock: non-blocking so the audio callback never stalls. If an
+        // editor call or a state save/restore holds the lock, pass this chunk
         // through dry — copying out_l/out_r here would replay the previous
         // chunk's output (an audible repeat).
         let Ok(plugin) = self.plugin.try_lock() else { return };
@@ -417,17 +418,10 @@ impl Vst2Processor {
         }
     }
 
-    /// Open the plugin's native editor GUI on a dedicated thread.
-    /// Returns immediately; the GUI runs on its own thread.
-    pub fn open_gui(
-        &self,
-        plugin_name: &str,
-        gui_flag: Arc<AtomicBool>,
-        gui_hwnd: Arc<AtomicIsize>,
-    ) -> Result<()> {
-        crate::plugins::gui::vst2::open_vst2_gui(
-            Arc::clone(&self.plugin), plugin_name, gui_flag, gui_hwnd,
-        )
+    /// The plugin, for opening its editor (gui::vst2) without holding the
+    /// `Vst2Processor` mutex meanwhile.
+    pub(crate) fn editor_handle(&self) -> Arc<Mutex<RawPlugin>> {
+        Arc::clone(&self.plugin)
     }
 }
 
@@ -447,7 +441,7 @@ mod tests {
 #[cfg(test)]
 mod idle_tests {
     use super::*;
-    use std::sync::atomic::AtomicI32;
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize};
 
     static LAST_OPCODE: AtomicI32 = AtomicI32::new(-1);
     unsafe extern "C" fn dispatcher(_: *mut AEffect, op: i32, _: i32, _: isize, _: *mut c_void, _: f32) -> isize {
@@ -487,6 +481,68 @@ mod idle_tests {
         assert_eq!((l[63], r[63]), (0.5, -0.5));
         assert!(proc.zeros.iter().all(|&z| z == 0.0), "extra inputs read silence");
         drop(proc); // effClose via the fake dispatcher
+        drop(unsafe { Box::from_raw(effect) });
+    }
+
+    /// Editor opcodes seen by `recording`: (opcode, thread, host window alive).
+    static EDITOR_CALLS: parking_lot::Mutex<Vec<(i32, std::thread::ThreadId, bool)>> = parking_lot::Mutex::new(Vec::new());
+    static PARENT: AtomicIsize = AtomicIsize::new(0);
+
+    #[cfg(target_os = "windows")]
+    unsafe extern "C" fn recording(_: *mut AEffect, op: i32, _: i32, _: isize, p: *mut c_void, _: f32) -> isize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+        if op == eff::EDIT_OPEN {
+            PARENT.store(p as isize, Ordering::SeqCst);
+        }
+        if matches!(op, eff::EDIT_OPEN | eff::EDIT_IDLE | eff::EDIT_CLOSE | eff::EDIT_GET_RECT) {
+            let alive = IsWindow(PARENT.load(Ordering::SeqCst) as _) != 0;
+            EDITOR_CALLS.lock().push((op, std::thread::current().id(), alive));
+        }
+        (op == eff::EDIT_OPEN) as isize
+    }
+
+    /// JUCE binds its message thread to the thread that created the plugin
+    /// (the plugin host thread), so the editor must be driven from there.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn editor_runs_on_the_host_thread_and_closes_before_its_window() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+        use crate::core::host_thread::{run_blocking, wait_a_moment};
+        let effect = Box::into_raw(Box::new(AEffect {
+            magic: VST_MAGIC, dispatcher: recording, process, set_parameter: set_param, get_parameter: get_param,
+            num_programs: 0, num_params: 0, num_inputs: 2, num_outputs: 2, flags: EFF_FLAGS_HAS_EDITOR,
+            resvd1: 0, resvd2: 0, initial_delay: 0, real_qualities: 0, off_qualities: 0, io_ratio: 1.0,
+            object: ptr::null_mut(), user: ptr::null_mut(), unique_id: 0, version: 0,
+            process_replacing: process, process_double_replacing: process_f64, future: [0; 56],
+        }));
+        let lib: libloading::Library = libloading::os::windows::Library::this().unwrap().into();
+        let plugin = Arc::new(Mutex::new(RawPlugin { effect, _lib: lib, editor_open: false }));
+        let flag = Arc::new(AtomicBool::new(true));
+        let hwnd = Arc::new(AtomicIsize::new(0));
+
+        crate::plugins::gui::vst2::open_vst2_gui(Arc::clone(&plugin), "fake", Arc::clone(&flag), Arc::clone(&hwnd)).unwrap();
+        let host = run_blocking(|| std::thread::current().id());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !EDITOR_CALLS.lock().iter().any(|c| c.0 == eff::EDIT_IDLE) && std::time::Instant::now() < deadline {
+            run_blocking(wait_a_moment); // the host pump delivers the idle timer
+        }
+        let win = hwnd.load(Ordering::Acquire);
+        assert_ne!(win, 0, "host window published");
+        unsafe { PostMessageW(win as _, WM_CLOSE, 0, 0) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while flag.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+            run_blocking(wait_a_moment);
+        }
+
+        let calls = EDITOR_CALLS.lock().clone();
+        let ops: Vec<i32> = calls.iter().map(|c| c.0).collect();
+        assert!(ops.contains(&eff::EDIT_OPEN) && ops.contains(&eff::EDIT_IDLE), "{ops:?}");
+        assert_eq!(ops.last(), Some(&eff::EDIT_CLOSE), "{ops:?}");
+        assert!(calls.iter().all(|c| c.1 == host), "every editor call on the plugin host thread: {calls:?}");
+        assert!(calls.last().unwrap().2, "effEditClose while the host window still exists");
+        assert!(!flag.load(Ordering::Acquire), "gui flag cleared");
+        assert_eq!(hwnd.load(Ordering::Acquire), 0);
+        drop(plugin); // effClose via the fake dispatcher
         drop(unsafe { Box::from_raw(effect) });
     }
 

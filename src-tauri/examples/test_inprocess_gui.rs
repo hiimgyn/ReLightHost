@@ -24,7 +24,8 @@ fn main() {
     println!("Opening GUI...");
     let gui_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
     let gui_hwnd: Arc<AtomicIsize> = Arc::new(AtomicIsize::new(0));
-    proc.open_gui("In-process VST3", gui_flag.clone(), gui_hwnd.clone())
+    let controller = proc.editor_controller().expect("no edit controller");
+    app_lib::plugins::gui::vst3::win::open_gui_window(&controller, "In-process VST3", gui_flag.clone(), gui_hwnd.clone())
         .expect("open_gui failed");
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);

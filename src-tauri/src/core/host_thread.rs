@@ -8,7 +8,7 @@
 //! thread identity, COM initialised as a single-threaded apartment, and a
 //! Win32 message pump (JUCE timers, driver window messages) between jobs.
 //!
-//! It is also every plugin's UI/main thread: VST3 and CLAP editor windows
+//! It is also every plugin's UI/main thread: VST3, VST2 and CLAP editor windows
 //! live here and are driven by this pump (see plugins::gui), because JUCE
 //! binds its MessageManager to the thread that created the plugin.
 //!

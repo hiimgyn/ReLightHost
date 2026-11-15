@@ -612,17 +612,19 @@ impl PluginInstance {
 
         // ── VST2 GUI ─────────────────────────────────────────────────────────
         {
-            let guard = match self.vst2_processor.try_lock_for(std::time::Duration::from_millis(200)) {
-                Some(g) => g,
+            // As for VST3: only the handle under the processor mutex; the
+            // editor opens on the plugin host thread (gui::vst2).
+            let handle = match self.vst2_processor.try_lock_for(std::time::Duration::from_millis(200)) {
+                Some(g) => g.as_ref().map(|p| p.editor_handle()),
                 None => {
                     gui_flag.store(false, Ordering::Release);
                     return Err(anyhow::anyhow!("VST2 plugin processor busy — try again"));
                 }
             };
-            if let Some(ref proc) = *guard {
+            if let Some(handle) = handle {
                 let plugin_name = self.plugin_info.name.clone();
                 let gui_hwnd    = self.gui_hwnd.clone();
-                match proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd) {
+                match crate::plugins::gui::vst2::open_vst2_gui(handle, &plugin_name, gui_flag.clone(), gui_hwnd) {
                     Ok(()) => return Ok(()),
                     Err(e) => {
                         gui_flag.store(false, Ordering::Release);

@@ -16,6 +16,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
+          # The node scripts below are run as plain .ts (type stripping:
+          # Node >= 23.6); current LTS is newer than that.
           node-version: lts/*
 
       # Version comes from package.json "packageManager" — never "latest",
@@ -38,6 +40,13 @@ jobs:
 
       - name: Typecheck frontend
         run: pnpm exec tsc --noEmit
+
+      - name: Frontend checks
+        shell: bash # -e: any failing script fails the step (pwsh checks only the last)
+        run: |
+          node scripts/check-drop-target.ts
+          node scripts/check-addon-ui.ts
+          node addons/voice/ui/bode.check.ts
 
       # tauri::generate_context! embeds ../dist, so it must exist for cargo.
       - name: Build frontend

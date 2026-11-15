@@ -1,8 +1,8 @@
 import React from 'react';
 import { Badge, Tooltip } from 'antd';
 import { Power, RotateCcw } from 'lucide-react';
-import { useThemeStore } from '../../../stores/themeStore';
-import { useTranslation } from '../../../i18n';
+import { useThemeStore } from './host';
+import { useTranslation } from './host';
 
 interface PluginHeaderProps {
   title: string;

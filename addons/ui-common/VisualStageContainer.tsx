@@ -1,5 +1,5 @@
 import React from 'react';
-import { useThemeStore } from '../../../stores/themeStore';
+import { useThemeStore } from './host';
 
 interface VisualStageContainerProps {
   title?: string;

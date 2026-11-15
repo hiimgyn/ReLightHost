@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { useThemeStore } from '../../../stores/themeStore';
+import { useThemeStore } from '../../ui-common/host';
 
 interface BodePlotCanvasProps {
   lowGain: number;   // -12 to +12 dB

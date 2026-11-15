@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback } from 'react';
-import { useThemeStore } from '../../../stores/themeStore';
+import { useThemeStore } from '../../ui-common/host';
 
 interface TransferCurveCanvasProps {
   threshold: number; // dB, e.g. -60 to 0

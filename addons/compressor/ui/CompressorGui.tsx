@@ -1,16 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal } from 'antd';
 import { Activity } from 'lucide-react';
-import * as tauri from '../../lib/tauri';
-import type { PluginInstanceInfo } from '../../lib/types';
-import { useTranslation } from '../../i18n';
-import { useThemeStore } from '../../stores/themeStore';
+import { tauri } from '../../ui-common/host';
+import type { PluginInstanceInfo } from '../../ui-common/host';
+import { useTranslation } from '../../ui-common/host';
+import { useThemeStore } from '../../ui-common/host';
 import {
   AudioKnob,
   VisualStageContainer,
-  TransferCurveCanvas,
   PluginHeader,
-} from './common';
+} from '../../ui-common';
+import { TransferCurveCanvas } from './TransferCurveCanvas';
 
 interface Props {
   plugin: PluginInstanceInfo;

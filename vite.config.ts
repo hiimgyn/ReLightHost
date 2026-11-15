@@ -33,7 +33,6 @@ export default defineConfig({
           }
           if (
             id.includes('/src/components/plugin/') ||
-            id.includes('/src/components/plugin-gui/') ||
             id.includes('/src/components/audio/AudioSettings')
           ) {
             return 'plugin-modals';

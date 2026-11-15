@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Tooltip } from 'antd';
 import { RotateCcw } from 'lucide-react';
-import { useThemeStore } from '../../../stores/themeStore';
+import { useThemeStore } from './host';
 
 export interface AudioKnobProps {
   label: string;

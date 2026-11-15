@@ -1,19 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal, Alert } from 'antd';
 import { Sparkles, AlertTriangle, Cpu, Zap } from 'lucide-react';
-import * as tauri from '../../lib/tauri';
-import { useAudioStore } from '../../stores/audioStore';
-import type { PluginInstanceInfo } from '../../lib/types';
-import { useWindowVisibility } from '../../lib/windowVisibility';
-import { useTranslation } from '../../i18n';
-import { useThemeStore } from '../../stores/themeStore';
+import { tauri } from '../../ui-common/host';
+import { useAudioStore } from '../../ui-common/host';
+import type { PluginInstanceInfo } from '../../ui-common/host';
+import { useWindowVisibility } from '../../ui-common/host';
+import { useTranslation } from '../../ui-common/host';
+import { useThemeStore } from '../../ui-common/host';
 import {
   AudioKnob,
   VisualStageContainer,
   WaveformDualCanvas,
   NeuralVADOrb,
   PluginHeader,
-} from './common';
+} from '../../ui-common';
 
 interface Props {
   plugin: PluginInstanceInfo;

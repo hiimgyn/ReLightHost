@@ -1,6 +1,6 @@
 import React, { useRef, useEffect } from 'react';
-import { useWindowVisibility } from '../../../lib/windowVisibility';
-import { useThemeStore } from '../../../stores/themeStore';
+import { useWindowVisibility } from './host';
+import { useThemeStore } from './host';
 
 interface NeuralVADOrbProps {
   vad: number; // 0.0 to 1.0 voice activity probability

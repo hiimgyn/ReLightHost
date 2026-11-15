@@ -1,8 +1,8 @@
 import React, { useRef, useEffect } from 'react';
-import { useWindowVisibility } from '../../../lib/windowVisibility';
-import { useThemeStore } from '../../../stores/themeStore';
-import { getPluginScope } from '../../../lib/tauri';
-import { useTranslation } from '../../../i18n';
+import { useWindowVisibility } from './host';
+import { useThemeStore } from './host';
+import { getPluginScope } from './host';
+import { useTranslation } from './host';
 
 interface WaveformDualCanvasProps {
   /** Plugin instance whose input/output levels are drawn. */

@@ -1312,7 +1312,11 @@ mod state_tests {
                     assert!(m[1].is_finite() && m[1] >= 0.0 && m[1] != 1.0, "{}: gr_db {}", d.id, m[1]);
                     assert!(m[2] <= 0.0, "{}: out_db {} never published", d.id, m[2]);
                 }
-                "builtin::voice" => assert!(inst.addon_meters().is_empty(), "{}", d.id),
+                "builtin::voice" => {
+                    let m = inst.addon_meters();
+                    assert_eq!(m.len(), 1, "{}", d.id);
+                    assert!(m[0].is_finite() && m[0] >= 0.0, "{}: limiter_gr_db {} never published", d.id, m[0]);
+                }
                 other => panic!("no meter check for {other}"),
             }
         }

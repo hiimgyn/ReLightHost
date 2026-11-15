@@ -1,6 +1,6 @@
 # Add-ons: split the built-in plugins out of the main source
 
-Date: 2026-11-15 · Status: draft for approval
+Date: 2026-11-15 · Status: approved 2026-11-15
 
 ## Intent
 The four built-in processors (Noise Suppressor/RNNoise, DeepFilterNet, Compressor, Voice) stay compiled into
@@ -47,12 +47,13 @@ addons/
   `PluginInfo`/`PluginParameter`; `scanner::builtin_plugins`, `instance.rs` creation and `builtin_initial_params`
   go through it. `plugins/builtin/` is deleted.
 - **IDs stay** `builtin::<name>` and the stored `format: builtin` stays; the UI labels the group "Add-ons" (en/vi).
-- **Frontend**: Vite alias `@addons` → `addons/`, tsconfig `include` adds `addons`; `BuiltinPluginGuiSwitch`
-  reads `addons/registry.ts`.
+- **Frontend**: relative imports (no alias — it would need Vite + tsconfig `paths` kept in sync), tsconfig
+  `include` adds `addons`; add-on GUIs reach host code only via `addons/ui-common/host.ts`;
+  `BuiltinPluginGuiSwitch` reads `addons/registry.ts`.
 - **Tests**: each add-on's unit tests move with it; host keeps integration tests (instance/session/autosave).
 
 ## Calls made (coordinator, correctable)
-- **Add-on GUIs may import host modules** (`lib/tauri`, `lib/types`, stores, `windowVisibility`) via a `@/` alias —
+- **Add-on GUIs may import host modules** (`lib/tauri`, `lib/types`, stores, `windowVisibility`) via `addons/ui-common/host.ts` re-exports —
   no host-interface rewrite of the four GUIs. Reason: "only split the code"; a bridge layer is speculative.
 - **Each add-on owns its UI strings**: `addons/<name>/ui/i18n.ts` exports `{ en, vi }`; host `src/i18n` merges
   them (types derived from the add-on objects), so "new folder + one registry line" holds.

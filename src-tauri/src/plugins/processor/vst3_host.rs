@@ -216,22 +216,37 @@ impl IAttributeListTrait for HostAttributeList {
 /// Most distinct parameters delivered to `process()` in one block; the rest
 /// wait for the next block. Pre-allocated so the audio thread never allocates.
 pub const CAPACITY: usize = 64;
+/// Most distinct parameters waiting in [`PendingParams`]; also the size the
+/// processor pre-allocates its per-block scratch with.
+pub const PENDING_CAPACITY: usize = 256;
 
 /// Normalized parameter edits waiting for the audio thread: pushed by the
 /// plugin's GUI (via `performEdit`) or by the host, drained once per block.
+/// One entry per parameter id (a newer value replaces an older one, keeping
+/// its place), at most [`PENDING_CAPACITY`] of them (the oldest goes).
 #[derive(Clone, Default)]
 pub struct PendingParams(Arc<Mutex<Vec<(u32, f64)>>>);
 
 impl PendingParams {
     pub fn push(&self, id: u32, value: f64) {
-        self.0.lock().push((id, value));
+        let mut pending = self.0.lock();
+        if let Some(e) = pending.iter_mut().find(|e| e.0 == id) {
+            e.1 = value;
+            return;
+        }
+        if pending.len() >= PENDING_CAPACITY {
+            pending.remove(0);
+        }
+        pending.push((id, value));
     }
 
     /// Audio-thread side: never blocks — a contended lock just leaves the
-    /// edits for the next block. Moves them into `out` (reusing capacity).
+    /// edits for the next block — and never allocates: moves only as many
+    /// (oldest first) as fit `out`'s spare capacity; the rest wait.
     pub fn try_drain_into(&self, out: &mut Vec<(u32, f64)>) {
         if let Some(mut pending) = self.0.try_lock() {
-            out.append(&mut pending);
+            let n = pending.len().min(out.capacity() - out.len());
+            out.extend(pending.drain(..n));
         }
     }
 
@@ -497,6 +512,37 @@ mod tests {
         }
         changes.clear();
         assert_eq!(unsafe { changes.com_ptr().getParameterCount() }, 0);
+    }
+
+    #[test]
+    fn pending_edits_coalesce_per_id_and_stay_bounded() {
+        let pending = PendingParams::default();
+        for i in 0..1000 {
+            pending.push(7, i as f64);
+        }
+        assert_eq!(pending.take_all(), vec![(7, 999.0)], "one entry per id, latest value");
+        for id in 0..(PENDING_CAPACITY as u32 + 10) {
+            pending.push(id, 0.5);
+        }
+        let all = pending.take_all();
+        assert_eq!(all.len(), PENDING_CAPACITY);
+        assert_eq!(all.last(), Some(&(PENDING_CAPACITY as u32 + 9, 0.5)), "oldest dropped, newest kept");
+    }
+
+    #[test]
+    fn draining_never_grows_the_audio_thread_buffer() {
+        let pending = PendingParams::default();
+        for id in 0..20 {
+            pending.push(id, 0.5);
+        }
+        let mut out = Vec::with_capacity(8);
+        out.push((99, 0.0));
+        pending.try_drain_into(&mut out);
+        assert_eq!((out.len(), out.capacity()), (8, 8), "no reallocation on the audio thread");
+        assert_eq!(out[1], (0, 0.5), "oldest first");
+        out.clear();
+        pending.try_drain_into(&mut out);
+        assert_eq!(out[0], (7, 0.5), "the rest waits for the next block");
     }
 
     #[test]

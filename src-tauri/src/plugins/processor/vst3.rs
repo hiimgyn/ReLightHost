@@ -12,8 +12,6 @@ mod win {
     use std::ptr;
     use std::time::{Duration, Instant};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
-    use parking_lot::Mutex as PLMutex;
     use windows_sys::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
     use vst3::Steinberg::{
@@ -36,7 +34,7 @@ mod win {
     };
     use vst3::{Class, ComPtr, ComWrapper, Interface};
     use vst3::Steinberg::Vst::IComponentHandler;
-    use crate::plugins::processor::vst3_host::{host_context, HostComponentHandler, HostParameterChanges, PendingParams};
+    use crate::plugins::processor::vst3_host::{host_context, HostComponentHandler, HostParameterChanges, PendingParams, PENDING_CAPACITY};
 
     // ──────────────────────────────────────────────────────────────────
     // COM initialization per-thread (CRITICAL for VST3 plugin stability)
@@ -178,32 +176,11 @@ mod win {
         }
     }
 
-    /// See `plugins::core::LIBRARY_LOAD_LOCK` — shared with the scanner and
-    /// the other formats' loaders.
-    use crate::plugins::core::LIBRARY_LOAD_LOCK as FACTORY_CREATE_LOCK;
-
-    /// Per-plugin-*path* locks for everything after FACTORY_CREATE_LOCK
-    /// releases — `component.initialize()`, bus setup, and controller
-    /// creation. Two *different* plugin paths must stay free to run this
-    /// section fully in parallel (that's the whole point of `parallel_vst3`),
-    /// but two *instances of the same plugin DLL* share that DLL's
-    /// process-wide static/global state, so their calls into this section
-    /// must not overlap — a single shared lock here would defeat the
-    /// parallelism this feature exists for, and no lock at all would let two
-    /// copies of one plugin corrupt each other's global state for the first
-    /// time (previously all VST3 loads were fully sequential, so this never
-    /// happened). The map itself grows by one entry per *distinct* plugin
-    /// path ever loaded this run and is never shrunk — bounded by the size
-    /// of the user's plugin catalog, not by how many times they load it.
-    static INIT_LOCKS: PLMutex<Option<std::collections::HashMap<String, Arc<PLMutex<()>>>>> = PLMutex::new(None);
-
-    fn init_lock_for(plugin_path: &str) -> Arc<PLMutex<()>> {
-        let mut map_guard = INIT_LOCKS.lock();
-        let map = map_guard.get_or_insert_with(std::collections::HashMap::new);
-        map.entry(plugin_path.to_string())
-            .or_insert_with(|| Arc::new(PLMutex::new(())))
-            .clone()
-    }
+    // Serialises DLL load + factory calls with the scanner's in-process
+    // probe (which runs off the plugin host thread) and the other formats'
+    // loaders. Every VST3 load itself runs on the plugin host thread, so
+    // loads never overlap each other.
+    use crate::plugins::core::LIBRARY_LOAD_LOCK;
 
     //  Vst3Processor
     pub struct Vst3Processor {
@@ -216,7 +193,7 @@ mod win {
         separate_controller: bool,
         /// Component ↔ controller connection points, connected at load.
         connection: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
-        /// setActive(1) succeeded / was attempted.
+        /// setActive(1) succeeded.
         active: bool,
         /// Channels of the main input / output bus (0..=2; 0 = no such bus).
         in_channels: usize,
@@ -265,19 +242,13 @@ mod win {
             // Some plugins call COM APIs during load/initialize.
             ensure_com_initialized();
 
-            // Only DLL loading + factory + createInstance are serialized —
-            // the Windows loader lock and any COM apartment setup a plugin's
-            // DllMain/static initializers do are the actual concurrency risk
-            // when multiple *different* VST3 DLLs load at once (see
-            // PluginInstanceManager's `parallel_vst3` flag). component.
-            // initialize() below — where a heavy plugin does its own slow
-            // work (e.g. loading an ML model) — runs UNLOCKED, on purpose:
-            // that's the part parallel loading is trying to overlap, and it's
-            // ordinary plugin code, not host-loader-adjacent code, so there's
-            // no more reason to serialize it across *different* plugins than
-            // there is for any other method call into a plugin.
+            // Only DLL loading + factory + createInstance hold
+            // LIBRARY_LOAD_LOCK (the Windows loader lock and a plugin's
+            // DllMain/static initializers are the risk if a scanner probe
+            // runs alongside); component.initialize() below — a heavy
+            // plugin's slow part — runs without it, so a scan isn't held up.
             let (lib, factory, component): (Library, ComPtr<IPluginFactory>, ComPtr<IComponent>) = {
-                let _factory_guard = FACTORY_CREATE_LOCK.lock();
+                let _factory_guard = LIBRARY_LOAD_LOCK.lock();
 
                 // Load DLL
                 log::debug!("{} loading DLL for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
@@ -293,7 +264,13 @@ mod win {
                 if !bin.exists() {
                     return Err(anyhow!("plugin file not found (uninstalled or moved): {}", bin.display()));
                 }
-                let lib = unsafe { Library::new(&bin) }
+                // Same flags as the scanner: the plugin's own directory is
+                // searched for its companion DLLs (needs an absolute path).
+                let bin = std::path::absolute(&bin).unwrap_or(bin);
+                let lib: Library = unsafe {
+                    libloading::os::windows::Library::load_with_flags(&bin, libloading::os::windows::LOAD_WITH_ALTERED_SEARCH_PATH)
+                }
+                    .map(Into::into)
                     .map_err(|e| {
                         let os = std::error::Error::source(&e).map(|s| s.to_string()).unwrap_or_default();
                         anyhow!("Failed to load '{}': {} {}", bin.display(), e, os)
@@ -399,11 +376,6 @@ mod win {
             // controller from the component's state — all before bus setup,
             // setupProcessing and setActive. This instance is not in the
             // chain yet, so no audio callback can run into it meanwhile.
-            // Only serialized against OTHER instances of this SAME plugin
-            // path (see INIT_LOCKS) — different plugins still run this
-            // concurrently.
-            let init_lock = init_lock_for(plugin_path);
-            let _init_guard = init_lock.lock();
             log::debug!("{} calling initialize() for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
             let r = unsafe { component.initialize(host_context()) };
             if r != kResultOk {
@@ -436,7 +408,7 @@ mod win {
                         // fires after component.initialize(), which runs
                         // deliberately unlocked (see that block's comment).
                         let r = {
-                            let _factory_guard = FACTORY_CREATE_LOCK.lock();
+                            let _factory_guard = LIBRARY_LOAD_LOCK.lock();
                             unsafe {
                                 factory.createInstance(
                                     ctrl_cid.as_ptr(),
@@ -480,8 +452,10 @@ mod win {
                 max_block: block_size.max(1),
                 pending_params: PendingParams::default(),
                 param_changes: HostParameterChanges::new(),
-                param_scratch: Vec::with_capacity(256),
-                param_overflow: Vec::with_capacity(256),
+                // Overflow holds at most PENDING_CAPACITY - CAPACITY, so both
+                // fit their capacity and the audio thread never reallocates.
+                param_scratch: Vec::with_capacity(PENDING_CAPACITY),
+                param_overflow: Vec::with_capacity(PENDING_CAPACITY),
                 _component_handler: None,
             };
 
@@ -559,12 +533,13 @@ mod win {
             if r != kResultOk && r != kNotImplemented {
                 return Err(anyhow!("'{}': setupProcessing({} Hz, {} samples) failed ({:#x})", plugin_path, sample_rate, block_size, r));
             }
+            let r = unsafe { this.component.setActive(1) };
+            if r != kResultOk && r != kNotImplemented {
+                // Drop terminates it (never activated, so no setActive(0)).
+                return Err(anyhow!("'{}': setActive(1) failed ({:#x})", plugin_path, r));
+            }
             this.active = true;
             unsafe {
-                let r = this.component.setActive(1);
-                if r != kResultOk {
-                    log::warn!("{} '{}': setActive(1) returned {:#x}", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path, r);
-                }
                 // Often kNotImplemented; not an error.
                 this.audio_proc.setProcessing(1);
             }
@@ -737,6 +712,9 @@ mod win {
         separate_controller: bool,
         connection: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
         active: bool,
+        /// Outlives `setComponentHandler(null)` (the controller holds it
+        /// until then), also when the teardown is posted.
+        _handler: Option<ComWrapper<HostComponentHandler>>,
     }
     // Only moved to the host thread to run there.
     unsafe impl Send for Teardown {}
@@ -777,6 +755,7 @@ mod win {
                 separate_controller: self.separate_controller,
                 connection: self.connection.take(),
                 active: self.active,
+                _handler: self._component_handler.take(),
             };
             if crate::core::host_thread::is_host_thread() {
                 teardown.run();
@@ -856,7 +835,7 @@ mod lock_tests {
     use std::thread;
     use std::time::Duration;
 
-    /// Stands in for `win::FACTORY_CREATE_LOCK` — same shape, defined here
+    /// Stands in for `LIBRARY_LOAD_LOCK` — same shape, defined here
     /// so this test compiles on non-Windows too. Proves the pattern Task 1
     /// step 3 wires into `load()`: while one thread holds the lock, a second
     /// thread attempting to acquire it must block until the first releases.
@@ -890,84 +869,6 @@ mod lock_tests {
             max_concurrent.load(Ordering::SeqCst),
             1,
             "more than one thread was inside the locked section at once"
-        );
-    }
-
-    /// Stands in for `win::init_lock_for` — same shape, defined here so this
-    /// test compiles on non-Windows too. Fixes review finding "Important #3":
-    /// two *instances of the same plugin path* must never run their
-    /// `initialize()` (and the rest of the unlocked post-createInstance
-    /// section) concurrently, since they share that DLL's process-wide
-    /// static/global state — but *different* plugin paths must still be
-    /// free to run fully in parallel (that's the whole point of this
-    /// feature), so this can't just be one lock shared by everyone.
-    fn test_init_lock_for(
-        registry: &Mutex<std::collections::HashMap<String, Arc<Mutex<()>>>>,
-        plugin_path: &str,
-    ) -> Arc<Mutex<()>> {
-        let mut map = registry.lock();
-        map.entry(plugin_path.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    }
-
-    #[test]
-    fn same_path_serializes_initialize_but_different_paths_run_concurrently() {
-        let registry: Arc<Mutex<std::collections::HashMap<String, Arc<Mutex<()>>>>> =
-            Arc::new(Mutex::new(std::collections::HashMap::new()));
-
-        // Two "instances" of the SAME plugin path — their critical sections
-        // (standing in for initialize()) must never overlap.
-        let same_path_concurrent = Arc::new(AtomicU32::new(0));
-        let same_path_max = Arc::new(AtomicU32::new(0));
-        let mut handles = Vec::new();
-        for _ in 0..4 {
-            let reg = Arc::clone(&registry);
-            let cur = Arc::clone(&same_path_concurrent);
-            let max = Arc::clone(&same_path_max);
-            handles.push(thread::spawn(move || {
-                let lock = test_init_lock_for(&reg, "C:/Same/Plugin.vst3");
-                let _guard = lock.lock();
-                let now = cur.fetch_add(1, Ordering::SeqCst) + 1;
-                max.fetch_max(now, Ordering::SeqCst);
-                thread::sleep(Duration::from_millis(5));
-                cur.fetch_sub(1, Ordering::SeqCst);
-            }));
-        }
-        for h in handles {
-            h.join().unwrap();
-        }
-        assert_eq!(
-            same_path_max.load(Ordering::SeqCst),
-            1,
-            "two instances of the SAME plugin path ran initialize() concurrently"
-        );
-
-        // Two DIFFERENT plugin paths — must be able to overlap (this is what
-        // the whole feature is for; a global per-registry lock would break it).
-        let different_paths_concurrent = Arc::new(AtomicU32::new(0));
-        let different_paths_max = Arc::new(AtomicU32::new(0));
-        let mut handles = Vec::new();
-        for path in ["C:/Plugin/A.vst3", "C:/Plugin/B.vst3"] {
-            let reg = Arc::clone(&registry);
-            let cur = Arc::clone(&different_paths_concurrent);
-            let max = Arc::clone(&different_paths_max);
-            handles.push(thread::spawn(move || {
-                let lock = test_init_lock_for(&reg, path);
-                let _guard = lock.lock();
-                let now = cur.fetch_add(1, Ordering::SeqCst) + 1;
-                max.fetch_max(now, Ordering::SeqCst);
-                thread::sleep(Duration::from_millis(20));
-                cur.fetch_sub(1, Ordering::SeqCst);
-            }));
-        }
-        for h in handles {
-            h.join().unwrap();
-        }
-        assert_eq!(
-            different_paths_max.load(Ordering::SeqCst),
-            2,
-            "different plugin paths were serialized against each other — parallelism broken"
         );
     }
 }

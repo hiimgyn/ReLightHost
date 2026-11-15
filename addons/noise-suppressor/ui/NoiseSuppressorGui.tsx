@@ -1,10 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal, Alert } from 'antd';
 import { Mic, AlertTriangle } from 'lucide-react';
-import { tauri } from '../../ui-common/host';
 import { useAudioStore } from '../../ui-common/host';
 import type { PluginInstanceInfo } from '../../ui-common/host';
-import { useWindowVisibility } from '../../ui-common/host';
+import { usePluginStore } from '../../ui-common/host';
 import { useTranslation } from '../../ui-common/host';
 import { useThemeStore } from '../../ui-common/host';
 import {
@@ -13,6 +11,8 @@ import {
   WaveformDualCanvas,
   NeuralVADOrb,
   PluginHeader,
+  useParams,
+  useMeters,
 } from '../../ui-common';
 
 interface Props {
@@ -21,117 +21,25 @@ interface Props {
   onClose: () => void;
 }
 
-function paramValue(plugin: PluginInstanceInfo, id: number, fallback: number) {
-  return plugin.parameters.find(p => p.id === id)?.value ?? fallback;
-}
+const DEFAULTS = { 0: 1.0, 1: 0.0, 2: 0.0, 3: 0.0 };
 
 export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
   const { t } = useTranslation();
   const sampleRate = useAudioStore(state => state.sampleRate);
-  const isSampleRateMismatch = Math.abs(sampleRate - 48000) > 1;
+  // Add-ons that cannot run at the current rate report status Error.
+  const isSampleRateMismatch = usePluginStore(
+    (s) => s.crashStatusByInstanceId[plugin.instance_id]?.type === 'Error',
+  );
   const modalWidth = typeof window === 'undefined' ? 560 : 'clamp(520px, 52vw, 580px)';
 
-  const [mix,        setMix]        = useState(() => paramValue(plugin, 0, 1.0));
-  const [vadGate,    setVadGate]    = useState(() => paramValue(plugin, 1, 0.0));
-  const [gateAtten,  setGateAtten]  = useState(() => paramValue(plugin, 2, 0.0));
-  const [outputGain, setOutputGain] = useState(() => paramValue(plugin, 3, 0.0));
-  const [vad,        setVad]        = useState<number>(0);
-  const isWindowVisible = useWindowVisibility();
 
-
-  // Trailing throttle for IPC parameter updates
-  const pendingSendsRef = useRef<Map<number, number>>(new Map());
-  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const send = useCallback((id: number, value: number) => {
-    pendingSendsRef.current.set(id, value);
-    if (!throttleTimerRef.current) {
-      tauri.setPluginParameter(plugin.instance_id, id, value).catch(() => {});
-      throttleTimerRef.current = setTimeout(() => {
-        throttleTimerRef.current = null;
-        pendingSendsRef.current.forEach((val, pId) => {
-          tauri.setPluginParameter(plugin.instance_id, pId, val).catch(() => {});
-        });
-        pendingSendsRef.current.clear();
-      }, 40);
-    }
-  }, [plugin.instance_id]);
-
-  useEffect(() => {
-    return () => {
-      if (throttleTimerRef.current) {
-        clearTimeout(throttleTimerRef.current);
-      }
-    };
-  }, []);
-
-  // Authoritative sync from backend when panel opens
-  useEffect(() => {
-    if (!isOpen) return;
-    let isCancelled = false;
-
-    (async () => {
-      try {
-        const params = await tauri.getPluginParameters(plugin.instance_id);
-        if (isCancelled || !params || params.length === 0) return;
-        const find = (id: number, fallback: number) =>
-          params.find(p => p.id === id)?.value ?? paramValue(plugin, id, fallback);
-
-        setMix(find(0, 1.0));
-        setVadGate(find(1, 0.0));
-        setGateAtten(find(2, 0.0));
-        setOutputGain(find(3, 0.0));
-      } catch {
-        if (isCancelled) return;
-        setMix(paramValue(plugin, 0, 1.0));
-        setVadGate(paramValue(plugin, 1, 0.0));
-        setGateAtten(paramValue(plugin, 2, 0.0));
-        setOutputGain(paramValue(plugin, 3, 0.0));
-      }
-    })();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [isOpen, plugin.instance_id]);
-
-  // Real-time Voice Activity Detection (VAD) visualizer polling.
-  // `cancelled` is per effect run: a shared ref let an in-flight request from
-  // a previous run re-arm its own timer once a new run set the ref back to
-  // true, so every quick hide/show doubled the number of poll loops.
-  useEffect(() => {
-    if (!isOpen || !isWindowVisible) return;
-    let cancelled = false;
-    let timer: number | undefined;
-    const poll = () => {
-      tauri.getNoiseSuppressorVad(plugin.instance_id)
-        .then((val) => {
-          if (!cancelled && typeof val === 'number') setVad(Math.max(0, Math.min(1, val)));
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (!cancelled) timer = window.setTimeout(poll, 100);
-        });
-    };
-    poll();
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [isOpen, isWindowVisible, plugin.instance_id]);
-
-  const handleResetAll = () => {
-    const defaults = [
-      { id: 0, val: 1.0, set: setMix },
-      { id: 1, val: 0.0, set: setVadGate },
-      { id: 2, val: 0.0, set: setGateAtten },
-      { id: 3, val: 0.0, set: setOutputGain },
-    ];
-    defaults.forEach(({ id, val, set }) => {
-      set(val);
-      send(id, val);
-    });
-  };
+  const { values, set, resetAll: handleResetAll } = useParams(plugin, isOpen, DEFAULTS);
+  const mix = values[0];
+  const vadGate = values[1];
+  const gateAtten = values[2];
+  const outputGain = values[3];
+  const meters = useMeters(plugin.instance_id, isOpen);
+  const vad = Math.max(0, Math.min(1, meters[0] ?? 0));
 
   const isDark = useThemeStore((s) => s.theme === 'dark');
 
@@ -198,7 +106,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
           <div className="relative w-full h-full flex">
             {/* Waveform takes 75% width */}
             <div className="flex-1 h-full">
-              <WaveformDualCanvas instanceId={plugin.instance_id} />
+              <WaveformDualCanvas instanceId={plugin.instance_id} active={isOpen} />
             </div>
             {/* Neural VAD Orb takes right section */}
             <div
@@ -206,7 +114,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
                 isDark ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-100/50'
               }`}
             >
-              <NeuralVADOrb vad={vad} size={74} label={t('noise.vadConfidence')} />
+              <NeuralVADOrb vad={vad} active={isOpen} size={74} label={t('noise.vadConfidence')} />
             </div>
           </div>
         </VisualStageContainer>
@@ -229,8 +137,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
             color="#00f0ff"
             format={(v) => Math.round(v * 100).toString()}
             onChange={(v) => {
-              setMix(v);
-              send(0, v);
+              set(0, v);
             }}
           />
 
@@ -246,8 +153,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
             color="#38bdf8"
             format={(v) => Math.round(v * 100).toString()}
             onChange={(v) => {
-              setVadGate(v);
-              send(1, v);
+              set(1, v);
             }}
           />
 
@@ -263,8 +169,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
             color="#f59e0b"
             format={(v) => Math.round(v * 100).toString()}
             onChange={(v) => {
-              setGateAtten(v);
-              send(2, v);
+              set(2, v);
             }}
           />
 
@@ -281,8 +186,7 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
             color="#10b981"
             format={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
             onChange={(v) => {
-              setOutputGain(v);
-              send(3, v);
+              set(3, v);
             }}
           />
         </div>

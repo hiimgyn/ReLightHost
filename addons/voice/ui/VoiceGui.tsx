@@ -1,7 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal } from 'antd';
 import { Mic, Flame } from 'lucide-react';
-import { tauri } from '../../ui-common/host';
 import type { PluginInstanceInfo } from '../../ui-common/host';
 import { useTranslation } from '../../ui-common/host';
 import { useThemeStore } from '../../ui-common/host';
@@ -9,6 +7,7 @@ import {
   AudioKnob,
   VisualStageContainer,
   PluginHeader,
+  useParams,
 } from '../../ui-common';
 import { BodePlotCanvas } from './BodePlotCanvas';
 
@@ -26,94 +25,20 @@ const P_DRIVE   = 3;
 const P_WIDTH   = 4;
 const P_CEILING = 5;
 
-function paramValue(plugin: PluginInstanceInfo, id: number, fallback: number) {
-  return plugin.parameters.find(p => p.id === id)?.value ?? fallback;
-}
+const DEFAULTS = { [P_LOW]: 0, [P_MID]: 0, [P_HIGH]: 0, [P_DRIVE]: 0, [P_WIDTH]: 0, [P_CEILING]: 0 };
 
 export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
   const { t } = useTranslation();
   const modalWidth = typeof window === 'undefined' ? 560 : 'clamp(520px, 52vw, 580px)';
 
-  const [low,     setLow]     = useState(() => paramValue(plugin, P_LOW,      0));
-  const [mid,     setMid]     = useState(() => paramValue(plugin, P_MID,      0));
-  const [high,    setHigh]    = useState(() => paramValue(plugin, P_HIGH,     0));
-  const [drive,   setDrive]   = useState(() => paramValue(plugin, P_DRIVE,    0));
-  const [width,   setWidth]   = useState(() => paramValue(plugin, P_WIDTH,    0));
-  const [ceiling, setCeiling] = useState(() => paramValue(plugin, P_CEILING,  0));
 
-  // Trailing throttle for IPC parameter updates
-  const pendingSendsRef = useRef<Map<number, number>>(new Map());
-  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const send = useCallback((id: number, value: number) => {
-    pendingSendsRef.current.set(id, value);
-    if (!throttleTimerRef.current) {
-      tauri.setPluginParameter(plugin.instance_id, id, value).catch(() => {});
-      throttleTimerRef.current = setTimeout(() => {
-        throttleTimerRef.current = null;
-        pendingSendsRef.current.forEach((val, pId) => {
-          tauri.setPluginParameter(plugin.instance_id, pId, val).catch(() => {});
-        });
-        pendingSendsRef.current.clear();
-      }, 40);
-    }
-  }, [plugin.instance_id]);
-
-  useEffect(() => {
-    return () => {
-      if (throttleTimerRef.current) {
-        clearTimeout(throttleTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    let isCancelled = false;
-
-    (async () => {
-      try {
-        const params = await tauri.getPluginParameters(plugin.instance_id);
-        if (isCancelled || !params || params.length === 0) return;
-        const find = (id: number, fallback: number) =>
-          params.find(p => p.id === id)?.value ?? paramValue(plugin, id, fallback);
-
-        setLow(find(P_LOW, 0));
-        setMid(find(P_MID, 0));
-        setHigh(find(P_HIGH, 0));
-        setDrive(find(P_DRIVE, 0));
-        setWidth(find(P_WIDTH, 0));
-        setCeiling(find(P_CEILING, 0));
-      } catch {
-        if (isCancelled) return;
-        setLow(paramValue(plugin, P_LOW, 0));
-        setMid(paramValue(plugin, P_MID, 0));
-        setHigh(paramValue(plugin, P_HIGH, 0));
-        setDrive(paramValue(plugin, P_DRIVE, 0));
-        setWidth(paramValue(plugin, P_WIDTH, 0));
-        setCeiling(paramValue(plugin, P_CEILING, 0));
-      }
-    })();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [isOpen, plugin.instance_id]);
-
-  const handleResetAll = () => {
-    const defaults = [
-      { id: P_LOW,     val: 0, set: setLow },
-      { id: P_MID,     val: 0, set: setMid },
-      { id: P_HIGH,    val: 0, set: setHigh },
-      { id: P_DRIVE,   val: 0, set: setDrive },
-      { id: P_WIDTH,   val: 0, set: setWidth },
-      { id: P_CEILING, val: 0, set: setCeiling },
-    ];
-    defaults.forEach(({ id, val, set }) => {
-      set(val);
-      send(id, val);
-    });
-  };
+  const { values, set, resetAll: handleResetAll } = useParams(plugin, isOpen, DEFAULTS);
+  const low = values[P_LOW];
+  const mid = values[P_MID];
+  const high = values[P_HIGH];
+  const drive = values[P_DRIVE];
+  const width = values[P_WIDTH];
+  const ceiling = values[P_CEILING];
 
   const isDark = useThemeStore((s) => s.theme === 'dark');
 
@@ -175,16 +100,13 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
             midGain={mid}
             highGain={high}
             onLowGainChange={(v) => {
-              setLow(v);
-              send(P_LOW, v);
+              set(P_LOW, v);
             }}
             onMidGainChange={(v) => {
-              setMid(v);
-              send(P_MID, v);
+              set(P_MID, v);
             }}
             onHighGainChange={(v) => {
-              setHigh(v);
-              send(P_HIGH, v);
+              set(P_HIGH, v);
             }}
             accentColor="#6366f1"
           />
@@ -219,8 +141,7 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
               color="#38bdf8"
               format={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
               onChange={(v) => {
-                setLow(v);
-                send(P_LOW, v);
+                set(P_LOW, v);
               }}
             />
 
@@ -237,8 +158,7 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
               color="#f59e0b"
               format={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
               onChange={(v) => {
-                setMid(v);
-                send(P_MID, v);
+                set(P_MID, v);
               }}
             />
 
@@ -255,8 +175,7 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
               color="#a855f7"
               format={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
               onChange={(v) => {
-                setHigh(v);
-                send(P_HIGH, v);
+                set(P_HIGH, v);
               }}
             />
           </div>
@@ -296,8 +215,7 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
               color="#ef4444"
               format={(v) => Math.round(v * 100).toString()}
               onChange={(v) => {
-                setDrive(v);
-                send(P_DRIVE, v);
+                set(P_DRIVE, v);
               }}
             />
 
@@ -313,8 +231,7 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
               color="#10b981"
               format={(v) => Math.round(v * 100).toString()}
               onChange={(v) => {
-                setWidth(v);
-                send(P_WIDTH, v);
+                set(P_WIDTH, v);
               }}
             />
 
@@ -330,8 +247,7 @@ export default function VoiceGui({ plugin, isOpen, onClose }: Props) {
               color="#f43f5e"
               format={(v) => `${v >= 0 ? '' : ''}${v.toFixed(1)}`}
               onChange={(v) => {
-                setCeiling(v);
-                send(P_CEILING, v);
+                set(P_CEILING, v);
               }}
             />
           </div>

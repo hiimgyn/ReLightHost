@@ -282,16 +282,6 @@ pub fn get_plugin_crash_statuses(state: tauri::State<AppState>) -> Result<Vec<Pl
         .collect())
 }
 
-#[tauri::command]
-pub fn get_noise_suppressor_vad(state: tauri::State<AppState>, instance_id: String) -> Result<f32, String> {
-    let manager = &state.plugin_manager;
-    if let Some(instance) = manager.get_instance(&instance_id) {
-        Ok(instance.get_builtin_vad())
-    } else {
-        Err(format!("Plugin instance not found: {}", instance_id))
-    }
-}
-
 /// Live meter values of add-on instances; unknown ids are skipped.
 #[tauri::command(async)]
 pub fn get_addon_meters(state: tauri::State<AppState>, instance_ids: Vec<String>) -> Vec<(String, Vec<f32>)> {

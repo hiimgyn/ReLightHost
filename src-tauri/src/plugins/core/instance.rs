@@ -534,12 +534,6 @@ impl PluginInstance {
         }
     }
 
-    /// First add-on meter (the noise suppressor's VAD, 0.0 = noise, 1.0 =
-    /// speech); 0.0 when there is none. Backs `get_noise_suppressor_vad`.
-    pub fn get_builtin_vad(&self) -> f32 {
-        self.addon_meters().first().copied().unwrap_or(0.0)
-    }
-
     /// Open the plugin's native GUI editor using the existing VST3 processor.
     ///
     /// This reuses the same VST3 instance used for audio processing, ensuring
@@ -1301,7 +1295,6 @@ mod state_tests {
                     let meters = inst.addon_meters();
                     assert_eq!(meters.len(), 1, "{}", d.id);
                     assert!((0.0..=1.0).contains(&meters[0]), "{}: vad {} never published", d.id, meters[0]);
-                    assert_eq!(inst.get_builtin_vad(), meters[0], "{}: get_noise_suppressor_vad path", d.id);
                 }
                 "builtin::compressor" | "builtin::voice" => assert!(inst.addon_meters().is_empty(), "{}", d.id),
                 other => panic!("no meter check for {other}"),

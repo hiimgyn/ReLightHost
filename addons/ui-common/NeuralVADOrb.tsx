@@ -7,6 +7,8 @@ interface NeuralVADOrbProps {
   size?: number;
   label?: string;
   className?: string;
+  /** false (panel closed) stops the animation loop. */
+  active?: boolean;
 }
 
 export const NeuralVADOrb: React.FC<NeuralVADOrbProps> = ({
@@ -14,6 +16,7 @@ export const NeuralVADOrb: React.FC<NeuralVADOrbProps> = ({
   size = 72,
   label = 'AI SPEECH VAD',
   className = '',
+  active = true,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const smoothedVadRef = useRef(vad);
@@ -22,7 +25,7 @@ export const NeuralVADOrb: React.FC<NeuralVADOrbProps> = ({
   const isDark = useThemeStore((s) => s.theme === 'dark');
 
   useEffect(() => {
-    if (!isWindowVisible) return;
+    if (!isWindowVisible || !active) return;
     let animId: number;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -92,7 +95,7 @@ export const NeuralVADOrb: React.FC<NeuralVADOrbProps> = ({
 
     animId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animId);
-  }, [vad, size, isWindowVisible]);
+  }, [vad, size, isWindowVisible, active]);
 
   return (
     <div className={`flex flex-col items-center select-none ${className}`}>

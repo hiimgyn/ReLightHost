@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Modal } from 'antd';
 import { Activity } from 'lucide-react';
 import { tauri } from '../../ui-common/host';
@@ -9,6 +9,7 @@ import {
   AudioKnob,
   VisualStageContainer,
   PluginHeader,
+  useParams,
 } from '../../ui-common';
 import { TransferCurveCanvas } from './TransferCurveCanvas';
 
@@ -27,83 +28,24 @@ const P_MAKEUP    = 4;
 const P_KNEE      = 5;
 const P_MIX       = 6;
 
-function paramValue(plugin: PluginInstanceInfo, id: number, fallback: number) {
-  return plugin.parameters.find(p => p.id === id)?.value ?? fallback;
-}
+const DEFAULTS = {
+  [P_THRESHOLD]: -18, [P_RATIO]: 4, [P_ATTACK]: 10, [P_RELEASE]: 100,
+  [P_MAKEUP]: 0, [P_KNEE]: 3, [P_MIX]: 1,
+};
 
 export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
   const { t } = useTranslation();
   const modalWidth = typeof window === 'undefined' ? 560 : 'clamp(520px, 52vw, 580px)';
 
-  const [threshold, setThreshold] = useState(() => paramValue(plugin, P_THRESHOLD, -18));
-  const [ratio,     setRatio]     = useState(() => paramValue(plugin, P_RATIO,       4));
-  const [attack,    setAttack]    = useState(() => paramValue(plugin, P_ATTACK,     10));
-  const [release,   setRelease]   = useState(() => paramValue(plugin, P_RELEASE,   100));
-  const [makeup,    setMakeup]    = useState(() => paramValue(plugin, P_MAKEUP,      0));
-  const [knee,      setKnee]      = useState(() => paramValue(plugin, P_KNEE,        3));
-  const [mix,       setMix]       = useState(() => paramValue(plugin, P_MIX,         1));
 
-  // Trailing throttle for IPC parameter calls (max 1 call per 40ms with immediate 1st tick)
-  const pendingSendsRef = useRef<Map<number, number>>(new Map());
-  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const send = useCallback((id: number, value: number) => {
-    pendingSendsRef.current.set(id, value);
-    if (!throttleTimerRef.current) {
-      tauri.setPluginParameter(plugin.instance_id, id, value).catch(() => {});
-      throttleTimerRef.current = setTimeout(() => {
-        throttleTimerRef.current = null;
-        pendingSendsRef.current.forEach((val, pId) => {
-          tauri.setPluginParameter(plugin.instance_id, pId, val).catch(() => {});
-        });
-        pendingSendsRef.current.clear();
-      }, 40);
-    }
-  }, [plugin.instance_id]);
-
-  useEffect(() => {
-    return () => {
-      if (throttleTimerRef.current) {
-        clearTimeout(throttleTimerRef.current);
-      }
-    };
-  }, []);
-
-  // Authoritative re-sync when opening the modal
-  useEffect(() => {
-    if (!isOpen) return;
-    let isCancelled = false;
-
-    (async () => {
-      try {
-        const params = await tauri.getPluginParameters(plugin.instance_id);
-        if (isCancelled || !params || params.length === 0) return;
-        const find = (id: number, fallback: number) =>
-          params.find(p => p.id === id)?.value ?? paramValue(plugin, id, fallback);
-
-        setThreshold(find(P_THRESHOLD, -18));
-        setRatio(find(P_RATIO, 4));
-        setAttack(find(P_ATTACK, 10));
-        setRelease(find(P_RELEASE, 100));
-        setMakeup(find(P_MAKEUP, 0));
-        setKnee(find(P_KNEE, 3));
-        setMix(find(P_MIX, 1));
-      } catch {
-        if (isCancelled) return;
-        setThreshold(paramValue(plugin, P_THRESHOLD, -18));
-        setRatio(paramValue(plugin, P_RATIO, 4));
-        setAttack(paramValue(plugin, P_ATTACK, 10));
-        setRelease(paramValue(plugin, P_RELEASE, 100));
-        setMakeup(paramValue(plugin, P_MAKEUP, 0));
-        setKnee(paramValue(plugin, P_KNEE, 3));
-        setMix(paramValue(plugin, P_MIX, 1));
-      }
-    })();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [isOpen, plugin.instance_id]);
+  const { values, set, resetAll: handleResetAll } = useParams(plugin, isOpen, DEFAULTS);
+  const threshold = values[P_THRESHOLD];
+  const ratio = values[P_RATIO];
+  const attack = values[P_ATTACK];
+  const release = values[P_RELEASE];
+  const makeup = values[P_MAKEUP];
+  const knee = values[P_KNEE];
+  const mix = values[P_MIX];
 
   // Live meter from the instance's real (input, output) peak per 10 ms window.
   const [livePeaks, setLivePeaks] = useState<[number, number] | null>(null);
@@ -134,22 +76,6 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
   const liveGainReductionDb = livePeaks && liveInputDb > -60
     ? Math.max(0, liveInputDb + makeup - toDb(livePeaks[1]))
     : 0;
-
-  const handleResetAll = () => {
-    const defaults = [
-      { id: P_THRESHOLD, val: -18, set: setThreshold },
-      { id: P_RATIO,     val: 4,   set: setRatio },
-      { id: P_ATTACK,    val: 10,  set: setAttack },
-      { id: P_RELEASE,   val: 100, set: setRelease },
-      { id: P_MAKEUP,    val: 0,   set: setMakeup },
-      { id: P_KNEE,      val: 3,   set: setKnee },
-      { id: P_MIX,       val: 1,   set: setMix },
-    ];
-    defaults.forEach(({ id, val, set }) => {
-      set(val);
-      send(id, val);
-    });
-  };
 
   const dynamicsProfileText = ratio >= 10
     ? t('compressor.limiting')
@@ -214,8 +140,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
             liveInputDb={liveInputDb}
             liveGainReductionDb={liveGainReductionDb}
             onThresholdChange={(v) => {
-              setThreshold(v);
-              send(P_THRESHOLD, v);
+              set(P_THRESHOLD, v);
             }}
             accentColor="#f59e0b"
           />
@@ -239,8 +164,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
             color="#f59e0b"
             format={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
             onChange={(v) => {
-              setThreshold(v);
-              send(P_THRESHOLD, v);
+              set(P_THRESHOLD, v);
             }}
           />
 
@@ -256,8 +180,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
             color="#f59e0b"
             format={(v) => v.toFixed(1)}
             onChange={(v) => {
-              setRatio(v);
-              send(P_RATIO, v);
+              set(P_RATIO, v);
             }}
           />
 
@@ -273,8 +196,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
             color="#38bdf8"
             format={(v) => (v < 10 ? v.toFixed(1) : Math.round(v).toString())}
             onChange={(v) => {
-              setAttack(v);
-              send(P_ATTACK, v);
+              set(P_ATTACK, v);
             }}
           />
 
@@ -290,8 +212,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
             color="#38bdf8"
             format={(v) => (v < 1000 ? Math.round(v).toString() : (v / 1000).toFixed(2))}
             onChange={(v) => {
-              setRelease(v);
-              send(P_RELEASE, v);
+              set(P_RELEASE, v);
             }}
           />
         </div>
@@ -314,8 +235,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
             color="#a855f7"
             format={(v) => v.toFixed(1)}
             onChange={(v) => {
-              setKnee(v);
-              send(P_KNEE, v);
+              set(P_KNEE, v);
             }}
           />
 
@@ -331,8 +251,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
             color="#10b981"
             format={(v) => `+${v.toFixed(1)}`}
             onChange={(v) => {
-              setMakeup(v);
-              send(P_MAKEUP, v);
+              set(P_MAKEUP, v);
             }}
           />
 
@@ -348,8 +267,7 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
             color="#6366f1"
             format={(v) => Math.round(v * 100).toString()}
             onChange={(v) => {
-              setMix(v);
-              send(P_MIX, v);
+              set(P_MIX, v);
             }}
           />
         </div>

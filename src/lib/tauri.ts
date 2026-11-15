@@ -164,10 +164,6 @@ export async function resetPluginCrashProtection(instanceId: string): Promise<vo
   return invoke('reset_plugin_crash_protection', { instanceId });
 }
 
-export async function getNoiseSuppressorVad(instanceId: string): Promise<number> {
-  return invoke('get_noise_suppressor_vad', { instanceId });
-}
-
 export async function getAddonMeters(instanceIds: string[]): Promise<[string, number[]][]> {
   return invoke('get_addon_meters', { instanceIds });
 }

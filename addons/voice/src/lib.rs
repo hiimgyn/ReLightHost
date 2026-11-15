@@ -308,6 +308,20 @@ impl AddonProcessor for Voice {
         }
     }
 
+    /// Un-bypass: forget the audio from before the bypass (the 12 ms
+    /// doubler line, EQ and limiter state) and jump to the current settings.
+    fn reset(&mut self) {
+        self.doubler.buf.fill(0.0);
+        for b in self.eq_l.bands.iter_mut().chain(self.eq_r.bands.iter_mut()) {
+            (b.s1, b.s2) = (0.0, 0.0);
+        }
+        self.limiter.gain = 1.0;
+        self.cur = self.target;
+        for k in 0..3 {
+            self.set_band(k);
+        }
+    }
+
     fn set_parameter(&mut self, id: u32, value: f32) {
         if !value.is_finite() { return; }
         let v = match id {

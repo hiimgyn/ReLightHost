@@ -169,6 +169,13 @@ impl AddonProcessor for Compressor {
         }
     }
 
+    /// Un-bypass: start from a fresh envelope at the current settings.
+    fn reset(&mut self) {
+        self.envelope = 0.0;
+        self.makeup_s = 10f32.powf(self.makeup_db / 20.0);
+        self.mix_s = self.mix;
+    }
+
     fn set_parameter(&mut self, id: u32, value: f32) {
         match id {
             0 => self.threshold_db = value,

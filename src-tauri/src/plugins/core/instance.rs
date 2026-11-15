@@ -1509,6 +1509,43 @@ mod state_tests {
         assert_eq!(stale, 0, "{stale} of 2048 samples replayed pre-bypass audio");
     }
 
+    fn addon(d: &AddonDescriptor) -> Arc<PluginInstance> {
+        Arc::new(PluginInstance::new(crate::plugins::addons::plugin_info(d), 48_000.0, 512).unwrap())
+    }
+
+    /// Runs `x` for `blocks` blocks of 256; returns every output sample.
+    fn run(inst: &PluginInstance, x: f32, blocks: usize) -> Vec<f32> {
+        let mut out = Vec::new();
+        for _ in 0..blocks {
+            let (mut l, mut r) = ([x; 256], [x; 256]);
+            inst.process_stereo(&mut l, &mut r);
+            out.extend(l);
+            out.extend(r);
+        }
+        out
+    }
+
+    #[test]
+    fn voice_unbypass_does_not_replay_the_doubler() {
+        let inst = addon(&relight_addon_voice::ADDON);
+        inst.set_parameter(4, 1.0); // full width: the 12 ms doubler line is audible
+        run(&inst, 0.5, 8);
+        inst.set_bypassed(true);
+        inst.set_bypassed(false);
+        let stale = run(&inst, 0.0, 4).iter().filter(|&&v| v != 0.0).count();
+        assert_eq!(stale, 0, "{stale} samples replayed pre-bypass audio");
+    }
+
+    #[test]
+    fn compressor_unbypass_starts_from_a_fresh_envelope() {
+        let inst = compressor();
+        run(&inst, 0.9, 8); // loud: the envelope sits far above threshold
+        inst.set_bypassed(true);
+        inst.set_bypassed(false);
+        let out = run(&inst, 0.01, 1); // −40 dBFS: below threshold, unity gain
+        assert!(out.iter().all(|v| (v - 0.01).abs() < 1e-6), "stale gain reduction: {}", out[0]);
+    }
+
     /// Stands in for the audio thread: holds the chain snapshot (as
     /// `process_chain_stereo` does for a whole block) while `run` executes.
     fn with_reader_holding_chain(manager: &Arc<PluginInstanceManager>, run: impl FnOnce()) {

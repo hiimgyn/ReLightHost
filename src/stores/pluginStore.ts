@@ -163,7 +163,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     });
 
     try {
-      await tauri.reorderPluginChain(fromIndex, toIndex);
+      await tauri.reorderPluginChain(item.instance_id, toIndex);
     } catch (error) {
       // Revert immediately on failure, then resync with backend snapshot.
       set({ pluginChain: current });
@@ -190,6 +190,10 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       return;
     }
 
+    // Ids, not indices: the backend resolves them against its live chain,
+    // so a chain change in between can't move the wrong plugin.
+    const firstId = current[firstIndex].instance_id;
+    const secondId = current[secondIndex].instance_id;
     const next = [...current];
     const temp = next[firstIndex];
     next[firstIndex] = next[secondIndex];
@@ -203,7 +207,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     });
 
     try {
-      await tauri.swapPluginChain(firstIndex, secondIndex);
+      await tauri.swapPluginChain(firstId, secondId);
     } catch (error) {
       set({ pluginChain: current });
       await get().fetchChain();

@@ -9,6 +9,13 @@ pub fn get_startup_crash_warning() -> Vec<String> {
     crate::core::crash_marker::startup_warning()
 }
 
+/// Settings/session/autosave files that existed but didn't parse this run,
+/// as the paths they were moved aside to (defaults were used instead).
+#[tauri::command]
+pub fn get_unreadable_file_backups() -> Vec<String> {
+    crate::domain::preset::unreadable_backups()
+}
+
 /// On the plugin host thread (see core::host_thread): a restore can take
 /// many seconds (plugins loading their own models) and used to freeze the
 /// window for all of it.
@@ -54,6 +61,10 @@ pub async fn save_preset(state: tauri::State<'_, AppState>, name: String) -> Res
 
 fn save_preset_on_host(state: &AppState, name: String) -> Result<(), String> {
     crate::domain::preset::PresetManager::validate_name(&name).map_err(|e| e.to_string())?;
+    // Until the deferred VST3 replay finishes, plugins still hold default state.
+    if !state.startup.vst3_restore_ready.load(std::sync::atomic::Ordering::Acquire) {
+        return Err("Session restore is still finishing — try again in a moment".into());
+    }
     let preset = crate::core::snapshot::build_chain_preset_from_manager(&state.plugin_manager, name.trim());
     let json = preset.to_json().map_err(|e| e.to_string())?;
     state

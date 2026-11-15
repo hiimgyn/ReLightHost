@@ -58,8 +58,25 @@ export default function PresetMenu({ disabled }: { disabled: boolean }) {
     });
   };
 
+  /** Mirrors PresetManager::path_for: the file name, as NTFS compares it. */
+  const fileKey = (preset: string) => preset.trim().replace(/ /g, '_').toLowerCase();
+
   const save = async () => {
     if (!isValidName(name)) return;
+    const existing = presets.find((p) => fileKey(p) === fileKey(name));
+    if (existing) {
+      modal.confirm({
+        title: t('chain.overwritePresetConfirm', { name: existing }),
+        content: t('chain.overwritePresetConfirmDesc'),
+        okButtonProps: { danger: true },
+        onOk: doSave,
+      });
+      return;
+    }
+    await doSave();
+  };
+
+  const doSave = async () => {
     setBusy(true);
     try {
       await tauri.savePreset(name.trim());

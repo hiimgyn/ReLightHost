@@ -32,9 +32,10 @@ pub(crate) fn restore_session_impl(
         });
     }
     log::info!("{} Session restore started", crate::core::threading::thread_prefix("restore/main"));
-    // Cleared below once the chain is complete — at the end of this function,
-    // or by the vst3-replay thread when state replay is deferred.
-    crate::core::autosave::set_restore_in_progress(true);
+    // Cleared once the chain is complete — at the end of this function, or
+    // by the vst3-replay thread (which takes the guard) when state replay
+    // is deferred. A guard, so a panic mid-restore can't leave autosave off.
+    let mut restoring = Some(crate::core::autosave::RestoreInProgress::begin());
 
     let mut audio_restored: bool = false;
     let mut plugins_restored: usize = 0;
@@ -139,6 +140,11 @@ pub(crate) fn restore_session_impl(
             // count; this carries the denominator.
             crate::app_events::emit_plugin_chain_changed("restore_total", Some(&infos.len().to_string()));
 
+            // Safe mode: plugins active when the previous run crashed come
+            // back bypassed (saved state kept) so the app can start; the
+            // startup warning tells the user, and un-bypassing re-enables.
+            let crashed_last_run = crate::core::crash_marker::startup_warning();
+
             let parallel_vst3 = state.config_manager.get_parallel_vst3_loading();
             let results = state
                 .plugin_manager
@@ -161,7 +167,11 @@ pub(crate) fn restore_session_impl(
 
                 plugins_restored += 1;
                 if let Some(instance) = state.plugin_manager.get_instance(&instance_id) {
-                    instance.set_bypassed(saved.bypassed);
+                    let safe_mode = crashed_last_run.contains(&info.path);
+                    if safe_mode {
+                        log::warn!("{} '{}' was active when the last run crashed — restored bypassed", crate::core::threading::thread_prefix("restore/load"), info.name);
+                    }
+                    instance.set_bypassed(saved.bypassed || safe_mode);
                     if info.format == crate::plugins::PluginFormat::VST3 {
                         vst3_replays.push((instance_id.clone(), saved.vst3_state.clone(), saved.parameters.clone()));
                         log::debug!("{} Deferred VST3 state for '{}', will replay after load", crate::core::threading::thread_prefix("restore/load"), info.name);
@@ -181,9 +191,11 @@ pub(crate) fn restore_session_impl(
                 let plugin_manager = Arc::clone(&state.plugin_manager);
                 let vst3_restore_ready = Arc::clone(&state.startup.vst3_restore_ready);
                 let vst3_restore_ready_fallback = Arc::clone(&state.startup.vst3_restore_ready);
+                let restoring_until_replayed = restoring.take();
                 match std::thread::Builder::new()
                     .name("vst3-replay".to_string())
                     .spawn(move || {
+                    let _restoring = restoring_until_replayed;
                     let finished = crate::core::autosave::RestoreFinishGuard::new(vst3_restore_ready);
                     log::info!(
                         "{} VST3 replay thread started ({} item(s))",
@@ -261,7 +273,7 @@ pub(crate) fn restore_session_impl(
         // Monitoring may have started after the plugins loaded, at a rate
         // an ASIO driver chose — bring the chain in line before saving it.
         crate::commands::audio::sync_chain_to_audio_rate(state);
-        crate::core::autosave::set_restore_in_progress(false);
+        drop(restoring);
         crate::core::autosave::request_plugin_chain_autosave();
     }
 
@@ -294,6 +306,11 @@ fn preset_load_plan(preset: &crate::domain::preset::Preset) -> Vec<(crate::plugi
             let (Some(path), Some(format)) = (p.plugin_path.as_ref(), p.plugin_format) else {
                 return None;
             };
+            // Still loaded (pass-through, saved state kept for the next
+            // autosave) so the chain survives a reinstall to the same path.
+            if format != crate::plugins::PluginFormat::Builtin && !std::path::Path::new(path).exists() {
+                log::warn!("Plugin '{}' not found at '{}' — uninstalled or moved; kept in the chain as pass-through", p.plugin_name, path);
+            }
             let info = crate::plugins::PluginInfo {
                 id:       p.plugin_id.clone(),
                 name:     p.plugin_name.clone(),
@@ -332,6 +349,10 @@ pub(crate) fn load_preset_into_chain(
     block_size: usize,
     parallel_vst3: bool,
 ) -> usize {
+    // Each plugin load requests an autosave (restore_progress); without this
+    // one could snapshot the cleared, half-loaded chain over autosave.json.
+    // The caller's `preset_load` event saves once the chain is complete.
+    let _restoring = crate::core::autosave::RestoreInProgress::begin();
     let plan = preset_load_plan(preset);
     let infos = plan.iter().map(|(info, _)| info.clone()).collect();
     plugin_manager.clear();
@@ -370,6 +391,7 @@ mod tests {
 
     #[test]
     fn loading_a_preset_replaces_the_chain_and_applies_its_settings() {
+        let _flag = crate::core::autosave::tests::FLAG_LOCK.lock();
         let source = Arc::new(PluginInstanceManager::new());
         let id = source.load_plugin(compressor(), 48_000.0, 512).unwrap();
         let inst = source.get_instance(&id).unwrap();

@@ -21,10 +21,10 @@ fn main() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    println!("Opening GUI (sync_component_state=false, restored_state_blob=None)...");
+    println!("Opening GUI...");
     let gui_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
     let gui_hwnd: Arc<AtomicIsize> = Arc::new(AtomicIsize::new(0));
-    proc.open_gui("In-process VST3", gui_flag.clone(), gui_hwnd.clone(), false, None)
+    proc.open_gui("In-process VST3", gui_flag.clone(), gui_hwnd.clone())
         .expect("open_gui failed");
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);

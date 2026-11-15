@@ -28,6 +28,22 @@ pub fn setup(app: &mut tauri::App<tauri::Wry>) -> Result<(), Box<dyn std::error:
             .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
             .build(),
     )?;
+    // Marks each process start in the shared log file: without it a restart
+    // after a native plugin crash reads like a second restore_session call
+    // in the same run.
+    log::info!("ReLightHost {} started (pid {})", app.package_info().version, std::process::id());
+    // Capture which VST3 plugin(s), if any, were still active when the
+    // previous run ended uncleanly (see crash_marker docs), before any
+    // plugin loads. Here, not in `run()`: a second launch exits in the
+    // single-instance plugin before setup, so it can't wipe the running
+    // instance's marker.
+    crate::core::crash_marker::take_unclean_exit_plugins();
+    // Device-loss / reconnect handling must run even while the window is
+    // hidden in the tray, so it can't wait for the UI's first audio command.
+    {
+        use tauri::Manager;
+        crate::commands::audio::ensure_housekeeping(app.state::<crate::AppState>().inner());
+    }
 
     tray::setup_tray(app)?;
     window::setup_main_window(app)?;

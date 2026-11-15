@@ -105,6 +105,36 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
     };
   }, [isOpen, plugin.instance_id]);
 
+  // Live meter from the instance's real (input, output) peak per 10 ms window.
+  const [livePeaks, setLivePeaks] = useState<[number, number] | null>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const points = await tauri.getPluginScope(plugin.instance_id);
+        if (!cancelled) setLivePeaks(points[points.length - 1] ?? null);
+      } catch {
+        /* instance removed or backend busy — try again next tick */
+      } finally {
+        if (!cancelled) timer = window.setTimeout(poll, 50);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      setLivePeaks(null);
+    };
+  }, [isOpen, plugin.instance_id]);
+  const toDb = (peak: number) => 20 * Math.log10(Math.max(peak, 1e-6));
+  // -60 hides the dot (TransferCurveCanvas); GR = in + makeup − out.
+  const liveInputDb = livePeaks ? toDb(livePeaks[0]) : -60;
+  const liveGainReductionDb = livePeaks && liveInputDb > -60
+    ? Math.max(0, liveInputDb + makeup - toDb(livePeaks[1]))
+    : 0;
+
   const handleResetAll = () => {
     const defaults = [
       { id: P_THRESHOLD, val: -18, set: setThreshold },
@@ -181,8 +211,8 @@ export default function CompressorGui({ plugin, isOpen, onClose }: Props) {
             ratio={ratio}
             knee={knee}
             makeup={makeup}
-            liveInputDb={threshold - 6} // responsive indicator
-            liveGainReductionDb={Math.max(0, (threshold - -12) * (1 - 1 / ratio))}
+            liveInputDb={liveInputDb}
+            liveGainReductionDb={liveGainReductionDb}
             onThresholdChange={(v) => {
               setThreshold(v);
               send(P_THRESHOLD, v);

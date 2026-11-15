@@ -1,17 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { MessageInstance } from 'antd/es/message/interface';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from 'react';
 import type { PluginInstanceInfo } from '../../lib/types';
 import { useTranslation } from '../../i18n';
+import { resolveDropTarget, slotToIndex, type Rect } from './dropTarget';
 
 interface UsePluginDragDropOptions {
   pluginChain: PluginInstanceInfo[];
+  rowRef: RefObject<HTMLElement | null>;
   isChainInitializing: boolean;
   isDeleteAllBusy: boolean;
   reorderChain: (fromIndex: number, toIndex: number) => Promise<void>;
   swapChain: (firstIndex: number, secondIndex: number) => Promise<void>;
+  fetchChain: () => Promise<void>;
   messageApi: MessageInstance;
 }
+
+/** Pointer slack around the card row before a drop counts as "outside" (cancel). */
+const OUTSIDE_MARGIN = 24;
 
 /**
  * Pointer-based drag session for reordering/swapping plugin cards
@@ -19,174 +25,144 @@ interface UsePluginDragDropOptions {
  */
 export function usePluginDragDrop({
   pluginChain,
+  rowRef,
   isChainInitializing,
   isDeleteAllBusy,
   reorderChain,
   swapChain,
+  fetchChain,
   messageApi,
 }: UsePluginDragDropOptions) {
   const { t } = useTranslation();
-  // draggedIndex: which card is being dragged
-  // insertBefore: index BEFORE which the dragged card will be inserted
-  //               (0 = before first, pluginChain.length = after last)
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  // Insert slot: 0 = before first card, pluginChain.length = after last.
   const [insertBefore, setInsertBefore] = useState<number | null>(null);
   const [swapTargetIndex, setSwapTargetIndex] = useState<number | null>(null);
   const [dragPointer, setDragPointer] = useState<{ x: number; y: number } | null>(null);
   const [dragLabel, setDragLabel] = useState('');
   const draggingRef = useRef(false);
-  const draggedIndexRef = useRef<number | null>(null);
   const insertBeforeRef = useRef<number | null>(null);
   const swapTargetIndexRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    insertBeforeRef.current = insertBefore;
-  }, [insertBefore]);
+  const setTarget = (slot: number | null, swap: number | null) => {
+    if (insertBeforeRef.current !== slot) {
+      insertBeforeRef.current = slot;
+      setInsertBefore(slot);
+    }
+    if (swapTargetIndexRef.current !== swap) {
+      swapTargetIndexRef.current = swap;
+      setSwapTargetIndex(swap);
+    }
+  };
+
+  const commitReorder = async (from: number, to: number) => {
+    try {
+      await reorderChain(from, to);
+      messageApi.success(t('chain.orderUpdated'));
+    } catch (error) {
+      messageApi.error(t('chain.reorderFailed'));
+      console.error(error);
+    }
+  };
 
   const startPointerDrag = (e: ReactPointerEvent, index: number) => {
-    if (isChainInitializing || isDeleteAllBusy) return;
+    if (isChainInitializing || isDeleteAllBusy || draggingRef.current) return;
     if (e.button !== 0) return;
     e.preventDefault();
+    // Keep receiving move/up even if the pointer leaves the WebView.
+    try { (e.currentTarget as Element).setPointerCapture(e.pointerId); } catch { /* not capturable */ }
 
+    const from = index;
     draggingRef.current = true;
-    draggedIndexRef.current = index;
     setDragLabel(pluginChain[index]?.name ?? 'Plugin');
     setDragPointer({ x: e.clientX, y: e.clientY });
     setDraggedIndex(index);
-    setInsertBefore(null);
-    setSwapTargetIndex(null);
-    swapTargetIndexRef.current = null;
+    setTarget(null, null);
 
     const onPointerMove = (ev: globalThis.PointerEvent) => {
-      if (draggedIndexRef.current === null) return;
       setDragPointer({ x: ev.clientX, y: ev.clientY });
+      const row = rowRef.current;
+      if (!row) return setTarget(null, null);
 
-      const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      const cards: Rect[] = [];
+      row.querySelectorAll<HTMLElement>('[data-plugin-card-index]').forEach((el) => {
+        cards[Number(el.dataset.pluginCardIndex)] = el.getBoundingClientRect();
+      });
+      const b = row.getBoundingClientRect();
+      const bounds = {
+        left: b.left - OUTSIDE_MARGIN,
+        right: b.right + OUTSIDE_MARGIN,
+        top: b.top - OUTSIDE_MARGIN,
+        bottom: b.bottom + OUTSIDE_MARGIN,
+      };
 
-      // Check if hovering over arrow element
-      const arrowEl = el?.closest('[data-plugin-arrow]') as HTMLElement | null;
-      if (arrowEl) {
-        const arrowPosRaw = arrowEl.dataset.pluginArrowPos;
-        if (arrowPosRaw != null) {
-          const pos = Number(arrowPosRaw);
-          if (Number.isFinite(pos) && insertBeforeRef.current !== pos) {
-            insertBeforeRef.current = pos;
-            setInsertBefore(pos);
-          }
-        }
-        if (swapTargetIndexRef.current !== null) {
-          swapTargetIndexRef.current = null;
-          setSwapTargetIndex(null);
-        }
-        return;
-      }
-
-      const cardEl = el?.closest('[data-plugin-card-index]') as HTMLElement | null;
-      if (!cardEl) {
-        if (insertBeforeRef.current !== null) {
-          insertBeforeRef.current = null;
-          setInsertBefore(null);
-        }
-        if (swapTargetIndexRef.current !== null) {
-          swapTargetIndexRef.current = null;
-          setSwapTargetIndex(null);
-        }
-        return;
-      }
-
-      const indexRaw = cardEl.dataset.pluginCardIndex;
-      if (indexRaw == null) return;
-      const cardIndex = Number(indexRaw);
-      if (!Number.isFinite(cardIndex)) return;
-
-      const rect = cardEl.getBoundingClientRect();
-
-      // Check if pointer is within reasonable Y range of the card (with tolerance for multi-row layouts)
-      const tolerance = 60;
-      const isWithinVerticalBounds =
-        ev.clientY >= rect.top - tolerance &&
-        ev.clientY <= rect.bottom + tolerance;
-
-      if (!isWithinVerticalBounds) {
-        if (insertBeforeRef.current !== null) {
-          insertBeforeRef.current = null;
-          setInsertBefore(null);
-        }
-        if (swapTargetIndexRef.current !== null) {
-          swapTargetIndexRef.current = null;
-          setSwapTargetIndex(null);
-        }
-        return;
-      }
-
-      const from = draggedIndexRef.current;
-      if (from === null) return;
-
-      // Hovering a card means swap target. Hovering an arrow means insert target.
-      if (insertBeforeRef.current !== null) {
-        insertBeforeRef.current = null;
-        setInsertBefore(null);
-      }
-      const nextSwapTarget = cardIndex === from ? null : cardIndex;
-      if (swapTargetIndexRef.current !== nextSwapTarget) {
-        swapTargetIndexRef.current = nextSwapTarget;
-        setSwapTargetIndex(nextSwapTarget);
-      }
+      const target = resolveDropTarget(cards, ev.clientX, ev.clientY, bounds);
+      if (target?.kind === 'swap') setTarget(null, target.index === from ? null : target.index);
+      else if (target?.kind === 'insert') setTarget(slotToIndex(from, target.slot) === null ? null : target.slot, null);
+      else setTarget(null, null);
     };
 
-    const stopPointerDrag = async () => {
+    const endDrag = async (commit: boolean) => {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('keydown', onKeyDown);
 
-      const from = draggedIndexRef.current;
-      const pos = insertBeforeRef.current;
+      const slot = insertBeforeRef.current;
       const swapTo = swapTargetIndexRef.current;
 
       draggingRef.current = false;
-      draggedIndexRef.current = null;
-      insertBeforeRef.current = null;
-      swapTargetIndexRef.current = null;
+      setTarget(null, null);
       setDragPointer(null);
       setDragLabel('');
       setDraggedIndex(null);
-      setInsertBefore(null);
-      setSwapTargetIndex(null);
-
-      if (from === null) return;
 
       try {
-        if (swapTo !== null && swapTo !== from) {
+        if (!commit) return;
+        if (swapTo !== null) {
           await swapChain(from, swapTo);
           messageApi.success(t('chain.pluginsSwapped'));
           return;
         }
-
-        if (pos === null) return;
-        const to = pos > from ? pos - 1 : pos;
-        if (from === to) return;
-
-        await reorderChain(from, to);
-        messageApi.success(t('chain.orderUpdated'));
+        const to = slot === null ? null : slotToIndex(from, slot);
+        if (to !== null) await commitReorder(from, to);
       } catch (error) {
         messageApi.error(t('chain.reorderFailed'));
         console.error(error);
+      } finally {
+        // plugin-chain-changed events are ignored mid-drag; resync so none are lost.
+        void fetchChain();
       }
     };
 
-    const onPointerUp = () => { void stopPointerDrag(); };
-    const onPointerCancel = () => { void stopPointerDrag(); };
+    const onPointerUp = () => { void endDrag(true); };
+    // Touch scroll/gesture takeover or Escape: cancel, never drop.
+    const onPointerCancel = () => { void endDrag(false); };
+    const onKeyDown = (ev: KeyboardEvent) => { if (ev.key === 'Escape') void endDrag(false); };
 
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
     window.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('keydown', onKeyDown);
   };
 
-  const showInsertAt = (pos: number) =>
-    draggedIndex !== null &&
-    insertBefore === pos &&
-    insertBefore !== draggedIndex &&
-    insertBefore !== draggedIndex + 1;
+  /** Keyboard alternative on the focused drag handle: arrows move by one, Home/End to the ends. */
+  const moveByKey = (e: ReactKeyboardEvent, index: number) => {
+    if (isChainInitializing || isDeleteAllBusy || draggingRef.current) return;
+    const last = pluginChain.length - 1;
+    const to = e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? index - 1
+      : e.key === 'ArrowRight' || e.key === 'ArrowDown' ? index + 1
+      : e.key === 'Home' ? 0
+      : e.key === 'End' ? last
+      : null;
+    if (to === null) return;
+    e.preventDefault();
+    if (to < 0 || to > last || to === index) return;
+    void commitReorder(index, to);
+  };
+
+  // Slots adjacent to the dragged card are no-ops, so never highlighted.
+  const showInsertAt = (pos: number) => draggedIndex !== null && insertBefore === pos;
 
   return {
     draggedIndex,
@@ -195,6 +171,7 @@ export function usePluginDragDrop({
     dragLabel,
     draggingRef,
     startPointerDrag,
+    moveByKey,
     showInsertAt,
   };
 }

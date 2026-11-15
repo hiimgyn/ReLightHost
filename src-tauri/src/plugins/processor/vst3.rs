@@ -11,20 +11,21 @@ mod win {
     use std::ffi::c_void;
     use std::ptr;
     use std::time::{Duration, Instant};
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use parking_lot::Mutex as PLMutex;
     use windows_sys::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
     use vst3::Steinberg::{
-        kResultOk, IBStream, IBStreamTrait, IPluginFactory, IPluginFactoryTrait,
-        IPluginBaseTrait, PClassInfo,
+        kNotImplemented, kResultOk, IBStream, IBStreamTrait, IPluginFactory, IPluginFactoryTrait,
+        IPluginFactory3, IPluginFactory3Trait, IPluginBaseTrait, PClassInfo,
     };
     use vst3::Steinberg::Vst::
         {BusDirections_::{kInput, kOutput},
         AudioBusBuffers, AudioBusBuffers__type0,
         IAudioProcessor, IAudioProcessorTrait,
         IComponent, IComponentTrait,
+        IConnectionPoint, IConnectionPointTrait,
         IEditController, IEditControllerTrait,
         MediaTypes_::{kAudio, kEvent},
         ProcessContext,
@@ -35,7 +36,7 @@ mod win {
     };
     use vst3::{Class, ComPtr, ComWrapper, Interface};
     use vst3::Steinberg::Vst::IComponentHandler;
-    use crate::plugins::processor::vst3_host::{HostComponentHandler, HostParameterChanges, PendingParams};
+    use crate::plugins::processor::vst3_host::{host_context, HostComponentHandler, HostParameterChanges, PendingParams};
 
     // ──────────────────────────────────────────────────────────────────
     // COM initialization per-thread (CRITICAL for VST3 plugin stability)
@@ -145,6 +146,10 @@ mod win {
         unsafe fn write(&self, buffer: *mut c_void, numBytes: i32, numBytesWritten: *mut i32) -> i32 {
             let mut borrow = self.buf.borrow_mut();
             let n = numBytes.max(0) as usize;
+            if n == 0 || buffer.is_null() {
+                if !numBytesWritten.is_null() { *numBytesWritten = 0; }
+                return 0;
+            }
             let pos = self.pos.get();
             let end = pos + n;
             if end > borrow.len() { borrow.resize(end, 0); }
@@ -207,31 +212,20 @@ mod win {
         /// Optional edit controller for parameter automation.
         /// Present for both single-component and separate-controller VST3 designs.
         controller: Option<ComPtr<IEditController>>,
+        /// The controller is its own object (terminated separately).
+        separate_controller: bool,
+        /// Component ↔ controller connection points, connected at load.
+        connection: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
+        /// setActive(1) succeeded / was attempted.
+        active: bool,
+        /// Channels of the main input / output bus (0..=2; 0 = no such bus).
+        in_channels: usize,
+        out_channels: usize,
         in_l:       Vec<f32>,
         in_r:       Vec<f32>,
         /// Startup warmup window: skip process() briefly right after load.
         /// Some VST3 plugins crash if processed immediately after initialization.
         warmup_until: Instant,
-        /// Synchronization: GUI attachment must complete before audio processing starts.
-        /// Set to true by open_gui after IPlugView::attached() completes successfully.
-        /// Audio processing checks this before calling process() to ensure plugin
-        /// initialization is fully complete.
-        attachment_ready: Arc<AtomicBool>,
-        /// Held for the *entire* GUI-open lifetime (createView through cleanup),
-        /// not just the initial attach handshake — closes a TOCTOU race where
-        /// autosave's get_state()/set_state() (from the autosave-worker
-        /// thread) could still be mid-call into the plugin's component when a
-        /// quick re-open already flips `attachment_ready` back to false and
-        /// starts a fresh createView()/attached() sequence on another thread.
-        /// Both windows into the same live COM object at once is exactly the
-        /// kind of concurrent access fragile plugins (Supertone Clear) don't
-        /// tolerate. try_lock() here always yields to an open GUI session
-        /// rather than block; get_state()/set_state() already treat "can't
-        /// safely read/write it right now" as an empty/no-op result.
-        com_access_lock: Arc<PLMutex<()>>,
-        /// Tracks whether IConnectionPoint (component ↔ controller) has already been connected,
-        /// ensuring we only connect once per plugin instance lifetime and never reconnect on reopen.
-        icp_connected: Arc<AtomicBool>,
         /// maxSamplesPerBlock negotiated with the plugin via setupProcessing.
         /// The VST3 spec forbids calling process() with more samples than this;
         /// fragile plugins (e.g. Supertone Clear, which uses fixed-size internal
@@ -287,8 +281,23 @@ mod win {
 
                 // Load DLL
                 log::debug!("{} loading DLL for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
-                let lib = unsafe { Library::new(plugin_path) }
-                    .map_err(|e| anyhow!("Failed to load '{}': {}", plugin_path, e))?;
+                // Older scan caches stored the bundle *directory* when the
+                // binary was named `<Name>.vst3` — resolve it here too.
+                let bin = std::path::Path::new(plugin_path);
+                let bin = if bin.is_dir() {
+                    crate::plugins::core::scanner::vst3_bundle_binary(bin)
+                        .ok_or_else(|| anyhow!("'{}': VST3 bundle has no Contents/x86_64-win binary", plugin_path))?
+                } else {
+                    bin.to_path_buf()
+                };
+                if !bin.exists() {
+                    return Err(anyhow!("plugin file not found (uninstalled or moved): {}", bin.display()));
+                }
+                let lib = unsafe { Library::new(&bin) }
+                    .map_err(|e| {
+                        let os = std::error::Error::source(&e).map(|s| s.to_string()).unwrap_or_default();
+                        anyhow!("Failed to load '{}': {} {}", bin.display(), e, os)
+                    })?;
 
                 // Optional InitDll (some plugins require it)
                 type BoolFn = unsafe extern "system" fn() -> bool;
@@ -310,6 +319,9 @@ mod win {
                     ComPtr::<IPluginFactory>::from_raw(factory_ptr)
                         .ok_or_else(|| anyhow!("Failed to wrap IPluginFactory"))?
                 };
+                if let Some(f3) = factory.cast::<IPluginFactory3>() {
+                    unsafe { f3.setHostContext(host_context()); }
+                }
 
                 // Find the class_index-th Audio Module Class CID
                 let n = unsafe { factory.countClasses() };
@@ -382,68 +394,35 @@ mod win {
                 (lib, factory, component)
             };
 
-            // Initialize, activate all buses (audio + event). Only serialized
-            // against OTHER instances of this SAME plugin path (see
-            // INIT_LOCKS) — different plugins still run this concurrently.
+            // VST3 host order (SDK PlugProvider): initialize the component,
+            // create + initialize the controller, connect them, sync the
+            // controller from the component's state — all before bus setup,
+            // setupProcessing and setActive. This instance is not in the
+            // chain yet, so no audio callback can run into it meanwhile.
+            // Only serialized against OTHER instances of this SAME plugin
+            // path (see INIT_LOCKS) — different plugins still run this
+            // concurrently.
             let init_lock = init_lock_for(plugin_path);
             let _init_guard = init_lock.lock();
-            log::debug!("{} calling initialize() for '{}' — locked only against other instances of the same plugin, may still run concurrently with other plugins", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
-            unsafe {
-                component.initialize(ptr::null_mut());
-                let ai = component.getBusCount(kAudio, kInput);
-                let ao = component.getBusCount(kAudio, kOutput);
-                let ei = component.getBusCount(kEvent, kInput);
-                let eo = component.getBusCount(kEvent, kOutput);
-                for i in 0..ai { component.activateBus(kAudio, kInput,  i, 1); }
-                for i in 0..ao { component.activateBus(kAudio, kOutput, i, 1); }
-                for i in 0..ei { component.activateBus(kEvent, kInput,  i, 1); }
-                for i in 0..eo { component.activateBus(kEvent, kOutput, i, 1); }
+            log::debug!("{} calling initialize() for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
+            let r = unsafe { component.initialize(host_context()) };
+            if r != kResultOk {
+                return Err(anyhow!("'{}': IComponent::initialize failed ({:#x})", plugin_path, r));
             }
             log::debug!("{} initialize() returned for '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
 
-            // QueryInterface  IAudioProcessor
-            let audio_proc = component.cast::<IAudioProcessor>().ok_or_else(|| {
-                anyhow!("'{}' does not implement IAudioProcessor", plugin_path)
-            })?;
-
-            // Bus arrangements (stereo = 0x03)
-            let stereo_mask: u64 = 0x03;
-            unsafe {
-                audio_proc.setBusArrangements(
-                    &stereo_mask as *const u64 as *mut u64, 1,
-                    &stereo_mask as *const u64 as *mut u64, 1,
-                );
-            }
-
-            // Setup processing
-            let mut setup = ProcessSetup {
-                processMode:        kRealtime,
-                symbolicSampleSize: kSample32,
-                maxSamplesPerBlock: block_size as i32,
-                sampleRate:         sample_rate,
+            let Some(audio_proc) = component.cast::<IAudioProcessor>() else {
+                unsafe { component.terminate(); }
+                return Err(anyhow!("'{}' does not implement IAudioProcessor", plugin_path));
             };
-            unsafe { audio_proc.setupProcessing(&mut setup) };
-            unsafe {
-                component.setActive(1);
-                audio_proc.setProcessing(1);
-            }
 
-            // Try to obtain an IEditController for parameter automation.
-            // Single-component design: IComponent itself implements IEditController.
+            // Single-component design: IComponent itself implements
+            // IEditController (initialized and terminated with it).
             // Separate-controller design: ask the component for its controller CID.
-            //
-            // IConnectionPoint connection (component ↔ controller) is deferred
-            // to open_gui() and made on the GUI thread, AFTER audio processing
-            // is stable.  Connecting during load() while the audio callback is
-            // already running can trigger plugin-internal callbacks that corrupt
-            // the stack (STATUS_STACK_BUFFER_OVERRUN).
+            let single = component.cast::<IEditController>();
+            let separate_controller = single.is_none();
             let controller: Option<ComPtr<IEditController>> = {
-                // Single-component: IComponent itself implements IEditController.
-                // Obtain via QI — do NOT call initialize() again (component was
-                // already initialized above) and do NOT terminate() this separately
-                // in Drop (component.terminate() covers both interfaces).
-                if let Some(ec) = component.cast::<IEditController>() {
-                    // separate_controller stays false
+                if let Some(ec) = single {
                     Some(ec)
                 } else {
                     // Separate-controller: getControllerClassId + createInstance
@@ -468,47 +447,130 @@ mod win {
                         };
                         if r == kResultOk && !ec_ptr.is_null() {
                             if let Some(ec) = unsafe { ComPtr::<IEditController>::from_raw(ec_ptr) } {
-                                unsafe { ec.initialize(ptr::null_mut()) };
-                                Some(ec)
+                                let ir = unsafe { ec.initialize(host_context()) };
+                                if ir == kResultOk { Some(ec) } else {
+                                    log::warn!("{} '{}': IEditController::initialize failed ({:#x})", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path, ir);
+                                    None
+                                }
                             } else { None }
                         } else { None }
                     } else { None }
                 }
             };
-            let pending_params = PendingParams::default();
-            let component_handler = controller.as_ref().map(|ctrl| {
-                let handler = ComWrapper::new(HostComponentHandler::new(pending_params.clone()));
-                if let Some(ptr) = handler.to_com_ptr::<IComponentHandler>() {
-                    unsafe { ctrl.setComponentHandler(ptr.as_ptr()); }
-                }
-                handler
-            });
-                        if controller.is_none() {
+            if controller.is_none() {
                 log::debug!("{} '{}': IEditController not available (parameter automation disabled)", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
             }
 
-            log::info!("{} VST3 plugin loaded: '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
-            Ok(Self {
+            // From here on, Drop tears the plugin down (terminate etc.) on
+            // any early return.
+            let mut this = Self {
                 _lib: Some(lib),
                 component,
                 audio_proc,
                 controller,
+                separate_controller,
+                connection: None,
+                active: false,
+                in_channels: 2,
+                out_channels: 2,
                 in_l: vec![0.0f32; block_size.max(4096)],
                 in_r: vec![0.0f32; block_size.max(4096)],
                 warmup_until: Instant::now() + Duration::from_millis(1500),
-                // Processing is safe immediately after load(); this flag is only
-                // toggled during GUI attach to avoid init-time races.
-                attachment_ready: Arc::new(AtomicBool::new(true)),
-                com_access_lock: Arc::new(PLMutex::new(())),
-                icp_connected: Arc::new(AtomicBool::new(false)),
                 sample_rate,
                 max_block: block_size.max(1),
-                pending_params,
+                pending_params: PendingParams::default(),
                 param_changes: HostParameterChanges::new(),
                 param_scratch: Vec::with_capacity(256),
                 param_overflow: Vec::with_capacity(256),
-                _component_handler: component_handler,
-            })
+                _component_handler: None,
+            };
+
+            if let Some(ctrl) = this.controller.clone() {
+                let handler = ComWrapper::new(HostComponentHandler::new(this.pending_params.clone()));
+                if let Some(ptr) = handler.to_com_ptr::<IComponentHandler>() {
+                    unsafe { ctrl.setComponentHandler(ptr.as_ptr()); }
+                }
+                this._component_handler = Some(handler);
+
+                // Connect once, both ways (JUCE builds its parameter tree
+                // and finds its processor here).
+                if this.separate_controller {
+                    if let (Some(comp_cp), Some(ctrl_cp)) = (
+                        this.component.cast::<IConnectionPoint>(),
+                        ctrl.cast::<IConnectionPoint>(),
+                    ) {
+                        unsafe {
+                            comp_cp.connect(ctrl_cp.as_ptr());
+                            ctrl_cp.connect(comp_cp.as_ptr());
+                        }
+                        this.connection = Some((comp_cp, ctrl_cp));
+                    }
+                }
+
+                // The controller mirrors the component's state.
+                let stream = ComWrapper::new(RustIBStream::write_stream());
+                if let Some(s) = stream.to_com_ptr::<IBStream>() {
+                    if unsafe { this.component.getState(s.as_ptr()) } == kResultOk {
+                        stream.pos.set(0);
+                        unsafe { ctrl.setComponentState(s.as_ptr()); }
+                    }
+                }
+            }
+
+            // Main buses only: ProcessData carries one input and one output
+            // bus, so an active sidechain/aux bus would be read past the end.
+            let (ai, ao) = unsafe {
+                (this.component.getBusCount(kAudio, kInput), this.component.getBusCount(kAudio, kOutput))
+            };
+            let mut in_arr: u64 = 0x03; // stereo
+            let mut out_arr: u64 = 0x03;
+            let (num_in, num_out) = (ai.min(1), ao.min(1));
+            let r = unsafe { this.audio_proc.setBusArrangements(&mut in_arr, num_in, &mut out_arr, num_out) };
+            if r != kResultOk {
+                // Keep what the plugin has (e.g. mono).
+                unsafe {
+                    if num_in > 0 { this.audio_proc.getBusArrangement(kInput, 0, &mut in_arr); }
+                    if num_out > 0 { this.audio_proc.getBusArrangement(kOutput, 0, &mut out_arr); }
+                }
+                log::info!("{} '{}': stereo rejected, using bus arrangement in={:#x} out={:#x}", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path, in_arr, out_arr);
+            }
+            this.in_channels = if num_in > 0 { in_arr.count_ones() as usize } else { 0 };
+            this.out_channels = if num_out > 0 { out_arr.count_ones() as usize } else { 0 };
+            if this.in_channels > 2 || this.out_channels > 2 || this.out_channels == 0 {
+                return Err(anyhow!(
+                    "'{}': unsupported main bus layout ({} in / {} out channels)",
+                    plugin_path, this.in_channels, this.out_channels
+                ));
+            }
+            unsafe {
+                let c = &this.component;
+                for i in 0..ai { c.activateBus(kAudio, kInput, i, (i == 0) as u8); }
+                for i in 0..ao { c.activateBus(kAudio, kOutput, i, (i == 0) as u8); }
+                if c.getBusCount(kEvent, kInput) > 0 { c.activateBus(kEvent, kInput, 0, 1); }
+            }
+
+            let mut setup = ProcessSetup {
+                processMode:        kRealtime,
+                symbolicSampleSize: kSample32,
+                maxSamplesPerBlock: block_size as i32,
+                sampleRate:         sample_rate,
+            };
+            let r = unsafe { this.audio_proc.setupProcessing(&mut setup) };
+            if r != kResultOk && r != kNotImplemented {
+                return Err(anyhow!("'{}': setupProcessing({} Hz, {} samples) failed ({:#x})", plugin_path, sample_rate, block_size, r));
+            }
+            this.active = true;
+            unsafe {
+                let r = this.component.setActive(1);
+                if r != kResultOk {
+                    log::warn!("{} '{}': setActive(1) returned {:#x}", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path, r);
+                }
+                // Often kNotImplemented; not an error.
+                this.audio_proc.setProcessing(1);
+            }
+
+            log::info!("{} VST3 plugin loaded: '{}'", crate::core::threading::thread_prefix("plugin/vst3/load"), plugin_path);
+            Ok(this)
         }
 
         /// Process one stereo block in-place.
@@ -518,13 +580,6 @@ mod win {
         pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
             // Ensure COM is initialized on this audio thread with MULTITHREADED model
             ensure_com_initialized();
-
-            // While the editor is attaching, some plugins are not ready for
-            // concurrent process() calls yet. Keep pass-through until attach
-            // completes to avoid STATUS_ACCESS_VIOLATION on fragile VST3s.
-            if !self.attachment_ready.load(std::sync::atomic::Ordering::Acquire) {
-                return;
-            }
 
             // Backend startup guard window for fragile VST3 plugins.
             let guard_until = GLOBAL_PROCESS_BLOCK_UNTIL_MS.load(Ordering::Acquire);
@@ -582,14 +637,14 @@ mod win {
             let out_ptrs: [*mut f32; 2] = [left.as_mut_ptr(),      right.as_mut_ptr()];
 
             let mut in_bus = AudioBusBuffers {
-                numChannels: 2,
+                numChannels: self.in_channels as i32,
                 silenceFlags: 0,
                 __field0: AudioBusBuffers__type0 {
                     channelBuffers32: in_ptrs.as_ptr() as *mut *mut f32,
                 },
             };
             let mut out_bus = AudioBusBuffers {
-                numChannels: 2,
+                numChannels: self.out_channels as i32,
                 silenceFlags: 0,
                 __field0: AudioBusBuffers__type0 {
                     channelBuffers32: out_ptrs.as_ptr() as *mut *mut f32,
@@ -599,7 +654,7 @@ mod win {
                 processMode: kRealtime,
                 symbolicSampleSize: kSample32,
                 numSamples: n as i32,
-                numInputs: 1,
+                numInputs: (self.in_channels > 0) as i32,
                 numOutputs: 1,
                 inputs: &mut in_bus, outputs: &mut out_bus,
                 inputParameterChanges: input_changes,
@@ -614,6 +669,9 @@ mod win {
                 process_ctx.sampleRate = self.sample_rate;
                 pd.processContext = &mut process_ctx;
                 self.audio_proc.process(&mut pd);
+            }
+            if self.out_channels == 1 {
+                right[..n].copy_from_slice(&left[..n]);
             }
         }
 
@@ -636,103 +694,100 @@ mod win {
         }
 
         /// Snapshot the plugin state as raw bytes (serialised via IComponent::getState).
+        /// Called on the plugin host thread (see PluginInstance::get_state_binary).
         pub fn get_state(&self) -> Vec<u8> {
             ensure_com_initialized();
-            // com_access_lock is held for the GUI's entire open lifetime (see
-            // open_gui_window) — try_lock skips rather than races if a GUI
-            // session is active anywhere in it, not just mid-attach.
-            let Some(_guard) = self.com_access_lock.try_lock() else {
-                return Vec::new();
-            };
-            if !self.attachment_ready.load(std::sync::atomic::Ordering::Acquire) {
-                return Vec::new();
-            }
             let stream = ComWrapper::new(RustIBStream::write_stream());
             if let Some(ptr) = stream.to_com_ptr::<IBStream>() {
                 unsafe { self.component.getState(ptr.as_ptr()); }
-                // Recover data from the inner struct via Deref
                 // ComWrapper<T>: Deref<Target = T>
                 return stream.buf.borrow().clone();
             }
             Vec::new()
         }
 
-        /// Restore plugin state from raw bytes.
+        /// Restore plugin state from raw bytes into the component and, as the
+        /// VST3 host contract requires, the controller — so an open (or
+        /// later-opened) editor shows the restored values.
         pub fn set_state(&self, data: &[u8]) {
             ensure_com_initialized();
-            let Some(_guard) = self.com_access_lock.try_lock() else {
-                return;
-            };
-            if !self.attachment_ready.load(std::sync::atomic::Ordering::Acquire) {
-                return;
-            }
             let stream = ComWrapper::new(RustIBStream::read_stream(data.to_vec()));
-            if let Some(ptr) = stream.to_com_ptr::<IBStream>() {
-                unsafe { self.component.setState(ptr.as_ptr()); }
+            let Some(ptr) = stream.to_com_ptr::<IBStream>() else { return };
+            unsafe { self.component.setState(ptr.as_ptr()); }
+            if let Some(ctrl) = &self.controller {
+                stream.pos.set(0);
+                unsafe { ctrl.setComponentState(ptr.as_ptr()); }
             }
         }
 
-        /// Open the plugin's native editor GUI using the existing IEditController.
-        ///
-        /// The IConnectionPoint component↔controller handshake and parameter sync
-        /// (setComponentState) are performed on the dedicated GUI thread, just
-        /// before createView(), so that the audio callback is not disturbed.
-        ///
-        /// Sets `attachment_ready` to true after IPlugView::attached() completes
-        /// successfully, ensuring the audio thread doesn't process until the plugin
-        /// GUI initialization is fully complete.
+        /// Open the plugin's editor (on the plugin host thread — see
+        /// plugins::gui::vst3). Returns once it is attached and shown.
         pub fn open_gui(
             &self,
             plugin_name: &str,
-            gui_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-            gui_hwnd: std::sync::Arc<std::sync::atomic::AtomicIsize>,
-            sync_component_state: bool,
-            restored_state_blob: Option<Vec<u8>>,
+            gui_flag: Arc<std::sync::atomic::AtomicBool>,
+            gui_hwnd: Arc<std::sync::atomic::AtomicIsize>,
         ) -> Result<()> {
-            ensure_com_initialized();
             let controller = self.controller.as_ref()
                 .ok_or_else(|| anyhow!("Plugin '{}' has no IEditController (GUI not supported)", plugin_name))?;
+            crate::plugins::gui::vst3::win::open_gui_window(controller, plugin_name, gui_flag, gui_hwnd)
+        }
+    }
 
-            // Block process() while the editor performs attach-time
-            // initialization on another thread.
-            self.attachment_ready.store(false, std::sync::atomic::Ordering::Release);
+    /// Ends a plugin's life in VST3 order (SDK PlugProvider): stop, inactive,
+    /// disconnect, drop the handler, terminate controller, then component.
+    struct Teardown {
+        component: ComPtr<IComponent>,
+        audio_proc: ComPtr<IAudioProcessor>,
+        controller: Option<ComPtr<IEditController>>,
+        separate_controller: bool,
+        connection: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
+        active: bool,
+    }
+    // Only moved to the host thread to run there.
+    unsafe impl Send for Teardown {}
 
-            // Clone the component so the GUI thread can:
-            //   1. connect it to the controller via IConnectionPoint
-            //   2. replay the restored snapshot into controller.setComponentState()
-            let component = self.component.clone();
-            let attachment_ready = Arc::clone(&self.attachment_ready);
-            let com_access_lock = Arc::clone(&self.com_access_lock);
-            let icp_connected = Arc::clone(&self.icp_connected);
-
-            if let Err(e) = crate::plugins::gui::vst3::win::open_gui_window(
-                controller,
-                &component,
-                plugin_name,
-                gui_flag,
-                gui_hwnd,
-                attachment_ready.clone(),
-                com_access_lock,
-                icp_connected,
-                sync_component_state,
-                restored_state_blob,
-            ) {
-                // If spawn/open failed before attach could run, unblock process().
-                attachment_ready.store(true, std::sync::atomic::Ordering::Release);
-                return Err(e);
+    impl Teardown {
+        fn run(self) {
+            unsafe {
+                if self.active {
+                    self.audio_proc.setProcessing(0);
+                    self.component.setActive(0);
+                }
+                if let Some((comp_cp, ctrl_cp)) = &self.connection {
+                    comp_cp.disconnect(ctrl_cp.as_ptr());
+                    ctrl_cp.disconnect(comp_cp.as_ptr());
+                }
+                if let Some(ctrl) = &self.controller {
+                    ctrl.setComponentHandler(ptr::null_mut());
+                    if self.separate_controller {
+                        ctrl.terminate();
+                    }
+                }
+                self.component.terminate();
             }
-            Ok(())
         }
     }
 
     impl Drop for Vst3Processor {
         fn drop(&mut self) {
-            unsafe {
-                // Conservative shutdown: request processing stop and component inactive.
-                // Do NOT call terminate() explicitly here; some plugins corrupt heap
-                // when terminate() races with GUI/thread teardown during removal.
-                let _ = self.audio_proc.setProcessing(0);
-                let _ = self.component.setActive(0);
+            // PluginInstance::drop has closed the editor (or leaked this
+            // processor if it could not). terminate() runs on the thread
+            // that created the plugin; dropped elsewhere (rare: a late
+            // audio-thread reference), it is posted there. The clones keep
+            // the objects alive until then.
+            let teardown = Teardown {
+                component: self.component.clone(),
+                audio_proc: self.audio_proc.clone(),
+                controller: self.controller.clone(),
+                separate_controller: self.separate_controller,
+                connection: self.connection.take(),
+                active: self.active,
+            };
+            if crate::core::host_thread::is_host_thread() {
+                teardown.run();
+            } else {
+                crate::core::host_thread::post(move || teardown.run());
             }
 
             // Stability > reclamation: keep plugin DLL loaded until process exit.

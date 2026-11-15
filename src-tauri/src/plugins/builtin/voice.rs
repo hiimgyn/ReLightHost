@@ -37,6 +37,12 @@ impl Biquad {
         Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0, s1: 0.0, s2: 0.0 }
     }
 
+    /// Pass-through coefficients. The state (s1/s2) is kept: resetting it
+    /// whenever a band crosses 0 dB clicks.
+    fn set_identity(&mut self) {
+        (self.b0, self.b1, self.b2, self.a1, self.a2) = (1.0, 0.0, 0.0, 0.0, 0.0);
+    }
+
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
         let xi = x as f64;
@@ -48,7 +54,7 @@ impl Biquad {
 
     /// Audio EQ Cookbook — Low shelf, shelf slope S=1.
     fn set_low_shelf(&mut self, gain_db: f64, freq: f64, sr: f64) {
-        if gain_db.abs() < 0.05 { *self = Self::identity(); return; }
+        if gain_db.abs() < 0.05 { self.set_identity(); return; }
         let a    = 10_f64.powf(gain_db / 40.0);
         let w0   = 2.0 * PI * freq / sr;
         let cos  = w0.cos();
@@ -68,7 +74,7 @@ impl Biquad {
 
     /// Audio EQ Cookbook — High shelf, shelf slope S=1.
     fn set_high_shelf(&mut self, gain_db: f64, freq: f64, sr: f64) {
-        if gain_db.abs() < 0.05 { *self = Self::identity(); return; }
+        if gain_db.abs() < 0.05 { self.set_identity(); return; }
         let a    = 10_f64.powf(gain_db / 40.0);
         let w0   = 2.0 * PI * freq / sr;
         let cos  = w0.cos();
@@ -88,7 +94,7 @@ impl Biquad {
 
     /// Audio EQ Cookbook — Peaking EQ.
     fn set_peak(&mut self, gain_db: f64, freq: f64, q: f64, sr: f64) {
-        if gain_db.abs() < 0.05 { *self = Self::identity(); return; }
+        if gain_db.abs() < 0.05 { self.set_identity(); return; }
         let a    = 10_f64.powf(gain_db / 40.0);
         let w0   = 2.0 * PI * freq / sr;
         let cos  = w0.cos();
@@ -138,8 +144,9 @@ impl EqChannel {
 fn saturate(x: f32, drive: f32) -> f32 {
     if drive < 0.001 { return x; }
     let pre = 1.0 + drive * 7.0;           // pre-gain 1x … 8x
-    let norm = pre.tanh().max(1e-6);        // normalise so max-out = 1 at max-in = 1
-    let wet = (x * pre).tanh() / norm;
+    // ÷pre, not ÷tanh(pre): unity small-signal gain, so Drive changes how
+    // hard peaks saturate rather than boosting quiet speech by up to 18 dB.
+    let wet = (x * pre).tanh() / pre;
     x * (1.0 - drive) + wet * drive        // parallel blend
 }
 
@@ -162,11 +169,12 @@ impl Doubler {
 
     #[inline]
     fn process(&mut self, l: f32, r: f32, width: f32) -> (f32, f32) {
-        if width < 0.001 { return (l, r); }
         // Feed a mono mix into the delay line for a source-independent effect.
+        // Fed even at width 0, so raising Width never replays stale audio.
         let mono = (l + r) * 0.5;
         self.buf[self.write] = mono;
         self.write = (self.write + 1) & (DELAY_BUF - 1);
+        if width < 0.001 { return (l, r); }
         let delayed = self.buf[(self.write + DELAY_BUF - self.delay) & (DELAY_BUF - 1)];
         // Left: dry, Right: blended toward delayed mono → stereo width from mono source.
         (l, r * (1.0 - width) + delayed * width)
@@ -277,5 +285,35 @@ impl BuiltinProcessor for Voice {
             _ => {}
         }
         if eq_changed { self.rebuild_eq(); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_keeps_quiet_signals_at_unity_and_only_squashes_peaks() {
+        for drive in [0.5, 1.0] {
+            let quiet = saturate(0.001, drive) / 0.001;
+            assert!((quiet - 1.0).abs() < 0.01, "drive {drive}: small-signal gain {quiet}");
+            assert!(saturate(1.0, drive) < 1.0, "drive {drive}: peaks saturate");
+        }
+    }
+
+    #[test]
+    fn width_raised_after_zero_plays_current_audio_not_stale() {
+        let mut v = Voice::new(48_000.0);
+        let run = |v: &mut Voice, x: f32, n: usize| {
+            let (mut l, mut r) = (vec![x; n], vec![x; n]);
+            v.process_stereo(&mut l, &mut r);
+            r
+        };
+        v.set_parameter(P_WIDTH, 1.0);
+        run(&mut v, 0.5, 4800);
+        v.set_parameter(P_WIDTH, 0.0);
+        run(&mut v, 0.0, 4800); // width 0: the delay line must still be fed
+        v.set_parameter(P_WIDTH, 1.0);
+        assert!(run(&mut v, 0.0, 64).iter().all(|&s| s == 0.0), "stale audio replayed");
     }
 }

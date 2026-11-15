@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use arc_swap::ArcSwap;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, PluginFormat};
@@ -38,16 +38,9 @@ pub struct PluginInstance {
     clap_processor: Mutex<Option<ClapProcessor>>,
     /// Built-in processor — present when format == Builtin.
     builtin_processor: Mutex<Option<Box<dyn BuiltinProcessor>>>,
-    /// False after a restored state has already been applied; prevents
-    /// replaying the same state into the VST3 controller when the GUI opens.
-    vst3_gui_state_sync_pending: Arc<AtomicBool>,
-    /// Latest restored VST3 binary state blob. Used when the GUI opens so we
-    /// can sync the controller from the exact restored bytes instead of asking
-    /// the live component to reserialize itself during editor startup.
-    vst3_restored_state: Arc<RwLock<Option<Vec<u8>>>>,
     /// Last state blob successfully read from (or written to) the plugin.
     /// Returned by `get_state_binary` when a live read isn't possible right
-    /// now (processor busy, VST3 GUI session holding `com_access_lock`) so an
+    /// now (processor busy) so an
     /// autosave never overwrites real state with nothing.
     last_state:     RwLock<Option<Vec<u8>>>,
     /// Track if GUI window is currently open (prevents multiple windows)
@@ -64,6 +57,9 @@ pub struct PluginInstance {
     crash_notice_pending: AtomicBool,
     /// Before/after level history for the plugin GUI's waveform.
     scope: crate::plugins::core::scope::Scope,
+    /// Last VAD reading (f32 bits), returned while the audio thread holds
+    /// the processor so the meter doesn't drop to 0.
+    last_vad: AtomicU32,
 }
 
 impl PluginInstance {
@@ -78,7 +74,12 @@ impl PluginInstance {
         log::info!("{} Creating plugin instance: {} ({})", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, instance_id);
 
         // Load the appropriate audio processor for the plugin format.
-        // Failure is non-fatal; the instance still works in pass-through mode.
+        // Failure is non-fatal; the instance still works in pass-through mode
+        // and shows the error on its card (`load_error`).
+        // Every plugin is created on the plugin host thread: JUCE binds its
+        // message thread to the creating thread, and CLAP init/activate are
+        // main-thread calls (see core::host_thread).
+        let mut load_error: Option<String> = None;
         let vst3_processor = if plugin_info.format == PluginFormat::VST3 {
             // Marked active BEFORE the call, not after a successful return:
             // the whole point of this marker is to survive a *native* crash
@@ -90,7 +91,7 @@ impl PluginInstance {
             // the marker right back below — only a crash leaves it stuck for
             // take_unclean_exit_plugins() to find on next launch.
             crate::core::crash_marker::mark_active(&plugin_info.path);
-            match Vst3Processor::load_class(&plugin_info.path, plugin_info.sub_index, sample_rate, block_size) {
+            match on_host(|| Vst3Processor::load_class(&plugin_info.path, plugin_info.sub_index, sample_rate, block_size)) {
                 Ok(proc) => {
                     log::info!("{} VST3 processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
                     Some(proc)
@@ -98,6 +99,7 @@ impl PluginInstance {
                 Err(e) => {
                     log::warn!("{} VST3 audio processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
                     crate::core::crash_marker::mark_inactive(&plugin_info.path);
+                    load_error = Some(e.to_string());
                     None
                 }
             }
@@ -106,13 +108,14 @@ impl PluginInstance {
         };
 
         let vst2_processor = if plugin_info.format == PluginFormat::VST {
-            match Vst2Processor::load(&plugin_info.path, sample_rate, block_size) {
+            match on_host(|| Vst2Processor::load(&plugin_info.path, sample_rate, block_size)) {
                 Ok(proc) => {
                     log::info!("{} VST2 processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
                     Some(proc)
                 }
                 Err(e) => {
                     log::warn!("{} VST2 audio processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
+                    load_error = Some(e.to_string());
                     None
                 }
             }
@@ -121,13 +124,14 @@ impl PluginInstance {
         };
 
         let clap_processor = if plugin_info.format == PluginFormat::CLAP {
-            match ClapProcessor::load_index(&plugin_info.path, plugin_info.sub_index, sample_rate, block_size) {
+            match on_host(|| ClapProcessor::load_index(&plugin_info.path, plugin_info.sub_index, sample_rate, block_size)) {
                 Ok(proc) => {
                     log::info!("{} CLAP processor ready for '{}'", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name);
                     Some(proc)
                 }
                 Err(e) => {
                     log::warn!("{} CLAP audio processor failed for '{}': {}", crate::core::threading::thread_prefix("plugin/create"), plugin_info.name, e);
+                    load_error = Some(e.to_string());
                     None
                 }
             }
@@ -171,6 +175,10 @@ impl PluginInstance {
                 plugin_info.name, sample_rate
             ));
         }
+        if let Some(err) = load_error {
+            crash_protection.lock().status =
+                crash_protection::PluginStatus::Error(load_error_message(&plugin_info, &err));
+        }
 
         Ok(Self {
             instance_id,
@@ -182,14 +190,13 @@ impl PluginInstance {
             vst2_processor:    Mutex::new(vst2_processor),
             clap_processor:    Mutex::new(clap_processor),
             builtin_processor: Mutex::new(builtin_processor),
-            vst3_gui_state_sync_pending: Arc::new(AtomicBool::new(true)),
-            vst3_restored_state: Arc::new(RwLock::new(None)),
             last_state:        RwLock::new(None),
             gui_open:          Arc::new(AtomicBool::new(false)),
             gui_hwnd:          Arc::new(AtomicIsize::new(0)),
             crash_protection,
             crash_notice_pending: AtomicBool::new(false),
             scope: crate::plugins::core::scope::Scope::new((sample_rate / 100.0).round() as usize),
+            last_vad: AtomicU32::new(0),
         })
     }
 
@@ -322,16 +329,20 @@ impl PluginInstance {
     ///
     /// Never called from the audio thread, so it may wait briefly for the
     /// processor mutex the audio callback holds for one block. When a live
-    /// read still isn't possible (busy, or a VST3 GUI session holding
-    /// `com_access_lock`), returns the last known state instead of nothing.
+    /// read still isn't possible (busy), returns the last known state
+    /// instead of nothing. Plugin state is read on the plugin host thread
+    /// (a UI/main-thread call in every format).
     pub fn get_state_binary(&self) -> Vec<u8> {
         let live = match self.plugin_info.format {
-            PluginFormat::VST3 => self.vst3_processor.try_lock_for(STATE_LOCK_TIMEOUT)
-                .and_then(|g| g.as_ref().map(|p| p.get_state())),
-            PluginFormat::VST => self.vst2_processor.try_lock_for(STATE_LOCK_TIMEOUT)
-                .and_then(|mut g| g.as_mut().map(|p| p.get_state())),
-            PluginFormat::CLAP => self.clap_processor.try_lock_for(STATE_LOCK_TIMEOUT)
-                .and_then(|g| g.as_ref().map(|p| p.get_state())),
+            PluginFormat::VST3 => on_host(|| self.vst3_processor.try_lock_for(STATE_LOCK_TIMEOUT)
+                .and_then(|g| g.as_ref().map(|p| p.get_state()))),
+            PluginFormat::VST => on_host(|| self.vst2_processor.try_lock_for(STATE_LOCK_TIMEOUT)
+                .and_then(|mut g| g.as_mut().map(|p| p.get_state()))),
+            // Saved without the processor mutex, so the audio thread keeps
+            // processing meanwhile (CLAP allows state calls concurrently
+            // with process()).
+            PluginFormat::CLAP => self.clap_state_handles()
+                .map(|(plugin, ext)| on_host(|| unsafe { ClapProcessor::save_state(plugin, ext) })),
             PluginFormat::Builtin => None,
         };
         match live {
@@ -349,31 +360,35 @@ impl PluginInstance {
             *self.last_state.write() = Some(data.to_vec());
         }
         match self.plugin_info.format {
-            PluginFormat::VST3 => {
+            PluginFormat::VST3 => on_host(|| {
                 if let Some(guard) = self.vst3_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
                     if let Some(ref proc) = *guard {
-                        *self.vst3_restored_state.write() = Some(data.to_vec());
-                        self.vst3_gui_state_sync_pending.store(true, Ordering::Release);
                         proc.set_state(data);
                     }
                 }
-            }
-            PluginFormat::VST => {
+            }),
+            PluginFormat::VST => on_host(|| {
                 if let Some(mut guard) = self.vst2_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
                     if let Some(ref mut proc) = *guard {
                         proc.set_state(data);
                     }
                 }
-            }
+            }),
             PluginFormat::CLAP => {
-                if let Some(guard) = self.clap_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
-                    if let Some(ref proc) = *guard {
-                        proc.set_state(data);
-                    }
+                if let Some((plugin, ext)) = self.clap_state_handles() {
+                    on_host(|| unsafe { ClapProcessor::load_state(plugin, ext, data) });
                 }
             }
             PluginFormat::Builtin => {}
         }
+    }
+
+    /// CLAP (plugin, state extension) pointers, taken under the processor
+    /// mutex but used after it is released. They stay valid while `self`
+    /// lives: only `Drop` removes the processor.
+    fn clap_state_handles(&self) -> Option<(usize, usize)> {
+        self.clap_processor.try_lock_for(STATE_LOCK_TIMEOUT)
+            .and_then(|g| g.as_ref().and_then(|p| p.state_handles()))
     }
 
     /// Get instance info for serialization
@@ -421,12 +436,17 @@ impl PluginInstance {
                 return; // Unknown parameter — no-op
             }
         };
-        // Forward normalized value to the actual VST3 edit controller.
-        // Never called from the audio thread; waits at most one block for it.
-        if let Some(guard) = self.vst3_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
-            if let Some(ref proc) = *guard {
-                proc.set_param_normalized(param_id, normalized);
-            }
+        // Forward normalized value to the actual VST3 edit controller — a
+        // UI-thread call, so on the plugin host thread. Never called from
+        // the audio thread; waits at most one block for it.
+        if self.plugin_info.format == PluginFormat::VST3 {
+            on_host(|| {
+                if let Some(guard) = self.vst3_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
+                    if let Some(ref proc) = *guard {
+                        proc.set_param_normalized(param_id, normalized);
+                    }
+                }
+            });
         }
         // Built-ins receive the raw (clamped) value; internal unit conversion is per-processor.
         if let Some(mut guard) = self.builtin_processor.try_lock_for(STATE_LOCK_TIMEOUT) {
@@ -447,10 +467,12 @@ impl PluginInstance {
     pub fn get_builtin_vad(&self) -> f32 {
         if let Some(guard) = self.builtin_processor.try_lock() {
             if let Some(ref proc) = *guard {
-                return proc.get_vad();
+                let vad = proc.get_vad();
+                self.last_vad.store(vad.to_bits(), Ordering::Relaxed);
+                return vad;
             }
         }
-        0.0
+        f32::from_bits(self.last_vad.load(Ordering::Relaxed))
     }
 
     /// Open the plugin's native GUI editor using the existing VST3 processor.
@@ -486,22 +508,12 @@ impl PluginInstance {
             if let Some(ref proc) = *guard {
                 let plugin_name = self.plugin_info.name.clone();
                 let gui_hwnd    = self.gui_hwnd.clone();
-                // Replay the restored state into the GUI's controller exactly once per
-                // restore — only the first open after a set_state_binary() call needs
-                // this; reopening later would otherwise replay stale bytes on top of
-                // whatever the user has since changed via the GUI itself.
-                let sync_component_state = self.vst3_gui_state_sync_pending.load(Ordering::Acquire);
-                let restored_state_blob = if sync_component_state {
-                    self.vst3_restored_state.read().clone()
-                } else {
-                    None
-                };
+                // Synchronous, on the plugin host thread. The audio thread
+                // can't take this mutex meanwhile, so the plugin passes
+                // audio through while its editor attaches.
                 let result = crash_protection::protected_call(AssertUnwindSafe(|| {
-                    proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd, sync_component_state, restored_state_blob)
+                    proc.open_gui(&plugin_name, gui_flag.clone(), gui_hwnd)
                 }));
-                if result.is_ok() {
-                    self.vst3_gui_state_sync_pending.store(false, Ordering::Release);
-                }
                 match result {
                     Ok(Ok(())) => return Ok(()),
                     Ok(Err(e)) => {
@@ -585,9 +597,13 @@ impl PluginInstance {
                 }
             }
         }
-        // No processor loaded for this plugin.
+        // No processor loaded for this plugin (it failed to load).
         self.gui_open.store(false, Ordering::Release);
-        Err(anyhow::anyhow!("No audio processor available for GUI"))
+        let reason = match self.get_crash_status() {
+            crash_protection::PluginStatus::Error(e) => e,
+            _ => format!("'{}' is not loaded; remove it and add it again", self.plugin_info.name),
+        };
+        Err(anyhow::anyhow!("Cannot open the editor: {}", reason))
     }
     
     /// Get crash protection status
@@ -769,15 +785,16 @@ impl PluginInstanceManager {
         struct Job {
             idx: usize,
             info: PluginInfo,
-            vst3: bool,
+            /// Not a built-in: must be created on the plugin host thread.
+            on_host: bool,
         }
 
         let jobs: Vec<Job> = infos
             .into_iter()
             .enumerate()
             .map(|(idx, info)| {
-                let vst3 = info.format == PluginFormat::VST3;
-                Job { idx, info, vst3 }
+                let on_host = info.format != PluginFormat::Builtin;
+                Job { idx, info, on_host }
             })
             .collect();
 
@@ -792,8 +809,16 @@ impl PluginInstanceManager {
         // restore screen looking frozen for its entire load time. This event
         // fires per-plugin, independently of the batch commit, specifically
         // so the frontend can count it live instead of waiting.
-        let is_vst3: Vec<bool> = jobs.iter().map(|j| j.vst3).collect();
-        let (sequential_idx, parallel_idx) = split_load_groups(&is_vst3, parallel_vst3);
+        let needs_host: Vec<bool> = jobs.iter().map(|j| j.on_host).collect();
+        // Every VST3/VST2/CLAP plugin is created here, on the plugin host
+        // thread, whatever `parallel_vst3` says: JUCE binds its message
+        // thread to the thread that creates the plugin (an editor/controller
+        // driven from any other thread crashes: Xvox, Clear), and CLAP
+        // init/activate are main-thread calls. Only built-ins go to Rayon —
+        // a worker creating a plugin would wait on this (busy) thread in
+        // `on_host` and deadlock. See the CAVEAT above.
+        let _ = parallel_vst3;
+        let (sequential_idx, parallel_idx) = split_load_groups(&needs_host, false);
 
         for &idx in &sequential_idx {
             let j = &jobs[idx];
@@ -1006,17 +1031,17 @@ impl PluginInstanceManager {
         drop(old);
     }
 
-    /// Reorder instances in the chain
-    pub fn reorder(&self, from_index: usize, to_index: usize) -> Result<()> {
+    /// Moves `instance_id` to `to_index`. The id is resolved under the
+    /// modify lock, so a chain change since the UI's snapshot can't move
+    /// the wrong plugin.
+    pub fn reorder(&self, instance_id: &str, to_index: usize) -> Result<()> {
         let _guard = self.modify_lock.lock();
         let current = self.instances.load();
         let mut list = (**current).clone();
         let len = list.len();
-        if from_index >= len || to_index >= len {
-            return Err(anyhow::anyhow!(
-                "Index out of bounds: from={}, to={}, len={}",
-                from_index, to_index, len
-            ));
+        let from_index = position_of(&list, instance_id)?;
+        if to_index >= len {
+            return Err(anyhow::anyhow!("Index out of bounds: to={}, len={}", to_index, len));
         }
         let item = list.remove(from_index);
         list.insert(to_index, item);
@@ -1025,18 +1050,13 @@ impl PluginInstanceManager {
         Ok(())
     }
 
-    /// Swap two instances in the chain
-    pub fn swap(&self, first_index: usize, second_index: usize) -> Result<()> {
+    /// Swaps two instances, resolved by id under the modify lock.
+    pub fn swap(&self, first_id: &str, second_id: &str) -> Result<()> {
         let _guard = self.modify_lock.lock();
         let current = self.instances.load();
         let mut list = (**current).clone();
-        let len = list.len();
-        if first_index >= len || second_index >= len {
-            return Err(anyhow::anyhow!(
-                "Index out of bounds: first={}, second={}, len= {}",
-                first_index, second_index, len
-            ));
-        }
+        let first_index = position_of(&list, first_id)?;
+        let second_index = position_of(&list, second_id)?;
         if first_index == second_index {
             return Ok(());
         }
@@ -1054,6 +1074,35 @@ impl Default for PluginInstanceManager {
 }
 
 
+fn position_of(list: &[Arc<PluginInstance>], instance_id: &str) -> Result<usize> {
+    list.iter()
+        .position(|i| i.instance_id() == instance_id)
+        .ok_or_else(|| anyhow::anyhow!("Instance not found: {}", instance_id))
+}
+
+/// User-facing status text for a plugin whose processor failed to load.
+fn load_error_message(info: &PluginInfo, err: &str) -> String {
+    if !std::path::Path::new(&info.path).exists() {
+        format!(
+            "'{}' is not installed (file not found: {}), reinstall it; settings are kept",
+            info.name, info.path
+        )
+    } else {
+        format!("'{}' failed to load: {} — passing audio through", info.name, err)
+    }
+}
+
+/// Runs `f` on the plugin host thread — every VST3 call but process() is a
+/// UI-thread call, and the UI thread is the one that created the plugin —
+/// and waits for it. Inline when already there.
+fn on_host<'a, R: Send + 'static>(f: impl FnOnce() -> R + Send + 'a) -> R {
+    let f: Box<dyn FnOnce() -> R + Send + 'a> = Box::new(f);
+    // SAFETY: run_blocking returns only after the job has run (or been
+    // dropped unrun), so whatever `f` borrows outlives it.
+    let f: Box<dyn FnOnce() -> R + Send + 'static> = unsafe { std::mem::transmute(f) };
+    crate::core::host_thread::run_blocking(f)
+}
+
 /// Process-unique instance id suffix (a counter — ids only need to be
 /// unique within one run; presets identify plugins by path, not by id).
 fn next_instance_id() -> String {
@@ -1065,6 +1114,51 @@ fn next_instance_id() -> String {
 #[cfg(test)]
 mod state_tests {
     use super::*;
+
+    #[test]
+    fn on_host_runs_borrowing_work_on_the_host_thread() {
+        let caller = std::thread::current().id();
+        let mut seen = Vec::new();
+        let host = on_host(|| {
+            seen.push(1); // borrows a caller local
+            std::thread::current().id()
+        });
+        assert_eq!(seen, [1]);
+        assert_ne!(host, caller);
+        assert_eq!(host, crate::core::host_thread::run_blocking(|| std::thread::current().id()));
+    }
+
+    #[test]
+    fn reorder_and_swap_follow_ids_not_stale_indices() {
+        let manager = PluginInstanceManager::new();
+        let info = compressor().plugin_info.clone();
+        let a = manager.load_plugin(info.clone(), 48_000.0, 512).unwrap();
+        let b = manager.load_plugin(info.clone(), 48_000.0, 512).unwrap();
+        let c = manager.load_plugin(info, 48_000.0, 512).unwrap();
+        // The UI saw [a, b, c]; `a` was removed before its "move b" arrived.
+        manager.remove_instance(&a).unwrap();
+        manager.reorder(&b, 1).unwrap();
+        let ids = |m: &PluginInstanceManager| m.get_instances().into_iter().map(|i| i.instance_id).collect::<Vec<_>>();
+        assert_eq!(ids(&manager), [c.clone(), b.clone()]);
+        manager.swap(&b, &c).unwrap();
+        assert_eq!(ids(&manager), [b.clone(), c]);
+        assert!(manager.reorder(&a, 0).is_err(), "removed plugin");
+    }
+
+    #[test]
+    fn missing_plugin_file_shows_a_reinstall_error() {
+        let info = PluginInfo {
+            name: "Gone".into(),
+            path: "C:/definitely/not/here/Gone.dll".into(),
+            format: PluginFormat::VST, // VST3 would touch the real crash-marker file
+            ..compressor().plugin_info.clone()
+        };
+        let inst = PluginInstance::new(info, 48_000.0, 512).unwrap();
+        match inst.get_crash_status() {
+            crash_protection::PluginStatus::Error(e) => assert!(e.contains("not installed"), "{e}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
 
     fn compressor() -> Arc<PluginInstance> {
         let info = PluginInfo {
@@ -1116,7 +1210,7 @@ mod state_tests {
         };
         let ns_id = manager.load_plugin(ns, 48_000.0, 512).unwrap();
         manager.load_plugin(compressor().plugin_info.clone(), 48_000.0, 512).unwrap();
-        assert_eq!(manager.chain_latency_samples(), 480);
+        assert_eq!(manager.chain_latency_samples(), 960); // noise suppressor: 2 RNNoise frames
         manager.get_instance(&ns_id).unwrap().set_bypassed(true);
         assert_eq!(manager.chain_latency_samples(), 0);
     }

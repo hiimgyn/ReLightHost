@@ -47,6 +47,24 @@ pub fn set_restore_in_progress(active: bool) {
     RESTORE_IN_PROGRESS.store(active, Ordering::Release);
 }
 
+/// Holds `RESTORE_IN_PROGRESS` set while alive and clears it on drop —
+/// including when a panic unwinds through the restore/preset load, which
+/// would otherwise disable autosave (and the exit save) for the session.
+pub(crate) struct RestoreInProgress(());
+
+impl RestoreInProgress {
+    pub(crate) fn begin() -> Self {
+        set_restore_in_progress(true);
+        Self(())
+    }
+}
+
+impl Drop for RestoreInProgress {
+    fn drop(&mut self) {
+        set_restore_in_progress(false);
+    }
+}
+
 /// Marks the deferred VST3 replay finished when dropped — including when
 /// the replay thread unwinds from a panic, which would otherwise leave
 /// autosave (and GUI launch) blocked for the rest of the session.
@@ -130,8 +148,26 @@ fn save_autosave_snapshot(
     // The worker and the exit flush both write through the same tmp file.
     static SAVE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     let _save = SAVE_LOCK.lock();
-    let preset = build_chain_preset_from_manager(plugin_manager, "autosave");
-    // Serialize once: the same bytes are hashed (dedupe) and written.
+    let mut preset = build_chain_preset_from_manager(plugin_manager, "autosave");
+    // Hash without the timestamp — it changes on every snapshot, so the
+    // dedupe would never match. Serialized again with it only on a change.
+    let created_at = std::mem::take(&mut preset.created_at);
+    let hash = match preset.to_json() {
+        Ok(j) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            j.hash(&mut h);
+            h.finish()
+        }
+        Err(e) => {
+            log::warn!("Failed to serialize auto-save: {e}");
+            return;
+        }
+    };
+    if hash == autosave_last_hash.load(Ordering::Acquire) {
+        return;
+    }
+    preset.created_at = created_at;
     let json = match preset.to_json() {
         Ok(j) => j,
         Err(e) => {
@@ -139,15 +175,6 @@ fn save_autosave_snapshot(
             return;
         }
     };
-    let hash = {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        json.hash(&mut h);
-        h.finish()
-    };
-    if hash == autosave_last_hash.load(Ordering::Acquire) {
-        return;
-    }
 
     match preset_manager.save_preset_json(&preset.name, &json) {
         Ok(_) => autosave_last_hash.store(hash, Ordering::Release),
@@ -156,11 +183,12 @@ fn save_autosave_snapshot(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// Both tests touch the process-wide RESTORE_IN_PROGRESS flag.
-    static FLAG_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    /// Tests that touch the process-wide RESTORE_IN_PROGRESS flag (also
+    /// taken by core::session's preset-load test).
+    pub(crate) static FLAG_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     #[test]
     fn snapshot_is_skipped_while_restore_is_in_progress() {
@@ -196,6 +224,33 @@ mod tests {
         .join();
         assert!(ready.load(Ordering::Acquire));
         assert!(!RESTORE_IN_PROGRESS.load(Ordering::Acquire), "autosave would stay disabled");
+    }
+
+    #[test]
+    fn restore_flag_is_cleared_when_a_restore_panics() {
+        let _flag = FLAG_LOCK.lock();
+        let _ = std::panic::catch_unwind(|| {
+            let _restoring = RestoreInProgress::begin();
+            assert!(RESTORE_IN_PROGRESS.load(Ordering::Acquire));
+            panic!("plugin load blew up");
+        });
+        assert!(!RESTORE_IN_PROGRESS.load(Ordering::Acquire), "autosave would stay disabled");
+    }
+
+    #[test]
+    fn unchanged_chain_is_not_rewritten() {
+        let _flag = FLAG_LOCK.lock();
+        let dir = std::env::temp_dir().join(format!("rh-autosave-dedupe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("autosave.json");
+        let presets = Arc::new(crate::domain::preset::PresetManager::with_dir(dir.clone()));
+        let plugins = Arc::new(crate::plugins::PluginInstanceManager::new());
+        let hash = Arc::new(AtomicU64::new(0));
+        save_autosave_snapshot(&plugins, &presets, &hash);
+        std::fs::remove_file(&file).unwrap();
+        save_autosave_snapshot(&plugins, &presets, &hash);
+        assert!(!file.exists(), "identical chain rewritten (timestamp in the hash?)");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

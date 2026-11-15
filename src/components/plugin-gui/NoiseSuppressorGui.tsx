@@ -38,8 +38,6 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
   const [vad,        setVad]        = useState<number>(0);
   const isWindowVisible = useWindowVisibility();
 
-  const rafRef = useRef<number | null>(null);
-  const mountedRef = useRef(false);
 
   // Trailing throttle for IPC parameter updates
   const pendingSendsRef = useRef<Map<number, number>>(new Map());
@@ -97,44 +95,30 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
     };
   }, [isOpen, plugin.instance_id]);
 
-  // Real-time Voice Activity Detection (VAD) visualizer polling
-  const pollVad = useCallback(() => {
-    if (!mountedRef.current) return;
-    tauri.getNoiseSuppressorVad(plugin.instance_id)
-      .then((val) => {
-        if (!mountedRef.current) return;
-        if (typeof val === 'number') {
-          const clamped = Math.max(0, Math.min(1, val));
-          setVad(clamped);
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (mountedRef.current) {
-          rafRef.current = window.setTimeout(pollVad, 100);
-        }
-      });
-  }, [plugin.instance_id]);
-
+  // Real-time Voice Activity Detection (VAD) visualizer polling.
+  // `cancelled` is per effect run: a shared ref let an in-flight request from
+  // a previous run re-arm its own timer once a new run set the ref back to
+  // true, so every quick hide/show doubled the number of poll loops.
   useEffect(() => {
-    if (isOpen && isWindowVisible) {
-      mountedRef.current = true;
-      pollVad();
-    } else {
-      mountedRef.current = false;
-      if (rafRef.current !== null) {
-        clearTimeout(rafRef.current);
-        rafRef.current = null;
-      }
-    }
-    return () => {
-      mountedRef.current = false;
-      if (rafRef.current !== null) {
-        clearTimeout(rafRef.current);
-        rafRef.current = null;
-      }
+    if (!isOpen || !isWindowVisible) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = () => {
+      tauri.getNoiseSuppressorVad(plugin.instance_id)
+        .then((val) => {
+          if (!cancelled && typeof val === 'number') setVad(Math.max(0, Math.min(1, val)));
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) timer = window.setTimeout(poll, 100);
+        });
     };
-  }, [isOpen, isWindowVisible, pollVad]);
+    poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [isOpen, isWindowVisible, plugin.instance_id]);
 
   const handleResetAll = () => {
     const defaults = [

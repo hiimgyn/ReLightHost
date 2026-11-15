@@ -48,9 +48,13 @@ pub struct NoiseSuppressor {
     gate_gain:    f32, // current (smoothed) gate multiplier
 }
 
-fn primed_queue() -> VecDeque<f32> {
-    let mut q = VecDeque::with_capacity(FRAME_SIZE * 4);
-    q.resize(FRAME_SIZE, 0.0);
+// Sized for 2 primed frames + an 8192-sample host block, so the audio
+// thread never grows a queue.
+const QUEUE_CAP: usize = FRAME_SIZE * 2 + 8192;
+
+fn primed_queue(frames: usize) -> VecDeque<f32> {
+    let mut q = VecDeque::with_capacity(QUEUE_CAP);
+    q.resize(FRAME_SIZE * frames, 0.0);
     q
 }
 
@@ -68,17 +72,19 @@ impl NoiseSuppressor {
         Some(Self {
             state_l: DenoiseState::new(),
             state_r: DenoiseState::new(),
-            in_l:  VecDeque::with_capacity(FRAME_SIZE * 4),
-            in_r:  VecDeque::with_capacity(FRAME_SIZE * 4),
+            in_l:  VecDeque::with_capacity(QUEUE_CAP),
+            in_r:  VecDeque::with_capacity(QUEUE_CAP),
             // Output and dry queues start one frame deep: RNNoise only emits
             // whole 480-sample frames, so priming them with a frame of
             // silence gives a constant one-frame delay and guarantees a full
             // block of output for ANY block size (256, 512, 1024 … don't
-            // divide 480). Dry stays sample-aligned with the denoised signal.
-            out_l: primed_queue(),
-            out_r: primed_queue(),
-            dry_l: primed_queue(),
-            dry_r: primed_queue(),
+            // divide 480). RNNoise's overlap-add adds one more frame of
+            // delay inside process_frame, so dry is primed with two frames
+            // to stay sample-aligned with the denoised signal.
+            out_l: primed_queue(1),
+            out_r: primed_queue(1),
+            dry_l: primed_queue(2),
+            dry_r: primed_queue(2),
             mix:                1.0,
             vad_gate_threshold: 0.0,
             gate_attenuation:   0.0,
@@ -158,7 +164,7 @@ impl BuiltinProcessor for NoiseSuppressor {
     fn get_vad(&self) -> f32 { self.last_vad }
 
     /// Output lags input by exactly one RNNoise frame (see `new`).
-    fn latency_samples(&self) -> u32 { FRAME_SIZE as u32 }
+    fn latency_samples(&self) -> u32 { (FRAME_SIZE * 2) as u32 }
 }
 
 impl Default for NoiseSuppressor {
@@ -175,7 +181,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_is_the_input_delayed_by_exactly_one_frame_for_any_block_size() {
+    fn dry_output_is_the_input_delayed_by_exactly_two_frames_for_any_block_size() {
         for block in [256usize, 512, 1024, 100] {
             let mut ns = NoiseSuppressor::new(48_000.0).unwrap();
             ns.set_parameter(0, 0.0); // mix = 0: dry path only, so the delay is exact
@@ -187,9 +193,35 @@ mod tests {
                 output.extend_from_slice(&l);
             }
             for (t, &y) in output.iter().enumerate() {
-                let expected = if t < FRAME_SIZE { 0.0 } else { input[t - FRAME_SIZE] };
+                let expected = if t < 2 * FRAME_SIZE { 0.0 } else { input[t - 2 * FRAME_SIZE] };
                 assert!((y - expected).abs() < 1e-6, "block {block}: sample {t} = {y}, expected {expected}");
             }
         }
+    }
+
+    /// The wet (denoised) path must carry the same delay as the dry path, or
+    /// any mix between 0 and 1 comb-filters. Cross-correlate a loud tone burst.
+    #[test]
+    fn wet_path_is_aligned_with_dry_path() {
+        let mut ns = NoiseSuppressor::new(48_000.0).unwrap();
+        ns.set_parameter(0, 1.0); // mix = 1: wet only
+        let n = FRAME_SIZE * 60;
+        let input: Vec<f32> = (0..n).map(|i| {
+            let t = i as f32 / 48_000.0;
+            // vowel-like harmonic stack so RNNoise keeps it
+            (1..8).map(|h| (2.0 * std::f32::consts::PI * 150.0 * h as f32 * t).sin() / h as f32).sum::<f32>() * 0.3
+        }).collect();
+        let mut out = Vec::with_capacity(n);
+        for chunk in input.chunks(256) {
+            let (mut l, mut r) = (chunk.to_vec(), chunk.to_vec());
+            ns.process_stereo(&mut l, &mut r);
+            out.extend_from_slice(&l);
+        }
+        let corr = |lag: usize| -> f32 { (lag..n).map(|t| out[t] * input[t - lag]).sum() };
+        let best = (0..3 * FRAME_SIZE).max_by(|&a, &b| corr(a).total_cmp(&corr(b))).unwrap();
+        // the tone repeats every 320 samples (150 Hz), so accept the lag mod period
+        // (a 1-frame / 480-sample lag would land 160 samples off).
+        let d = (best as i32 - (2 * FRAME_SIZE) as i32).rem_euclid(320);
+        assert!(d.min(320 - d) <= 4, "wet lag {best}");
     }
 }

@@ -10,6 +10,7 @@ fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub custom_scan_paths: Vec<String>,
     #[serde(default)]
     pub minimize_to_tray: bool,
@@ -70,8 +71,8 @@ impl ConfigManager {
         let config_path = config_dir.join("config.json");
 
         let config = if config_path.exists() {
-            let content = fs::read_to_string(&config_path)?;
-            serde_json::from_str(&content).unwrap_or_default()
+            let content = fs::read(&config_path)?;
+            crate::domain::preset::parse_or_back_up(&config_path, &content).unwrap_or_default()
         } else {
             AppConfig::default()
         };
@@ -196,8 +197,8 @@ impl ConfigManager {
         if !path.exists() {
             return None;
         }
-        let content = fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
+        let content = fs::read(&path).ok()?;
+        crate::domain::preset::parse_or_back_up(&path, &content)
     }
 }
 

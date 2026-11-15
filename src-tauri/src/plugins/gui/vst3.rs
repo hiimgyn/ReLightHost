@@ -1,160 +1,56 @@
-/// VST3 GUI hosting — proper IPlugFrame + Win32 message loop.
-///
-/// Design mirrors LightHost (JUCE DocumentWindow) behaviour:
-///   - Native title bar with close/minimise buttons
-///   - Resizable when plugin reports canResize() == kResultOk
-///   - IPlugFrame host so plugins can resize their own window
-///   - Standard Win32 blocking GetMessageW loop (no idle hacks)
-///   - WM_SIZE → IPlugView::onSize() for host-driven resizes
-///
-/// VST3 SDK reference: pluginterfaces/gui/iplugview.h
+//! VST3 editor hosting — Win32 host window + `IPlugView` embedding.
+//!
+//! VST3 makes every IEditController / IPlugView call a UI-thread call, and
+//! the UI thread is the one that created the plugin: the plugin host thread
+//! (see core::host_thread). JUCE plugins bind their MessageManager (hidden
+//! message window, timers, async callbacks) to it, so an editor driven from
+//! any other thread races its own timers — the Xvox/Clear crashes. The
+//! editor therefore lives on the host thread, driven by its message pump,
+//! like CLAP's (gui/clap.rs); there is no per-editor thread.
+//!   1. `createView` → `setFrame` → create the host window
+//!   2. show → `setContentScaleFactor` → `attached` → fit window to `getSize`
+//!   3. WM_CLOSE: `setFrame(null)` → `removed` → destroy the host window
+//!      (the view goes before its parent window does)
+//!   4. WM_NCDESTROY: release the view, then clear the GUI-open flag / HWND
+//!
+//! Component ↔ controller connection and state sync happen at load
+//! (processor::vst3), not here.
 #[cfg(target_os = "windows")]
 pub mod win {
     use anyhow::{anyhow, Result};
     use std::cell::Cell;
     use std::ffi::c_void;
     use std::ptr;
-    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
     use std::sync::Arc;
     use vst3::{Class, ComPtr, ComWrapper};
-    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use vst3::Steinberg::{
-        kResultOk,
-        kPlatformTypeHWND,
+        kInvalidArgument, kPlatformTypeHWND, kResultFalse, kResultOk,
         IPlugFrame, IPlugFrameTrait,
         IPlugView, IPlugViewTrait,
         IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait,
         ViewRect,
     };
-    use vst3::Steinberg::Vst::{
-        IComponent, IComponentTrait,
-        IConnectionPoint, IConnectionPointTrait,
-        IEditController, IEditControllerTrait,
-    };
-    use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::*;
-    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use vst3::Steinberg::Vst::{IEditController, IEditControllerTrait};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-    use windows_sys::Win32::Graphics::Gdi::{RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE};
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-    type OnSizeCallback = Box<dyn Fn(i32, i32)>;
-
-    /// RAII CoInitializeEx/CoUninitialize pairing for any thread that touches
-    /// plugin GUI internals — many VST3 editors (e.g. Supertone Clear) use
-    /// DirectWrite/Direct2D, which need COM initialised on the calling thread.
-    /// COINIT_APARTMENTTHREADED matches JUCE's ScopedCoInitialiser convention.
-    struct ComScope(bool);
-    impl ComScope {
-        fn new() -> Self {
-            Self::with_apartment(COINIT_APARTMENTTHREADED as u32)
-        }
-
-        /// The attach thread calls `attached()` on the same `IPlugView` the GUI
-        /// thread created via `createView()`. That view (and any real COM
-        /// objects it creates internally, e.g. WIC/DirectWrite factories) was
-        /// born in the GUI thread's STA — joining a *different* apartment
-        /// (MTA was tried here previously) here makes every such call an
-        /// unmarshaled cross-apartment call, which is undefined behavior and
-        /// was observed to hang `attached()` indefinitely (never returns,
-        /// window stays blank). Joining the same apartment kind removes the
-        /// mismatch.
-        fn new_attach_thread() -> Self {
-            Self::new()
-        }
-
-        fn with_apartment(coinit: u32) -> Self {
-            let hr = unsafe { CoInitializeEx(ptr::null(), coinit) };
-            Self(hr == 0_i32 || hr == 1_i32)
-        }
-    }
-    impl Drop for ComScope {
-        fn drop(&mut self) {
-            if self.0 { unsafe { CoUninitialize(); } }
-        }
+    /// Moves the plugin's COM pointers into `host_thread::run_blocking`.
+    /// Callers (launch_plugin) are already on the host thread, where it runs
+    /// inline, so in practice nothing crosses threads.
+    struct OnHostThread<T>(T);
+    unsafe impl<T> Send for OnHostThread<T> {}
+    impl<T> OnHostThread<T> {
+        fn into_inner(self) -> T { self.0 }
     }
 
-    // Thread-local state shared between GUI setup, WndProc, and IPlugFrame.
-    // Safe because the GUI runs on a single dedicated thread.
-    thread_local! {
-        /// Host HWND as isize. Used by WM_SIZE → onSize callback.
-        /// NOTE: NOT used by IPlugFrame::resizeView — that uses the HWND stored
-        /// in HostPlugFrame directly, so it works from any thread.
-        static TL_HWND: Cell<isize> = const { Cell::new(0) };
-        /// Closure that calls IPlugView::onSize() with new client dims.
-        static TL_ON_SIZE: std::cell::RefCell<Option<OnSizeCallback>> =
-            const { std::cell::RefCell::new(None) };
-        /// Initial (width, height) applied via WM_VST_ATTACH once the loop runs.
-        static TL_INITIAL_SIZE: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
-        /// View clone passed to the attach helper thread.
-        static TL_PENDING_VIEW: std::cell::RefCell<Option<ComPtr<IPlugView>>> =
-            const { std::cell::RefCell::new(None) };
-        /// JoinHandle for the background attach thread.
-        /// Joined before view.removed() to prevent data-race on the ComPtr —
-        /// but only up to a bounded timeout (see TL_ATTACH_DONE): a plugin
-        /// whose removed() call itself hangs must not freeze gui_open forever.
-        static TL_ATTACH_THREAD: std::cell::RefCell<Option<std::thread::JoinHandle<()>>> =
-            const { std::cell::RefCell::new(None) };
-        /// Set true by the attach thread right before it exits (after
-        /// setFrame(null)/removed() return). Polled with a deadline instead of
-        /// calling JoinHandle::join() unconditionally, which has no timeout —
-        /// a plugin whose removed() never returns would otherwise wedge
-        /// gui_open permanently, blocking reopen/remove for that instance.
-        static TL_ATTACH_DONE: std::cell::RefCell<Option<Arc<AtomicBool>>> =
-            const { std::cell::RefCell::new(None) };
-        /// Win32 thread ID of the attach thread (wrapped in Arc so WM_CLOSE can
-        /// send it WM_QUIT before PluginInstance::drop calls view.removed()).
-        static TL_ATTACH_TID: std::cell::RefCell<Option<Arc<AtomicU32>>> =
-            const { std::cell::RefCell::new(None) };
-        /// Attachment-ready flag shared from Vst3Processor. Set to true after
-        /// IPlugView::attached() succeeds, signaling the audio thread that the
-        /// plugin is fully initialized and ready for process() calls.
-        static TL_ATTACHMENT_READY: std::cell::RefCell<Option<Arc<AtomicBool>>> =
-            const { std::cell::RefCell::new(None) };
-        /// Whether component and controller are separate objects.
-        static TL_SEPARATE_CONTROLLER: Cell<bool> = const { Cell::new(true) };
-        /// Prevents re-entrancy in WM_CLOSE message pumping.
-        static TL_CLOSING: Cell<bool> = const { Cell::new(false) };
-    }
-
-    /// Posted to self just before the message loop starts.
-    /// Handler spawns a helper thread to call IPlugView::attached() and
-    /// immediately returns 0 — the GUI thread stays in GetMessage() and is
-    /// therefore responsive to cross-thread SendMessage calls from the plugin
-    /// (e.g. WM_PARENTNOTIFY from JUCE's SharedMessageThread when it calls
-    /// CreateWindowExW with our HWND as parent).  Without this, those sends
-    /// deadlock because DispatchMessage does NOT pump the sent-message queue.
-    const WM_VST_ATTACH: u32 = WM_USER + 1;
-    /// Posted by the attach helper thread when IPlugView::attached() returns.
-    /// Handler calls onSize() and ShowWindow() once the plugin is fully ready.
-    const WM_VST_READY:  u32 = WM_USER + 2;
-
-    /// Wrapper that makes ComPtr<IPlugView> safe to send to a helper thread.
-    /// VST3 IPlugView is a plain C++ vtable interface — it has no COM apartment
-    /// enforcement, so calling across threads is safe for the attach() step.
-    struct SendView(ComPtr<IPlugView>);
-    unsafe impl Send for SendView {}
-
-    // ── IPlugFrame host implementation ────────────────────────────────────────
-    // Provided to the plugin via view.setFrame() so it can request window
-    // resizes (e.g. when the user drags a resize handle inside the plugin UI).
-    // resizeView() mirrors JUCE DocumentWindow::resized():
-    //   1. Resize the outer Win32 frame → Windows sends WM_SIZE synchronously
-    //   2. WndProc WM_SIZE calls IPlugView::onSize() to confirm the new dims
-    //
-    // The HWND is stored INSIDE HostPlugFrame (not in a thread-local) so that
-    // resizeView() works correctly when called from a plugin render thread that
-    // is different from the GUI thread.  Thread-locals are per-thread; reading
-    // TL_HWND from a non-GUI thread would return 0 and silently skip the resize.
+    // ── IPlugFrame: lets the plugin resize its own window ─────────────────────
     struct HostPlugFrame {
-        /// The host Win32 window HWND.  Stored as AtomicIsize so the struct is
-        /// Sync and resizeView() can be called safely from any thread.
-        hwnd: std::sync::atomic::AtomicIsize,
-        /// Window style used when the frame was created; needed for AdjustWindowRect.
-        style: u32,
+        /// Host window; 0 once the view is detached (late calls are no-ops).
+        hwnd: AtomicIsize,
     }
-    unsafe impl Send for HostPlugFrame {}
-    unsafe impl Sync for HostPlugFrame {}
 
     impl Class for HostPlugFrame {
         type Interfaces = (IPlugFrame,);
@@ -162,728 +58,235 @@ pub mod win {
 
     #[allow(non_snake_case)]
     impl IPlugFrameTrait for HostPlugFrame {
-        unsafe fn resizeView(
-            &self,
-            _view: *mut IPlugView,
-            new_size: *mut ViewRect,
-        ) -> i32 {
+        unsafe fn resizeView(&self, _view: *mut IPlugView, new_size: *mut ViewRect) -> i32 {
             if new_size.is_null() {
-                return -1; // kInvalidArgument
+                return kInvalidArgument;
             }
-            let rect = *new_size;
-            let content_w = (rect.right  - rect.left).max(100);
-            let content_h = (rect.bottom - rect.top ).max(100);
-
-            let hwnd = self.hwnd.load(std::sync::atomic::Ordering::Acquire)
-                as windows_sys::Win32::Foundation::HWND;
-            if hwnd.is_null() { return kResultOk; }
-
-            // AdjustWindowRect converts client-area size to outer frame size.
-            // SetWindowPos sends WM_SIZE synchronously → WndProc → onSize().
-            let mut wr = RECT { left: 0, top: 0, right: content_w, bottom: content_h };
-            AdjustWindowRect(&mut wr, self.style, 0);
-            SetWindowPos(
-                hwnd,
-                ptr::null_mut(),
-                0, 0,
-                wr.right  - wr.left,
-                wr.bottom - wr.top,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-
+            let hwnd = self.hwnd.load(Ordering::Acquire) as HWND;
+            if hwnd.is_null() {
+                return kResultFalse;
+            }
+            let r = *new_size;
+            // WM_SIZE (sent synchronously, same thread) calls view.onSize().
+            resize_client(hwnd, r.right - r.left, r.bottom - r.top);
             kResultOk
         }
     }
 
+    /// Per-window state, owned by the window (GWLP_USERDATA) and freed on
+    /// WM_NCDESTROY.
+    struct Editor {
+        view: ComPtr<IPlugView>,
+        frame: ComWrapper<HostPlugFrame>,
+        /// Kept until the view is released: the view belongs to it.
+        _controller: ComPtr<IEditController>,
+        attached: Cell<bool>,
+        closed: Cell<bool>,
+        gui_flag: Arc<AtomicBool>,
+        gui_hwnd: Arc<AtomicIsize>,
+    }
+
+    impl Editor {
+        /// `setFrame(null)` + `removed()`, while the parent window still exists.
+        unsafe fn close_view(&self) {
+            if self.closed.replace(true) {
+                return;
+            }
+            self.frame.hwnd.store(0, Ordering::Release);
+            self.view.setFrame(ptr::null_mut());
+            if self.attached.replace(false) {
+                self.view.removed();
+            }
+        }
+    }
+
+    unsafe fn editor<'a>(hwnd: HWND) -> Option<&'a Editor> {
+        (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Editor).as_ref()
+    }
+
     // ── Public entry point ────────────────────────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
+    /// Creates, attaches and shows the editor on the plugin host thread and
+    /// returns once it is up. The window owns it from then on.
     pub fn open_gui_window(
         controller: &ComPtr<IEditController>,
-        component: &ComPtr<IComponent>,
         plugin_name: &str,
         gui_flag: Arc<AtomicBool>,
         gui_hwnd: Arc<AtomicIsize>,
-        attachment_ready: Arc<std::sync::atomic::AtomicBool>,
-        com_access_lock: Arc<parking_lot::Mutex<()>>,
-        icp_connected: Arc<AtomicBool>,
-        sync_component_state: bool,
-        restored_state_blob: Option<Vec<u8>>,
     ) -> Result<()> {
-        let controller_clone = controller.clone();
-        let component_clone  = component.clone();
-        let name_owned = plugin_name.to_string();
-        let icp_connected_clone = Arc::clone(&icp_connected);
-
-        std::thread::Builder::new()
-            .name(format!("vst3-gui-{}", plugin_name))
-            .spawn(move || {
-                use std::mem::ManuallyDrop;
-
-                // Held for the whole GUI session (createView through cleanup) —
-                // blocks here if get_state()/set_state() (autosave, manual save)
-                // is still mid-call from a just-closed previous session. See
-                // Vst3Processor::com_access_lock for why this matters.
-                let _com_access_guard = com_access_lock.lock();
-
-                // CleanupGuard releases the COM interface clones (controller +
-                // component) BEFORE it clears gui_open.  This ordering is
-                // critical: PluginInstance::drop() waits for gui_open → false,
-                // then immediately drops Vst3Processor which unloads the DLL.
-                // If these ComPtr clones were still alive at that point, the
-                // subsequent ComPtr::drop() would call Release() through a freed
-                // vtable, causing STATUS_ACCESS_VIOLATION.
-                struct CleanupGuard {
-                    controller: ManuallyDrop<ComPtr<IEditController>>,
-                    component:  ManuallyDrop<ComPtr<IComponent>>,
-                    flag: Arc<AtomicBool>,
-                    hwnd: Arc<AtomicIsize>,
-                    attachment_ready: Arc<std::sync::atomic::AtomicBool>,
-                    /// Set true when the GUI teardown thread never finished in
-                    /// time (see wait_for_attach_thread). Releasing these COM
-                    /// refs then would race that still-running thread, which
-                    /// may hold its own clone of the same objects — so we leak
-                    /// instead, same trade-off PluginInstance::drop makes for
-                    /// a stuck GUI thread at the whole-processor level.
-                    abandon_com_release: bool,
-                }
-                impl Drop for CleanupGuard {
-                    fn drop(&mut self) {
-                        if self.abandon_com_release {
-                            log::error!("GUI teardown abandoned — leaking controller/component COM references instead of releasing them");
-                            unsafe {
-                                let controller = ManuallyDrop::take(&mut self.controller);
-                                let component  = ManuallyDrop::take(&mut self.component);
-                                std::mem::forget(controller);
-                                std::mem::forget(component);
-                            }
-                        } else {
-                            unsafe {
-                                // Release COM interfaces first — do NOT reorder.
-                                ManuallyDrop::drop(&mut self.controller);
-                                ManuallyDrop::drop(&mut self.component);
-                            }
-                        }
-                        // Only THEN signal that it is safe to unload the DLL.
-                        self.hwnd.store(0, Ordering::Release);
-                        self.flag.store(false, Ordering::Release);
-                        // Editor is no longer in attach phase; allow process().
-                        self.attachment_ready.store(true, Ordering::Release);
-                        crate::app_events::emit_plugin_chain_changed("gui_close", None);
-                        log::debug!("GUI flag cleared");
-                    }
-                }
-
-                let mut _cleanup = CleanupGuard {
-                    controller: ManuallyDrop::new(controller_clone),
-                    component:  ManuallyDrop::new(component_clone),
-                    flag: gui_flag,
-                    hwnd: Arc::clone(&gui_hwnd),
-                    attachment_ready: Arc::clone(&attachment_ready),
-                    abandon_com_release: false,
-                };
-
-                match run_gui_window_impl(
-                    &_cleanup.controller,
-                    &_cleanup.component,
-                    &name_owned,
-                    &gui_hwnd,
-                    &_cleanup.attachment_ready,
-                    &icp_connected_clone,
-                    sync_component_state,
-                    restored_state_blob,
-                ) {
-                    Ok(attach_finished) => _cleanup.abandon_com_release = !attach_finished,
-                    Err(e) => log::error!("VST3 GUI error for '{}': {}", name_owned, e),
-                }
-                // _cleanup drops here: COM refs released (or leaked, if
-                // teardown was abandoned), then gui_open cleared
-            })
-            .map_err(|e| anyhow!("Failed to spawn GUI thread: {}", e))?;
-
-        Ok(())
+        let controller = OnHostThread(controller.clone());
+        let name = plugin_name.to_string();
+        crate::core::host_thread::run_blocking(move || {
+            let controller = controller.into_inner();
+            unsafe { open(&controller, &name, gui_flag, gui_hwnd) }
+        })
     }
 
-    // ── GUI window lifecycle ──────────────────────────────────────────────────
-
-    #[allow(clippy::too_many_arguments)]
-    fn run_gui_window_impl(
+    unsafe fn open(
         controller: &ComPtr<IEditController>,
-        component:  &ComPtr<IComponent>,
-        plugin_name: &str,
-        gui_hwnd_arc: &Arc<AtomicIsize>,
-        attachment_ready: &Arc<std::sync::atomic::AtomicBool>,
-        icp_connected: &Arc<AtomicBool>,
-        sync_component_state: bool,
-        restored_state_blob: Option<Vec<u8>>,
-    ) -> Result<bool> {
-        use std::ffi::CString;
-
-        // COM must be initialised on the same thread as the GUI (same as JUCE
-        // ScopedCoInitialiser with COINIT_APARTMENTTHREADED).
-        let _com = ComScope::new();
-
-        // Store attachment_ready in thread-local so the attach thread can access it
-        TL_ATTACHMENT_READY.with(|c| {
-            *c.borrow_mut() = Some(Arc::clone(attachment_ready));
-        });
-        TL_SEPARATE_CONTROLLER.with(|c| c.set(true));
-
-        // ── Pre-createView setup (VST3 hosting protocol) ─────────────────────
-        // 1. Connect component ↔ controller via IConnectionPoint so the plugin
-        //    can sync internal state.  Done here (lazily on the GUI thread)
-        //    rather than during load() to avoid racing with the audio callback,
-        //    which would corrupt the stack on non-thread-safe plugins.
-        //    Skip for single-component plugins (comp and ctrl are the same object);
-        //    calling connect(self) is a no-op at best and crashes at worst.
-        //    CRITICAL: Only connect once per plugin lifetime. Reconnecting on
-        //    reopen without disconnect (or calling connect twice) corrupts plugin
-        //    internal connection lists on fragile plugins like Supertone Clear.
-        let connected_icp = if let (Some(comp_cp), Some(ctrl_cp)) = (
-            component.cast::<IConnectionPoint>(),
-            controller.cast::<IConnectionPoint>(),
-        ) {
-            // Compare vtable-instance identity: if both IConnectionPoint pointers
-            // resolve to the same address the plugin is single-component — skip.
-            let same_object = std::ptr::eq(
-                comp_cp.as_ptr() as *const _,
-                ctrl_cp.as_ptr() as *const _,
-            );
-            if same_object {
-                log::debug!("'{}': single-component — skipping IConnectionPoint connect", plugin_name);
-                false
-            } else if !icp_connected.load(Ordering::Acquire) {
-                unsafe {
-                    let _ = comp_cp.connect(ctrl_cp.as_ptr());
-                    let _ = ctrl_cp.connect(comp_cp.as_ptr());
-                }
-                icp_connected.store(true, Ordering::Release);
-                log::debug!("'{}': IConnectionPoint connected (component ↔ controller)", plugin_name);
-                true
-            } else {
-                log::debug!("'{}': IConnectionPoint already connected — skipping duplicate connect", plugin_name);
-                true
-            }
-        } else {
-            false
-        };
-
-        // 2. Sync controller parameters to the component's current state.
-        //    Prefer the original restored snapshot when available so plugins
-        //    that key their editor off serialized state see the exact blob that
-        //    was loaded from autosave.
-        if sync_component_state {
-            use vst3::Steinberg::IBStream;
-            use vst3::ComWrapper;
-            // Reuse the same IBStream type from the outer module via a local alias.
-            // We need something that can serve either a restored blob or a fresh
-            // component.getState() snapshot back to the controller.
-            struct WriteBuf {
-                buf: std::cell::RefCell<Vec<u8>>,
-                pos: std::cell::Cell<usize>,
-            }
-            impl vst3::Class for WriteBuf {
-                type Interfaces = (IBStream,);
-            }
-            #[allow(non_snake_case)]
-            impl vst3::Steinberg::IBStreamTrait for WriteBuf {
-                unsafe fn read(&self, buffer: *mut std::ffi::c_void, numBytes: i32, numBytesRead: *mut i32) -> i32 {
-                    let borrow = self.buf.borrow();
-                    let n = (numBytes.max(0)) as usize;
-                    let avail = borrow.len().saturating_sub(self.pos.get());
-                    let to_read = n.min(avail);
-                    if to_read > 0 {
-                        std::ptr::copy_nonoverlapping(
-                            borrow[self.pos.get()..].as_ptr(),
-                            buffer as *mut u8,
-                            to_read,
-                        );
-                        self.pos.set(self.pos.get() + to_read);
-                    }
-                    if !numBytesRead.is_null() { *numBytesRead = to_read as i32; }
-                    0
-                }
-                unsafe fn write(&self, buffer: *mut std::ffi::c_void, numBytes: i32, numBytesWritten: *mut i32) -> i32 {
-                    let mut borrow = self.buf.borrow_mut();
-                    let n = (numBytes.max(0)) as usize;
-                    let pos = self.pos.get();
-                    let end = pos + n;
-                    if end > borrow.len() { borrow.resize(end, 0); }
-                    std::ptr::copy_nonoverlapping(buffer as *const u8, borrow[pos..end].as_mut_ptr(), n);
-                    self.pos.set(end);
-                    if !numBytesWritten.is_null() { *numBytesWritten = n as i32; }
-                    0
-                }
-                unsafe fn seek(&self, pos: i64, mode: i32, result: *mut i64) -> i32 {
-                    let len = self.buf.borrow().len();
-                    let new_pos = match mode {
-                        0 => pos.max(0) as usize,
-                        1 => (self.pos.get() as i64 + pos).max(0) as usize,
-                        2 => (len as i64 + pos).max(0) as usize,
-                        _ => return 0x80004005u32 as i32,
-                    };
-                    self.pos.set(new_pos);
-                    if !result.is_null() { *result = new_pos as i64; }
-                    0
-                }
-                unsafe fn tell(&self, pos: *mut i64) -> i32 {
-                    if !pos.is_null() { *pos = self.pos.get() as i64; }
-                    0
-                }
-            }
-
-            let state_stream = if let Some(blob) = restored_state_blob.filter(|blob| !blob.is_empty()) {
-                ComWrapper::new(WriteBuf {
-                    buf: std::cell::RefCell::new(blob),
-                    pos: std::cell::Cell::new(0),
-                })
-            } else {
-                let stream = ComWrapper::new(WriteBuf {
-                    buf: std::cell::RefCell::new(Vec::new()),
-                    pos: std::cell::Cell::new(0),
-                });
-                if let Some(state_ptr) = stream.to_com_ptr::<IBStream>() {
-                    unsafe { component.getState(state_ptr.as_ptr()); }
-                    stream.pos.set(0);
-                }
-                stream
-            };
-
-            if let Some(read_ptr) = state_stream.to_com_ptr::<IBStream>() {
-                unsafe { controller.setComponentState(read_ptr.as_ptr()); }
-            }
+        name: &str,
+        gui_flag: Arc<AtomicBool>,
+        gui_hwnd: Arc<AtomicIsize>,
+    ) -> Result<()> {
+        let view_raw = controller.createView(b"editor\0".as_ptr() as *const _);
+        let view = ComPtr::<IPlugView>::from_raw(view_raw)
+            .ok_or_else(|| anyhow!("'{}' has no editor (createView returned null)", name))?;
+        if view.isPlatformTypeSupported(kPlatformTypeHWND) != kResultOk {
+            return Err(anyhow!("'{}' does not support HWND platform", name));
         }
 
-        // 1. Create the editor view
-        let view_name = CString::new("editor").map_err(|_| anyhow!("CString error"))?;
-        let view_raw = unsafe { controller.createView(view_name.as_ptr()) };
-        if view_raw.is_null() {
-            return Err(anyhow!("'{}' returned null IPlugView", plugin_name));
-        }
-        let view = unsafe {
-            ComPtr::<IPlugView>::from_raw(view_raw)
-                .ok_or_else(|| anyhow!("Failed to wrap IPlugView for '{}'", plugin_name))?
-        };
-
-        // 2. Check HWND platform support
-        if unsafe { view.isPlatformTypeSupported(kPlatformTypeHWND) } != kResultOk {
-            return Err(anyhow!("'{}' does not support HWND platform", plugin_name));
-        }
-
-        // 3. Query initial size
-        let mut view_rect = ViewRect { left: 0, top: 0, right: 800, bottom: 600 };
-        unsafe { view.getSize(&mut view_rect) };
-        let width  = (view_rect.right  - view_rect.left).max(400);
-        let height = (view_rect.bottom - view_rect.top ).max(300);
-
-        // 4. Choose window style based on canResize()
-        // Mirrors LightHost: PluginWindow::setResizable(canResize()).
-        let can_resize = unsafe { view.canResize() } == kResultOk;
-        let window_style = if can_resize {
+        let mut rect = ViewRect { left: 0, top: 0, right: 800, bottom: 600 };
+        view.getSize(&mut rect);
+        let (w, h) = ((rect.right - rect.left).max(1), (rect.bottom - rect.top).max(1));
+        let can_resize = view.canResize() == kResultOk;
+        let style = if can_resize {
             WS_OVERLAPPEDWINDOW & !WS_MAXIMIZEBOX
         } else {
             WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
         };
-        log::debug!("'{}': initial {}x{}, can_resize={}", plugin_name, width, height, can_resize);
+        let hwnd = create_host_window(name, w, h, style)?;
 
-        // 5. Create the host Win32 window (hidden until the message loop fires).
-        let hwnd = create_host_window(plugin_name, width, height, window_style)?;
-        // Publish HWND so PluginInstance::drop can post WM_CLOSE before
-        // Vst3Processor::terminate() runs, preventing STATUS_ACCESS_VIOLATION.
-        gui_hwnd_arc.store(hwnd as isize, Ordering::Release);
-
-        // 6. Install the onSize callback and store initial dimensions.
-        TL_HWND.set(hwnd as isize);
-        let view_for_size = view.clone();
-        TL_ON_SIZE.with(|cell| {
-            *cell.borrow_mut() = Some(Box::new(move |w: i32, h: i32| {
-                let mut rect = ViewRect { left: 0, top: 0, right: w, bottom: h };
-                unsafe { view_for_size.onSize(&mut rect); }
-            }));
+        // From here on the window owns the editor: any failure below goes
+        // through DestroyWindow → WM_NCDESTROY, which detaches the view and
+        // clears the flags.
+        gui_hwnd.store(hwnd as isize, Ordering::Release);
+        let frame = ComWrapper::new(HostPlugFrame { hwnd: AtomicIsize::new(hwnd as isize) });
+        if let Some(f) = frame.to_com_ptr::<IPlugFrame>() {
+            view.setFrame(f.as_ptr());
+        }
+        let ed = Box::new(Editor {
+            view: view.clone(),
+            frame,
+            _controller: controller.clone(),
+            attached: Cell::new(false),
+            closed: Cell::new(false),
+            gui_flag,
+            gui_hwnd,
         });
-        TL_INITIAL_SIZE.with(|c| c.set((width, height)));
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(ed) as isize);
 
-        // 7. Attach IPlugFrame so the plugin can call resizeView().
-        //    The HWND and style are stored directly in the frame object so that
-        //    resizeView() works correctly from plugin render threads.
-        let frame = ComWrapper::new(HostPlugFrame {
-            hwnd:  std::sync::atomic::AtomicIsize::new(hwnd as isize),
-            style: window_style,
-        });
-        if let Some(frame_ptr) = frame.to_com_ptr::<IPlugFrame>() {
-            unsafe { view.setFrame(frame_ptr.as_ptr()); }
-        }
+        // Visible before attached(): JUCE 7+ Direct2D editors check
+        // IsWindowVisible(parent) there and skip creating their renderer.
+        ShowWindow(hwnd, SW_SHOW);
+        SetForegroundWindow(hwnd);
+        set_scale(&view, GetDpiForWindow(hwnd));
 
-        // 8. Store a clone of the view for the WM_VST_ATTACH handler and post
-        //    the attach message.  The handler will call IPlugView::attached(),
-        //    onSize(), and ShowWindow() while the message pump is already active.
-        //    This prevents deadlocks: if the plugin spawns threads during
-        //    attached() that SendMessage to our HWND, those sends are serviced
-        //    by the running pump instead of blocking the GUI thread.
-        TL_PENDING_VIEW.with(|c| *c.borrow_mut() = Some(view.clone()));
-        unsafe { PostMessageW(hwnd, WM_VST_ATTACH, 0, 0); }
-
-        log::info!("'{}' entering GUI loop ({}x{}, resizable={})", plugin_name, width, height, can_resize);
-
-        // 9. Message loop — blocks until WM_QUIT (posted on WM_DESTROY).
-        //    WM_VST_ATTACH fires first (attached → onSize → ShowWindow).
-        run_message_loop();
-
-        // 10. Cleanup — window destroyed by WM_CLOSE → DefWindowProc.
-        // Wait for the attach thread to finish (it performs view teardown —
-        // setFrame(nullptr) + removed() — on the same thread that called
-        // attached()), but only up to GUI_TEARDOWN_TIMEOUT. A plugin whose
-        // removed() call itself hangs (observed with some fragile editors)
-        // must not wedge gui_open forever — that leaves the instance
-        // permanently un-reopenable and un-removable from the UI.
-        let attach_finished = wait_for_attach_thread(GUI_TEARDOWN_TIMEOUT);
-        if !attach_finished {
-            log::error!(
-                "'{}': GUI teardown thread did not finish within {:?} — abandoning it and leaking its COM references instead of releasing them, to avoid releasing interfaces the stuck thread may still be using",
-                plugin_name, GUI_TEARDOWN_TIMEOUT
-            );
-        }
-
-        // NOTE: Avoid disconnect() during teardown.
-        // Some plugins free internal connection-point state inside removed(), and
-        // disconnecting afterwards (or from another thread) can corrupt heap.
-        let _ = connected_icp;
-        // Clear remaining thread-locals — releases ComPtr clones before view drops.
-        TL_ATTACH_TID.with(|c| *c.borrow_mut() = None);
-        TL_ATTACH_DONE.with(|c| *c.borrow_mut() = None);
-        TL_PENDING_VIEW.with(|c| *c.borrow_mut() = None);
-        TL_ON_SIZE.with(|cell| *cell.borrow_mut() = None);
-        TL_INITIAL_SIZE.with(|c| c.set((0, 0)));
-        TL_ATTACHMENT_READY.with(|c| *c.borrow_mut() = None);
-        TL_SEPARATE_CONTROLLER.with(|c| c.set(true));
-        TL_CLOSING.with(|c| c.set(false));
-        TL_HWND.set(0);
-
-        if !attach_finished {
-            // The abandoned thread may still be executing inside removed()
-            // with its own clone of this same view — releasing ours here
-            // could Release() the last reference out from under it.
-            std::mem::forget(view);
-        }
-
-        log::debug!("'{}' GUI cleanup complete (teardown {})", plugin_name, if attach_finished { "clean" } else { "abandoned" });
-        Ok(attach_finished)
-    }
-
-    /// How long to wait for the attach thread's setFrame(null)/removed() call
-    /// to finish before giving up on it. Matches GUI_CLOSE_TIMEOUT used
-    /// elsewhere in the app for the same "how long to wait for a plugin
-    /// window to go away" question.
-    const GUI_TEARDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-
-    /// Poll TL_ATTACH_DONE instead of `JoinHandle::join()`, which has no
-    /// timeout. Joins the handle (near-instant, since the thread already
-    /// signalled done) on success so it doesn't leak as a zombie `Thread`
-    /// handle; on timeout, drops the handle without joining — safe in Rust,
-    /// it simply stops tracking an now-detached still-running OS thread.
-    fn wait_for_attach_thread(timeout: std::time::Duration) -> bool {
-        let done = TL_ATTACH_DONE.with(|c| c.borrow().as_ref().map(Arc::clone));
-        let Some(done) = done else { return true };
-
-        let deadline = std::time::Instant::now() + timeout;
-        while !done.load(Ordering::Acquire) {
-            if std::time::Instant::now() >= deadline {
-                return false;
+        let res = view.attached(hwnd as *mut c_void, kPlatformTypeHWND);
+        // Looked up again: the plugin may have pumped messages inside
+        // attached() (e.g. a licence dialog) and the window closed meanwhile.
+        match editor(hwnd) {
+            Some(ed) if res == kResultOk => ed.attached.set(true),
+            Some(_) => {
+                DestroyWindow(hwnd);
+                return Err(anyhow!("'{}' refused to attach its editor ({:#x})", name, res));
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            None => return Err(anyhow!("'{}' editor was closed while opening", name)),
         }
-        if let Some(handle) = TL_ATTACH_THREAD.with(|c| c.borrow_mut().take()) {
-            let _ = handle.join();
-        }
-        true
+
+        // Scale/attach may have changed the editor's size; then give the
+        // view its final client size (WM_SIZE is skipped when unchanged).
+        fit_to_view(hwnd, &view);
+        let mut client: RECT = std::mem::zeroed();
+        GetClientRect(hwnd, &mut client);
+        let mut r = ViewRect { left: 0, top: 0, right: client.right, bottom: client.bottom };
+        view.onSize(&mut r);
+
+        log::info!("'{}' editor open ({}x{}, resizable={})", name, client.right, client.bottom, can_resize);
+        Ok(())
     }
 
     // ── Win32 helpers ─────────────────────────────────────────────────────────
 
-    /// Window procedure for the plugin host window.
-    ///
-    /// WM_SIZE calls IPlugView::onSize() so the plugin can adjust its layout
-    /// when the user (or IPlugFrame::resizeView) resizes the outer window.
-    unsafe extern "system" fn host_wnd_proc(
-        hwnd: windows_sys::Win32::Foundation::HWND,
-        msg: u32,
-        wparam: windows_sys::Win32::Foundation::WPARAM,
-        lparam: windows_sys::Win32::Foundation::LPARAM,
-    ) -> windows_sys::Win32::Foundation::LRESULT {
+    unsafe fn set_scale(view: &ComPtr<IPlugView>, dpi: u32) {
+        if dpi == 0 {
+            return;
+        }
+        if let Some(s) = view.cast::<IPlugViewContentScaleSupport>() {
+            s.setContentScaleFactor(dpi as f32 / 96.0);
+        }
+    }
+
+    unsafe fn fit_to_view(hwnd: HWND, view: &ComPtr<IPlugView>) {
+        let mut r = ViewRect { left: 0, top: 0, right: 0, bottom: 0 };
+        if view.getSize(&mut r) == kResultOk && r.right > r.left && r.bottom > r.top {
+            resize_client(hwnd, r.right - r.left, r.bottom - r.top);
+        }
+    }
+
+    /// Resizes `hwnd` so its client area is `w`×`h`. The frame is measured
+    /// from the live window: AdjustWindowRect uses the system DPI's metrics,
+    /// which are wrong on a monitor with another scale (per-monitor v2).
+    unsafe fn resize_client(hwnd: HWND, w: i32, h: i32) {
+        let (mut wr, mut cr): (RECT, RECT) = (std::mem::zeroed(), std::mem::zeroed());
+        GetWindowRect(hwnd, &mut wr);
+        GetClientRect(hwnd, &mut cr);
+        let frame_w = (wr.right - wr.left) - cr.right;
+        let frame_h = (wr.bottom - wr.top) - cr.bottom;
+        SetWindowPos(
+            hwnd, ptr::null_mut(), 0, 0,
+            w.max(1) + frame_w, h.max(1) + frame_h,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+
+    unsafe extern "system" fn host_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         match msg {
-            WM_CLOSE => {
-                if TL_CLOSING.with(|c| c.get()) {
-                    return 0;
-                }
-                TL_CLOSING.with(|c| c.set(true));
-
-                // 1. Hide the host window immediately for instant visual feedback.
-                ShowWindow(hwnd, SW_HIDE);
-
-                // 2. Tell the attach thread to exit its message loop and call view.removed().
-                let attach_tid = TL_ATTACH_TID.with(|c| {
-                    c.borrow()
-                        .as_ref()
-                        .map(|arc| arc.load(Ordering::Acquire))
-                        .unwrap_or(0)
-                });
-                if attach_tid != 0 {
-                    unsafe { PostThreadMessageW(attach_tid, WM_QUIT, 0, 0); }
-                }
-
-                // 3. CRITICAL (Steinberg VST3 SDK): IPlugView::removed() MUST be called BEFORE
-                // DestroyWindow(parent). If the parent HWND is destroyed first, Windows destroys
-                // child HWNDs out from under the plugin while its internal state still references them.
-                // On the next GUI open, the plugin crashes inside CallWindowProcW -> IsWindowUnicode -> InitDll.
-                // Wait for the attach thread to signal TL_ATTACH_DONE while actively pumping
-                // messages on this GUI thread so cross-thread SendMessages from the plugin
-                // during removed() are processed immediately.
-                let done = TL_ATTACH_DONE.with(|c| c.borrow().as_ref().map(Arc::clone));
-                if let Some(done) = done {
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
-                    while !done.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-                        let mut msg: MSG = std::mem::zeroed();
-                        while PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
-                            if msg.message == WM_QUIT {
-                                PostQuitMessage(msg.wParam as i32);
-                                break;
-                            }
-                            TranslateMessage(&msg);
-                            DispatchMessageW(&msg);
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(5));
+            WM_SIZE => {
+                // wparam 1 = SIZE_MINIMIZED
+                let (w, h) = ((lparam & 0xffff) as i32, ((lparam >> 16) & 0xffff) as i32);
+                if let Some(ed) = editor(hwnd) {
+                    if wparam != 1 && w > 0 && h > 0 && ed.attached.get() {
+                        let mut r = ViewRect { left: 0, top: 0, right: w, bottom: h };
+                        ed.view.onSize(&mut r);
                     }
                 }
-
-                // 4. Now that the plugin view has completely detached, safely destroy the host window.
+                0
+            }
+            WM_DPICHANGED => {
+                // Moved to a monitor with another scale: tell the view, then
+                // size the window to whatever the view now wants.
+                if let Some(ed) = editor(hwnd) {
+                    set_scale(&ed.view, (wparam & 0xffff) as u32);
+                    fit_to_view(hwnd, &ed.view);
+                }
+                0
+            }
+            WM_CLOSE => {
+                if let Some(ed) = editor(hwnd) {
+                    ShowWindow(hwnd, SW_HIDE);
+                    ed.close_view();
+                }
                 DestroyWindow(hwnd);
                 0
             }
-            WM_DESTROY => {
-                // Ensure attach thread is signaled even if WM_CLOSE was bypassed
-                let attach_tid = TL_ATTACH_TID.with(|c| {
-                    c.borrow()
-                        .as_ref()
-                        .map(|arc| arc.load(Ordering::Acquire))
-                        .unwrap_or(0)
-                });
-                if attach_tid != 0 {
-                    unsafe { PostThreadMessageW(attach_tid, WM_QUIT, 0, 0); }
+            WM_NCDESTROY => {
+                let raw = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut Editor;
+                if !raw.is_null() {
+                    let ed = Box::from_raw(raw);
+                    ed.close_view();
+                    let (flag, gui_hwnd) = (Arc::clone(&ed.gui_flag), Arc::clone(&ed.gui_hwnd));
+                    // Releases the view, then the controller reference —
+                    // before the flag tells PluginInstance it may tear down.
+                    drop(ed);
+                    gui_hwnd.store(0, Ordering::Release);
+                    flag.store(false, Ordering::Release);
+                    crate::app_events::emit_plugin_chain_changed("gui_close", None);
                 }
-                PostQuitMessage(0);
-                0
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
-            // Spawn a helper thread to call IPlugView::attached() and return
-            // immediately.  This keeps the GUI thread in GetMessage() so that
-            // cross-thread SendMessage calls from the plugin (e.g. the
-            // WM_PARENTNOTIFY that fires when JUCE's SharedMessageThread calls
-            // CreateWindowExW with our HWND as parent) are delivered instantly.
-            // If attached() were called directly inside WndProc, the GUI thread
-            // would be inside DispatchMessage and Win32 would NOT deliver those
-            // cross-thread sends — causing a deadlock.
-            m if m == WM_VST_ATTACH => {
-                let view_opt = TL_PENDING_VIEW.with(|c| c.borrow_mut().take());
-                match view_opt {
-                    None => {
-                        log::warn!("WM_VST_ATTACH: no pending view — aborting GUI");
-                        PostQuitMessage(1);
-                    }
-                    Some(view) => {
-                        let hwnd_key = hwnd as isize;
-
-                        // Show the window NOW — on the GUI thread, before the attach
-                        // helper calls attached().  Many plugins (Auto-Tune, BL-Denoiser,
-                        // anything built on JUCE 7+ Direct2D) call IsWindowVisible() on
-                        // the parent HWND inside attached() and skip creating their
-                        // rendering surface entirely if it returns FALSE.  We must be
-                        // in the message loop (to service cross-thread SendMessages) so
-                        // we cannot show it before run_message_loop(); this is the
-                        // earliest safe moment.
-                        ShowWindow(hwnd, SW_SHOW);
-                        let fg_ok = SetForegroundWindow(hwnd);
-                        log::debug!("SetForegroundWindow -> {} (0 = failed/refused)", fg_ok);
-
-                        // Shared AtomicU32: attach thread stores its Win32 TID so
-                        // WM_CLOSE can send it WM_QUIT to exit its message loop.
-                        let tid_arc   = Arc::new(AtomicU32::new(0));
-                        let tid_clone = Arc::clone(&tid_arc);
-                        TL_ATTACH_TID.with(|c| *c.borrow_mut() = Some(tid_arc));
-
-                        // Cleared to true once removed() returns — see TL_ATTACH_DONE.
-                        let done_arc   = Arc::new(AtomicBool::new(false));
-                        let done_clone = Arc::clone(&done_arc);
-                        TL_ATTACH_DONE.with(|c| *c.borrow_mut() = Some(done_arc));
-
-                        // Retrieve attachment_ready from thread-local so we can move it into the spawn closure
-                        let attachment_ready_opt = TL_ATTACHMENT_READY.with(|c| {
-                            c.borrow().as_ref().map(Arc::clone)
-                        });
-                        let send_view = SendView(view);
-                        let spawn_res = std::thread::Builder::new()
-                            .name("vst3-attach".into())
-                            .spawn(move || {
-                                // COM must be initialised here too: attached() is where
-                                // DirectWrite/Direct2D-based editors (e.g. Supertone
-                                // Clear) actually stand up their renderer, and this
-                                // thread — unlike the GUI message-loop thread — had no
-                                // COM apartment at all, which crashed those plugins
-                                // with STATUS_ACCESS_VIOLATION inside attached().
-                                // Same apartment kind as the GUI thread — see
-                                // ComScope::new_attach_thread's doc comment.
-                                let _com = ComScope::new_attach_thread();
-
-                                // Publish Win32 TID before doing any work so WM_CLOSE
-                                // can find us even if the user closes very quickly.
-                                tid_clone.store(
-                                    unsafe { GetCurrentThreadId() },
-                                    Ordering::Release,
-                                );
-
-                                // Notify DPI scale BEFORE attached() so the plugin
-                                // initialises its renderer at the correct resolution.
-                                if let Some(scale_iface) =
-                                    send_view.0.cast::<IPlugViewContentScaleSupport>()
-                                {
-                                    let dpi = unsafe { GetDpiForWindow(hwnd_key as _) };
-                                    let scale = if dpi == 0 { 1.0_f32 }
-                                                else { dpi as f32 / 96.0_f32 };
-                                    unsafe { scale_iface.setContentScaleFactor(scale); }
-                                    log::debug!("DPI scale -> {:.2} ({} dpi)", scale, dpi);
-                                }
-
-                                let res = send_view.0.attached(
-                                    hwnd_key as _,
-                                    kPlatformTypeHWND,
-                                );
-
-                                // Keep process() paused while GUI is open.
-                                // Resume is handled in CleanupGuard::drop when the window closes.
-                                if res != kResultOk {
-                                    if let Some(ref ar) = attachment_ready_opt {
-                                        // Attach failed; do not keep the processor blocked.
-                                        ar.store(true, Ordering::Release);
-                                    }
-                                } else {
-                                    log::debug!(
-                                        "VST3 GUI attached: audio processing remains paused until GUI closes"
-                                    );
-                                }
-
-                                // Signal GUI thread that attach() is done.
-                                unsafe { PostMessageW(hwnd_key as _, WM_VST_READY, res as usize, 0); }
-
-                                // ── Attach-thread message loop ──────────────────────
-                                // Non-JUCE plugins (iPlug2 / Antares, Blue Lab Audio …)
-                                // create their child HWNDs directly on the calling thread.
-                                // If we exit here those windows have no message pump and
-                                // never receive WM_PAINT → permanently blank GUI.
-                                // JUCE plugins route window creation to the JUCE
-                                // MessageManager thread so are unaffected either way.
-                                // WM_CLOSE on the host sends us WM_QUIT to stop this loop.
-                                let mut msg: MSG = unsafe { std::mem::zeroed() };
-                                loop {
-                                    let ret = unsafe {
-                                        GetMessageW(&mut msg, ptr::null_mut(), 0, 0)
-                                    };
-                                    if ret == 0 || ret == -1 { break; }
-                                    unsafe {
-                                        TranslateMessage(&msg);
-                                        DispatchMessageW(&msg);
-                                    }
-                                }
-
-                                // Teardown on the same thread as attached().
-                                // A plugin whose removed() hangs (fragile
-                                // editors that don't tear down cleanly) must
-                                // not wedge this signal — the waiting side
-                                // times out and abandons this thread rather
-                                // than blocking gui_open forever.
-                                unsafe {
-                                    send_view.0.setFrame(ptr::null_mut());
-                                    let _ = send_view.0.removed();
-                                }
-                                done_clone.store(true, Ordering::Release);
-                            });
-                        match spawn_res {
-                            Ok(handle) => {
-                                TL_ATTACH_THREAD.with(|c| *c.borrow_mut() = Some(handle));
-                            }
-                            Err(e) => {
-                                log::error!("Failed to spawn vst3-attach thread: {}", e);
-                                PostQuitMessage(1);
-                            }
-                        }
-                    }
-                }
-                0  // return immediately — GUI thread stays in GetMessage
-            }
-            // Helper thread finished IPlugView::attached(); call onSize() and
-            // repaint.  Window is already visible (shown in WM_VST_ATTACH).
-            m if m == WM_VST_READY => {
-                let attach_res = wparam as i32;
-                if attach_res != 0 {
-                    log::warn!("VST3 attached() returned {} (continuing)", attach_res);
-                } else {
-                    TL_ATTACHMENT_READY.with(|c| {
-                        if let Some(ref flag) = *c.borrow() {
-                            flag.store(true, Ordering::Release);
-                        }
-                    });
-                }
-                let (w, h) = TL_INITIAL_SIZE.with(|c| c.get());
-                if w > 0 && h > 0 {
-                    TL_ON_SIZE.with(|cell| {
-                        if let Some(ref f) = *cell.borrow() { f(w, h); }
-                    });
-                }
-                // Schedule an async repaint of the host frame and all child windows.
-                // RDW_ALLCHILDREN propagates into plugin-owned child windows.
-                RedrawWindow(
-                    hwnd,
-                    ptr::null(),
-                    ptr::null_mut(),
-                    RDW_INVALIDATE | RDW_ALLCHILDREN,
-                );
-                0
-            }
-            WM_SIZE if wparam != 1 => {
-                // wparam == 1 is SIZE_MINIMIZED — skip onSize for minimise
-                let client_w = (lparam & 0xFFFF) as i32;
-                let client_h = ((lparam >> 16) & 0xFFFF) as i32;
-                if client_w > 0 && client_h > 0 {
-                    TL_ON_SIZE.with(|cell| {
-                        if let Some(ref f) = *cell.borrow() {
-                            f(client_w, client_h);
-                        }
-                    });
-                }
-                0
-            }
-            WM_ERASEBKGND => 1, // prevent background flicker behind plugin UI
+            WM_ERASEBKGND => 1, // the plugin paints the whole client area
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
 
-    fn create_host_window(
-        title: &str,
-        width: i32,
-        height: i32,
-        style: u32,
-    ) -> Result<*mut c_void> {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-
-        let class_name: Vec<u16> = OsStr::new("ReLightHostVST3")
-            .encode_wide().chain(Some(0)).collect();
-        let window_title: Vec<u16> = OsStr::new(title)
-            .encode_wide().chain(Some(0)).collect();
+    fn create_host_window(title: &str, width: i32, height: i32, style: u32) -> Result<HWND> {
+        let class_name: Vec<u16> = "ReLightHostVST3".encode_utf16().chain(Some(0)).collect();
+        let window_title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
 
         unsafe {
             let hinstance = GetModuleHandleW(ptr::null());
-
-            // Load the app icon embedded in the exe by tauri_build (resource ID 32512).
+            // App icon embedded in the exe by tauri_build (resource ID 32512).
             let hicon = LoadIconW(hinstance, 32512 as _);
-
             let wc = WNDCLASSW {
                 style: CS_DBLCLKS,
                 lpfnWndProc: Some(host_wnd_proc),
@@ -892,22 +295,19 @@ pub mod win {
                 hInstance: hinstance,
                 hIcon: hicon,
                 hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
-                hbrBackground: ptr::null_mut(), // no background — plugin fills entire client area
+                hbrBackground: ptr::null_mut(),
                 lpszMenuName: ptr::null(),
                 lpszClassName: class_name.as_ptr(),
             };
-            // RegisterClassW fails silently if the class is already registered
-            RegisterClassW(&wc);
+            RegisterClassW(&wc); // fails harmlessly if already registered
 
-            // AdjustWindowRect ensures client area matches the plugin dimensions
             let mut rect = RECT { left: 0, top: 0, right: width, bottom: height };
             AdjustWindowRect(&mut rect, style, 0);
-
             let hwnd = CreateWindowExW(
                 0,
                 class_name.as_ptr(),
                 window_title.as_ptr(),
-                style | WS_CLIPCHILDREN, // prevent parent bg from painting over plugin child windows
+                style | WS_CLIPCHILDREN,
                 CW_USEDEFAULT, CW_USEDEFAULT,
                 rect.right - rect.left,
                 rect.bottom - rect.top,
@@ -916,32 +316,14 @@ pub mod win {
                 hinstance,
                 ptr::null(),
             );
-
             if hwnd.is_null() {
                 return Err(anyhow!("CreateWindowExW failed for '{}'", title));
             }
-
-            // Set both the big (title bar) and small (taskbar) icons.
             if !hicon.is_null() {
                 SendMessageW(hwnd, WM_SETICON, ICON_BIG as _, hicon as _);
                 SendMessageW(hwnd, WM_SETICON, ICON_SMALL as _, hicon as _);
             }
-
             Ok(hwnd)
-        }
-    }
-
-    /// Standard Win32 blocking message loop.
-    ///
-    /// GetMessageW returns 0 for WM_QUIT (posted by WndProc on WM_DESTROY)
-    /// and -1 on error.
-    fn run_message_loop() {
-        unsafe {
-            let mut msg: MSG = std::mem::zeroed();
-            while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
         }
     }
 }
@@ -949,23 +331,16 @@ pub mod win {
 #[cfg(not(target_os = "windows"))]
 pub mod win {
     use anyhow::{anyhow, Result};
+    use std::sync::atomic::{AtomicBool, AtomicIsize};
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
     use vst3::ComPtr;
-    use vst3::Steinberg::Vst::{IComponent, IEditController};
+    use vst3::Steinberg::Vst::IEditController;
 
-    #[allow(clippy::too_many_arguments)]
     pub fn open_gui_window(
         _controller: &ComPtr<IEditController>,
-        _component: &ComPtr<IComponent>,
         plugin_name: &str,
         _gui_flag: Arc<AtomicBool>,
-        _gui_hwnd: Arc<std::sync::atomic::AtomicIsize>,
-        _attachment_ready: Arc<AtomicBool>,
-        _com_access_lock: Arc<parking_lot::Mutex<()>>,
-        _icp_connected: Arc<AtomicBool>,
-        _sync_component_state: bool,
-        _restored_state_blob: Option<Vec<u8>>,
+        _gui_hwnd: Arc<AtomicIsize>,
     ) -> Result<()> {
         log::warn!("VST3 GUI launching only supported on Windows. Plugin: {}", plugin_name);
         Err(anyhow!("Plugin GUI launching not supported on this platform"))

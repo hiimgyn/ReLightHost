@@ -5,6 +5,11 @@ use tauri::Manager;
 /// streams) and blocks the caller until done — callable from the UI thread's
 /// window/tray handlers.
 pub(crate) fn shutdown_for_exit(app: &tauri::AppHandle) {
+    // Once per process: the explicit quit paths run it, then RunEvent::Exit.
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
     let state = app.state::<AppState>().inner().clone();
     crate::core::host_thread::run_blocking(move || shutdown_on_host(&state));
 }

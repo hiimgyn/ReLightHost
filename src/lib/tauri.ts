@@ -121,12 +121,13 @@ export async function setPluginParameter(instanceId: string, paramId: number, va
   return invoke('set_plugin_parameter', { instanceId, paramId, value });
 }
 
-export async function reorderPluginChain(fromIndex: number, toIndex: number): Promise<void> {
-  return invoke('reorder_plugin_chain', { fromIndex, toIndex });
+/** Moves the plugin `instanceId` to `toIndex` (resolved against the live chain). */
+export async function reorderPluginChain(instanceId: string, toIndex: number): Promise<void> {
+  return invoke('reorder_plugin_chain', { instanceId, toIndex });
 }
 
-export async function swapPluginChain(firstIndex: number, secondIndex: number): Promise<void> {
-  return invoke('swap_plugin_chain', { firstIndex, secondIndex });
+export async function swapPluginChain(firstId: string, secondId: string): Promise<void> {
+  return invoke('swap_plugin_chain', { firstId, secondId });
 }
 
 export async function renamePlugin(instanceId: string, newName: string): Promise<void> {

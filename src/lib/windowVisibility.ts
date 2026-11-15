@@ -79,7 +79,8 @@ export function initWindowVisibilitySync(): () => void {
       if (!isMounted) return;
       setWindowVisible(Boolean(event.payload));
     }).then((unlisten) => {
-      unlistenTauri = unlisten;
+      // Cleanup may already have run (StrictMode remount) — drop it right away.
+      if (isMounted) unlistenTauri = unlisten; else unlisten();
     });
 
     // 3. Listen to window resized (minimizing on Win32 sets width=0, height=0)
@@ -96,7 +97,7 @@ export function initWindowVisibilitySync(): () => void {
         }
       })
       .then((unlisten) => {
-        unlistenResize = unlisten;
+        if (isMounted) unlistenResize = unlisten; else unlisten();
       });
   } catch (err) {
     console.warn('Failed to bind Tauri window events:', err);

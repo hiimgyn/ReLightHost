@@ -99,11 +99,6 @@ pub fn run_scan_helper_if_requested() -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Before loading anything: capture which VST3 plugin(s), if any, were
-    // still active when the previous run ended uncleanly (see crash_marker
-    // docs) so the frontend can warn about them once it's up.
-    crate::core::crash_marker::take_unclean_exit_plugins();
-
     #[cfg(target_os = "windows")]
     unsafe {
         // Request 1ms system timer resolution for low-jitter audio & worker threads
@@ -232,6 +227,7 @@ pub fn run() {
             commands::system::quit_app,
             commands::session::restore_session,
             commands::session::get_startup_crash_warning,
+            commands::session::get_unreadable_file_backups,
             commands::session::list_presets,
             commands::session::save_preset,
             commands::session::load_preset,
@@ -239,7 +235,18 @@ pub fn run() {
             commands::system::check_for_update,
             commands::system::install_update,
         ])
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!())
+        .map(|app| {
+            // Every exit, including Windows shutdown/logoff (tao answers
+            // WM_ENDSESSION by ending the loop, then process::exit) — the
+            // tray/window/command quit paths have already run this, and
+            // shutdown_for_exit only runs once.
+            app.run(|app, event| {
+                if let tauri::RunEvent::Exit = event {
+                    commands::system::shutdown_for_exit(app);
+                }
+            })
+        });
 
     #[cfg(target_os = "windows")]
     unsafe {

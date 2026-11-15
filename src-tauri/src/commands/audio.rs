@@ -21,6 +21,31 @@ pub(crate) fn sync_chain_to_audio_rate(state: &AppState) {
     }
 }
 
+/// Starts, once, the backend timer that runs device-loss, reconnect and
+/// ASIO-reset handling about once a second on the plugin host thread —
+/// independent of the UI's status polling, which stops while the window is
+/// hidden. Started from `bootstrap::setup`; idempotent.
+pub(crate) fn ensure_housekeeping(state: &AppState) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let state = state.clone();
+        let spawned = std::thread::Builder::new().name("audio-housekeeping".into()).spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let state = state.clone();
+            // Blocking: never queues a second tick behind a busy host thread.
+            crate::core::host_thread::run_blocking(move || {
+                if state.audio_manager.housekeeping() {
+                    // The restart may have landed on a different ASIO rate.
+                    sync_chain_to_audio_rate(&state);
+                }
+            });
+        });
+        if let Err(e) = spawned {
+            log::error!("Failed to start the audio housekeeping thread: {e}");
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn start_audio(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let state = state.inner().clone();
@@ -28,6 +53,7 @@ pub async fn start_audio(state: tauri::State<'_, AppState>) -> Result<(), String
 }
 
 fn start_audio_on_host(state: &AppState) -> Result<(), String> {
+    ensure_housekeeping(state);
     state
         .audio_manager
         .start()
@@ -54,10 +80,8 @@ pub async fn get_audio_status(state: tauri::State<'_, AppState>) -> Result<Audio
 }
 
 fn get_audio_status_on_host(state: &AppState) -> Result<AudioStatus, String> {
+    ensure_housekeeping(state);
     let mut status = state.audio_manager.get_status();
-    // get_status may just have rebuilt the stream after an ASIO reset at a
-    // different rate.
-    sync_chain_to_audio_rate(state);
     let rate = state.audio_manager.processing_rate();
     status.plugin_latency_ms = state.plugin_manager.chain_latency_samples() as f32 / rate as f32 * 1000.0;
     Ok(status)
@@ -193,6 +217,7 @@ pub async fn toggle_monitoring(state: tauri::State<'_, AppState>, enabled: bool)
 }
 
 fn toggle_monitoring_on_host(state: &AppState, enabled: bool) -> Result<(), String> {
+    ensure_housekeeping(state);
     state
         .audio_manager
         .toggle_monitoring(enabled)

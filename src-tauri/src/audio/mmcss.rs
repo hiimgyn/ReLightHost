@@ -1,8 +1,8 @@
 #![cfg(target_os = "windows")]
 
-use windows::core::PCWSTR;
+use windows::core::w;
 use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{ERROR_THREAD_ALREADY_IN_TASK, HANDLE};
 
 /// Registers the calling thread with MMCSS under the "Pro Audio" task
 /// profile, which raises its scheduling priority and reduces the chance
@@ -13,15 +13,20 @@ use windows::Win32::Foundation::HANDLE;
 /// capture thread, WASAPI render thread), guarded by a `std::sync::Once`
 /// at each call site so it only runs on the first callback invocation.
 pub fn boost_current_thread_to_pro_audio() -> Option<HANDLE> {
-    let name: Vec<u16> = "Pro Audio\0".encode_utf16().collect();
     let mut task_index: u32 = 0;
-    let handle = unsafe {
-        AvSetMmThreadCharacteristicsW(PCWSTR(name.as_ptr()), &mut task_index)
-    };
-    match handle {
-        Ok(h) if !h.is_invalid() => Some(h),
-        _ => {
-            log::warn!("{} AvSetMmThreadCharacteristicsW(\"Pro Audio\") failed", crate::core::threading::thread_prefix("audio/mmcss"));
+    // `w!` is a static, NUL-terminated UTF-16 literal — no heap allocation
+    // on the real-time thread this is first called from.
+    match unsafe { AvSetMmThreadCharacteristicsW(w!("Pro Audio"), &mut task_index) } {
+        Ok(h) => Some(h),
+        // Some ASIO drivers (e.g. Voicemeeter's) call `bufferSwitch` from a
+        // thread they already registered with MMCSS themselves — the thread
+        // is boosted already, so this is not a failure.
+        Err(e) if e.code() == ERROR_THREAD_ALREADY_IN_TASK.to_hresult() => {
+            log::debug!("{} thread already in an MMCSS task; keeping it", crate::core::threading::thread_prefix("audio/mmcss"));
+            None
+        }
+        Err(e) => {
+            log::warn!("{} AvSetMmThreadCharacteristicsW(\"Pro Audio\") failed: {e} ({:?})", crate::core::threading::thread_prefix("audio/mmcss"), e.code());
             None
         }
     }
@@ -57,5 +62,20 @@ mod tests {
         .join()
         .expect("spawned thread should not panic");
         assert!(success);
+    }
+
+    #[test]
+    fn a_thread_already_in_a_task_is_not_reported_as_failure() {
+        // Second registration on one thread fails with
+        // ERROR_THREAD_ALREADY_IN_TASK — what an ASIO driver thread that
+        // the driver itself registered looks like.
+        std::thread::spawn(|| {
+            assert!(boost_current_thread_to_pro_audio().is_some());
+            let mut idx = 0u32;
+            let err = unsafe { AvSetMmThreadCharacteristicsW(w!("Pro Audio"), &mut idx) }.unwrap_err();
+            assert_eq!(err.code(), ERROR_THREAD_ALREADY_IN_TASK.to_hresult());
+        })
+        .join()
+        .unwrap();
     }
 }

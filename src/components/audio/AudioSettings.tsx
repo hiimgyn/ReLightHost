@@ -182,8 +182,11 @@ export default function AudioSettings({ isOpen, onClose }: AudioSettingsProps) {
       await setSampleRate(parseInt(values.sampleRate));
       await setBufferSize(parseInt(values.bufferSize));
 
-      // Always restart the stream after config change.
-      await toggleMonitoring(true);
+      // Restart the stream after a config change — unless "None (No Input)"
+      // was chosen: the backend then refuses to start, which isn't a failure.
+      if (asioMode || values.inputDevice) {
+        await toggleMonitoring(true);
+      }
       await fetchStatus();
       message.success(t('audioSettings.appliedSuccess'));
       onClose();

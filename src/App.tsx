@@ -34,6 +34,11 @@ function InstallUpdateButton() {
   );
 }
 
+// Once per page load: StrictMode's dev double-mount must not issue a second
+// restore_session (the backend guards per process, but the second call would
+// still re-run the whole frontend restore flow — toasts, monitoring start).
+let restoreSessionStarted = false;
+
 function App() {
   const [showFirstTimeAudio, setShowFirstTimeAudio] = useState(false);
   const [isBooting, setIsBooting] = useState(true);
@@ -114,6 +119,19 @@ function App() {
         void usePluginStore.getState().fetchChain();
         setTimeout(() => setShowFirstTimeAudio(true), 600);
       } finally {
+        // Settings/autosave files that failed to parse were moved aside by
+        // the backend (some only during restore_session, hence here).
+        invoke<string[]>('get_unreadable_file_backups')
+          .then((files) => {
+            if (files.length === 0) return;
+            notificationApi.warning({
+              key: 'unreadable-files-warning',
+              title: t('app.unreadableFilesTitle'),
+              description: t('app.unreadableFilesDesc', { files: files.join(', ') }),
+              duration: 0,
+            });
+          })
+          .catch((e) => console.warn('Unreadable-file check failed:', e));
         if (!asioRetryRef.current) {
           const retryDelays = [1200, 3200, 5200];
           asioRetryRef.current = true;
@@ -140,7 +158,10 @@ function App() {
       }
     };
 
-    restoreSession();
+    if (!restoreSessionStarted) {
+      restoreSessionStarted = true;
+      restoreSession();
+    }
     return () => { asioRetryIds.forEach(clearTimeout); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -178,8 +199,8 @@ function App() {
   // ── Warn if a VST3 plugin was active during an unclean exit ──────────────
   // A native crash never runs any of our own code, so this is the app's
   // only way to attribute "it disappeared last time" to a specific plugin —
-  // see crash_marker.rs on the Rust side. Purely informational: nothing is
-  // skipped or blocked automatically.
+  // see crash_marker.rs on the Rust side. restore_session brings such a
+  // plugin back bypassed (safe mode); this tells the user why.
   useEffect(() => {
     const checkCrashWarning = async () => {
       try {

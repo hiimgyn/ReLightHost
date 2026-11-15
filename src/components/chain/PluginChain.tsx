@@ -158,6 +158,7 @@ export default function PluginChain() {
   const [isDeleteAllBusy, setIsDeleteAllBusy] = useState(false);
   const addLocked = isChainInitializing || isDeleteAllBusy;
 
+  const rowRef = useRef<HTMLDivElement>(null);
   const {
     draggedIndex,
     swapTargetIndex,
@@ -165,15 +166,36 @@ export default function PluginChain() {
     dragLabel,
     draggingRef,
     startPointerDrag,
+    moveByKey,
     showInsertAt,
   } = usePluginDragDrop({
     pluginChain,
+    rowRef,
     isChainInitializing,
     isDeleteAllBusy,
     reorderChain,
     swapChain,
+    fetchChain,
     messageApi,
   });
+
+  // Insertion indicator, absolutely positioned so it never shifts the layout —
+  // the end slots have no arrow to recolor, so this is what makes them visible.
+  const insertBar = (pos: number) => showInsertAt(pos) && (
+    <span
+      style={{
+        position: 'absolute',
+        left: '50%',
+        top: '50%',
+        width: 3,
+        height: 120,
+        transform: 'translate(-50%, -50%)',
+        borderRadius: 2,
+        background: token.colorPrimary,
+        pointerEvents: 'none',
+      }}
+    />
+  );
 
   const getDeviceName = (deviceId: string | null) => {
     if (!deviceId) return 'None';
@@ -194,7 +216,6 @@ export default function PluginChain() {
   // browser-native event bus already does the job.
   const openAudioSettings = () => window.dispatchEvent(new CustomEvent('rh:open-audio-settings'));
 
-  const rowRef = useRef<HTMLDivElement>(null);
   const wrapBreaks = useRowBreaks(rowRef, [pluginChain.map((p) => p.instance_id).join(','), isChainInitializing]);
 
   useEffect(() => {
@@ -251,8 +272,10 @@ export default function PluginChain() {
   const handleLaunchPlugin = useCallback(async (instanceId: string) => {
     try {
       await tauri.launchPlugin(instanceId);
-    } catch {
-      messageApi.error(t('chain.launchFailed'));
+    } catch (error) {
+      messageApi.error(t('chain.launchFailed', { error: String(error) }), 6);
+      // Rethrow so the card's launch spinner stops now instead of after its 8 s fallback.
+      throw error;
     }
   }, [messageApi, t]);
 
@@ -370,6 +393,7 @@ export default function PluginChain() {
                       data-plugin-arrow
                       data-plugin-arrow-pos={index}
                       style={{
+                        position: 'relative',
                         display: 'flex',
                         alignItems: 'center',
                         margin: '0 6px',
@@ -391,6 +415,7 @@ export default function PluginChain() {
                           />
                         </span>
                       )}
+                      {insertBar(index)}
                     </div>
 
                     {/* Card wrapper — drop target */}
@@ -422,6 +447,7 @@ export default function PluginChain() {
                         onToggleBypass={handleToggleBypassPlugin}
                         onCrashStatusChanged={fetchCrashStatuses}
                         onDragHandlePointerDown={(e) => startPointerDrag(e, index)}
+                        onDragHandleKeyDown={(e) => moveByKey(e, index)}
                         isDragging={draggedIndex === index}
                         onLaunch={handleLaunchPlugin}
                       />
@@ -437,6 +463,7 @@ export default function PluginChain() {
                 data-plugin-arrow
                 data-plugin-arrow-pos={pluginChain.length}
                 style={{
+                  position: 'relative',
                   display: 'flex',
                   alignItems: 'center',
                   margin: '0 6px',
@@ -449,7 +476,9 @@ export default function PluginChain() {
                   boxShadow: 'none',
                   transition: 'transform 140ms cubic-bezier(0.4, 0, 0.2, 1), background 140ms ease',
                 }}
-              />
+              >
+                {insertBar(pluginChain.length)}
+              </div>
             </div>
 
             {dragPointer && (

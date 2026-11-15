@@ -1,6 +1,7 @@
 #![cfg(target_os = "windows")]
 
 use std::ffi::c_void;
+use std::ops::Range;
 use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Once};
 use asio_sys::{Asio, AsioSampleType, BufferPreference, CallbackInfo, Driver};
@@ -358,16 +359,15 @@ pub struct AsioDuplexStream {
     event_callback_id: asio_sys::DriverEventCallbackId,
 }
 
-/// Starts a full-duplex ASIO stream on a single driver: reads the stereo
-/// input pair at `in_offset`/`in_offset + 1`, runs it through the shared
-/// mixer stage, and writes the result to the stereo output pair at
-/// `out_offset`/`out_offset + 1`. Both directions are served from one
-/// synchronous `bufferSwitch` callback, since ASIO delivers input and
-/// output together for a single driver instance.
+/// Starts a full-duplex ASIO stream on a single driver: reads the input
+/// channels `in_chans`, runs them through the shared mixer stage, and writes
+/// the result to the output channels `out_chans`. Both directions are served
+/// from one synchronous `bufferSwitch` callback, since ASIO delivers input
+/// and output together for a single driver instance.
 ///
-/// `in_offset`/`out_offset`: 0-based index of the first of the selected
-/// stereo pair, clamped by the caller the same way `manager.rs` does
-/// today.
+/// `in_chans`/`out_chans`: the selected 0-based channels — a stereo pair
+/// (`offset..offset + 2`), or one channel on a mono device, used as both
+/// left and right. Clamped to the device by the caller (`manager.rs`).
 ///
 /// Cross-driver bridging (two different ASIO drivers as input/output) is
 /// NOT handled here, and is not supported at all: the ASIO SDK only allows
@@ -388,8 +388,8 @@ pub struct AsioDuplexStream {
 /// — never re-queried from the driver per callback invocation.
 pub fn start_duplex(
     driver_name: &str,
-    in_offset: usize,
-    out_offset: usize,
+    in_chans: Range<usize>,
+    out_chans: Range<usize>,
     buffer_size_hint: Option<i32>,
     sample_rate: f64,
     mixer: MixerState,
@@ -437,9 +437,10 @@ pub fn start_duplex(
     // To land on the selected `in_offset`/`out_offset` pair we request
     // enough channels to cover the offset, then index into the returned
     // `buffer_infos` at the offset position (`buffer_infos[i]` always
-    // corresponds to hardware channel `i`, in order).
-    let in_channels = in_offset + 2;
-    let out_channels = out_offset + 2;
+    // corresponds to hardware channel `i`, in order). A one-channel range
+    // (mono device) serves as both left and right.
+    let in_channels = in_chans.end;
+    let out_channels = out_chans.end;
 
     // Two-step construction: prepare the input stream first, then hand its
     // `AsioStream` (not a fresh `None`) into `prepare_output_stream` so
@@ -486,10 +487,8 @@ pub fn start_duplex(
     // Both streams were allocated together by the same `ASIOCreateBuffers`
     // call above, so they share one buffer size.
     let buffer_size = output_stream.buffer_size.max(0) as usize;
-    let in_l = in_offset;
-    let in_r = in_offset + 1;
-    let out_l = out_offset;
-    let out_r = out_offset + 1;
+    let (in_l, in_r) = (in_chans.start, in_chans.end - 1);
+    let (out_l, out_r) = (out_chans.start, out_chans.end - 1);
 
     // Zero every output channel — including the selected pair, not only
     // the unused ones — before starting. ASIO buffers are not guaranteed
@@ -629,7 +628,7 @@ pub fn start_duplex(
 /// this via `None` for the other side).
 pub fn start_input_only(
     driver_name: &str,
-    offset: usize,
+    chans: Range<usize>,
     buffer_size_hint: Option<i32>,
     sample_rate: f64,
     mut producer: HeapProd<StereoFrame>,
@@ -655,8 +654,8 @@ pub fn start_input_only(
     let buffer_size_hint = validate_buffer_size_hint(&driver, buffer_size_hint, driver_name);
 
     // See `start_duplex`'s identical comment on why enough channels to
-    // cover `offset` are requested rather than just 2.
-    let channels = offset + 2;
+    // cover the offset are requested rather than just 2.
+    let channels = chans.end;
     let input_stream = driver
         .prepare_input_stream(None, channels, buffer_size_hint)
         .map_err(|e| anyhow::anyhow!("Failed to prepare ASIO input buffers: {e}"))?
@@ -677,8 +676,7 @@ pub fn start_input_only(
     };
 
     let buffer_size = input_stream.buffer_size.max(0) as usize;
-    let in_l = offset;
-    let in_r = offset + 1;
+    let (in_l, in_r) = (chans.start, chans.end - 1);
     let mmcss_once = Once::new();
 
     let callback_id = driver.add_callback(move |info: &CallbackInfo| {
@@ -725,7 +723,7 @@ pub fn start_input_only(
 /// notes, which apply identically here.
 pub fn start_output_only(
     driver_name: &str,
-    offset: usize,
+    chans: Range<usize>,
     buffer_size_hint: Option<i32>,
     sample_rate: f64,
     mut consumer: HeapCons<StereoFrame>,
@@ -752,7 +750,7 @@ pub fn start_output_only(
     ensure_rate(&driver, sample_rate, driver_name);
     let buffer_size_hint = validate_buffer_size_hint(&driver, buffer_size_hint, driver_name);
 
-    let channels = offset + 2;
+    let channels = chans.end;
     let output_stream = driver
         .prepare_output_stream(None, channels, buffer_size_hint)
         .map_err(|e| anyhow::anyhow!("Failed to prepare ASIO output buffers: {e}"))?
@@ -773,8 +771,7 @@ pub fn start_output_only(
     };
 
     let buffer_size = output_stream.buffer_size.max(0) as usize;
-    let out_l = offset;
-    let out_r = offset + 1;
+    let (out_l, out_r) = (chans.start, chans.end - 1);
 
     // Zero every output channel before starting — see `start_duplex`'s
     // identical comment for why.

@@ -7,6 +7,10 @@
 //! plugins and ASIO drivers relied on the main thread for: one stable
 //! thread identity, COM initialised as a single-threaded apartment, and a
 //! Win32 message pump (JUCE timers, driver window messages) between jobs.
+//!
+//! It is also every plugin's UI/main thread: VST3 and CLAP editor windows
+//! live here and are driven by this pump (see plugins::gui), because JUCE
+//! binds its MessageManager to the thread that created the plugin.
 
 use std::cell::Cell;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
@@ -137,6 +141,11 @@ pub fn wait_a_moment() {
     } else {
         std::thread::sleep(PUMP_INTERVAL);
     }
+}
+
+/// Whether the caller is the plugin host thread.
+pub fn is_host_thread() -> bool {
+    IS_HOST.with(|h| h.get())
 }
 
 /// Runs `f` on the host thread without waiting for it.

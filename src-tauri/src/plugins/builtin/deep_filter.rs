@@ -14,6 +14,17 @@ pub const ID: &str = "builtin::deep_filter";
 const HOP_SIZE: usize = 480; // 10ms frame at 48kHz
 const RB_CAPACITY: usize = 48000; // 1 second buffer
 
+/// Pipeline depth (dry entries) beyond the current block above which whole
+/// incoming hops are dropped: normal is ~2 hops + block + inference time,
+/// so this allows ~3 hops of backlog before latency is clawed back.
+const MAX_PIPELINE: usize = HOP_SIZE * 5;
+
+fn primed_dry() -> VecDeque<f32> {
+    let mut q = VecDeque::with_capacity(RB_CAPACITY + HOP_SIZE);
+    q.resize(HOP_SIZE, 0.0);
+    q
+}
+
 pub struct DeepFilterProcessor {
     prod_to_worker: HeapProd<[f32; 2]>,
     /// Worker output, one frame per sample: `[clean_l, clean_r, dry_l, dry_r]`
@@ -24,11 +35,19 @@ pub struct DeepFilterProcessor {
     /// into permanent extra latency.
     trimmer: crate::audio::mixer::BacklogTrimmer,
 
-    /// Immediate (near-zero-latency) copy of the incoming signal, used only
-    /// as the dry-only fallback while the worker hasn't produced anything
-    /// aligned yet (startup warmup or a transient underrun).
+    /// Dry copy of everything in the pipeline: one entry per worker output
+    /// sample still to come (primed with the hop of zeros the worker's first
+    /// output is aligned to), popped in step with `cons_from_worker`. Its
+    /// length is the current latency, and it supplies the aligned dry
+    /// continuation played when the worker underruns.
     dry_l: VecDeque<f32>,
     dry_r: VecDeque<f32>,
+    /// Underrun samples played from `dry_*` since the last worker sample.
+    dry_ahead: usize,
+    /// Incoming samples still to drop (whole hops) to shed backlog.
+    drop_in: usize,
+    /// The worker has produced its first sample (before that: latency silence).
+    started: bool,
 
     // Parameters (shared with worker thread)
     atten_lim_bits: Arc<AtomicU32>,
@@ -91,6 +110,9 @@ impl DeepFilterProcessor {
                     Ok(m) => m,
                     Err(e) => {
                         log::error!("Failed to initialize DeepFilterNet model in worker: {e}");
+                        // Tells process_stereo to pass audio through instead
+                        // of mixing against a wet signal that will never come.
+                        worker_running.store(false, Ordering::Relaxed);
                         return;
                     }
                 };
@@ -102,14 +124,24 @@ impl DeepFilterProcessor {
                 // straight into a persistent buffer removes that entirely.
                 let mut noisy = Array2::zeros((2, HOP_SIZE));
                 let mut enh = Array2::zeros((2, HOP_SIZE));
+                // The STFT overlap-add makes `enh` reconstruct the *previous*
+                // hop, so the dry signal for the mix is the previous `noisy`.
+                let mut prev_noisy: Array2<f32> = Array2::zeros((2, HOP_SIZE));
 
+                // `atten_lim` is a *linear* factor inside DfTract — go through the
+                // setters (they convert dB), and only on change (they log).
+                let (mut last_atten, mut last_post) = (f32::NAN, f32::NAN);
                 while worker_running.load(Ordering::Relaxed) {
-                    // Update runtime parameters if modified
                     let current_atten = f32::from_bits(worker_atten_lim.load(Ordering::Relaxed));
                     let current_post = f32::from_bits(worker_post_filter.load(Ordering::Relaxed));
-                    model.atten_lim = Some(current_atten);
-                    model.post_filter_beta = current_post;
-                    model.post_filter = current_post > 0.0;
+                    if current_atten != last_atten {
+                        model.set_atten_lim(current_atten);
+                        last_atten = current_atten;
+                    }
+                    if current_post != last_post {
+                        model.set_pf_beta(current_post);
+                        last_post = current_post;
+                    }
 
                     // When a complete HOP_SIZE (480 samples = 10ms) is ready in both channels, process it
                     if cons_to_worker.occupied_len() >= HOP_SIZE {
@@ -126,8 +158,9 @@ impl DeepFilterProcessor {
                                 worker_last_vad.store(vad.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 
                                 for i in 0..HOP_SIZE {
-                                    let _ = prod_from_worker.try_push([enh[[0, i]], enh[[1, i]], noisy[[0, i]], noisy[[1, i]]]);
+                                    let _ = prod_from_worker.try_push([enh[[0, i]], enh[[1, i]], prev_noisy[[0, i]], prev_noisy[[1, i]]]);
                                 }
+                                prev_noisy.assign(&noisy);
                             }
                             Err(e) => {
                                 log::warn!("DeepFilterNet inference error: {e}");
@@ -157,8 +190,11 @@ impl DeepFilterProcessor {
             cons_from_worker,
             // Headroom: half a hop — inference time varies from hop to hop.
             trimmer: crate::audio::mixer::BacklogTrimmer::new(48_000, HOP_SIZE / 2),
-            dry_l: VecDeque::with_capacity(RB_CAPACITY),
-            dry_r: VecDeque::with_capacity(RB_CAPACITY),
+            dry_l: primed_dry(),
+            dry_r: primed_dry(),
+            dry_ahead: 0,
+            drop_in: 0,
+            started: false,
 
             atten_lim_bits,
             post_filter_bits,
@@ -184,54 +220,73 @@ impl Drop for DeepFilterProcessor {
 impl BuiltinProcessor for DeepFilterProcessor {
     fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len());
-        if n == 0 {
-            return;
+        if n == 0 || !self.running.load(Ordering::Relaxed) {
+            return; // empty block, or the model failed to load: pass through
         }
 
         let mix = self.mix;
         let gain = self.output_gain;
 
-        // Push raw incoming audio into worker ring buffer & keep dry copies
+        // Inference slower than real time piles input up in the pipeline
+        // (each underrun sample adds one sample of latency). Past
+        // MAX_PIPELINE, drop whole incoming hops so latency comes back down
+        // instead of ratcheting toward the 1 s ring size.
         for i in 0..n {
-            let _ = self.prod_to_worker.try_push([left[i], right[i]]);
-            self.dry_l.push_back(left[i]);
-            self.dry_r.push_back(right[i]);
+            if self.drop_in == 0 && self.dry_l.len() > n + MAX_PIPELINE {
+                self.drop_in = HOP_SIZE;
+            }
+            if self.drop_in > 0 {
+                self.drop_in -= 1;
+                continue;
+            }
+            // `dry_*` never outgrows its preallocation (no RT allocation),
+            // and only samples the worker accepted are mirrored.
+            if self.dry_l.len() < self.dry_l.capacity() && self.prod_to_worker.try_push([left[i], right[i]]).is_ok() {
+                self.dry_l.push_back(left[i]);
+                self.dry_r.push_back(right[i]);
+            }
         }
 
-        // Pop available enhanced frames from worker.
+        // Every worker sample carries the exact dry sample the model was fed
+        // for it, so wet/dry mixing stays in phase at any `mix` (mixing
+        // against dry from a different point in time comb-filters).
         //
-        // The worker has real, unavoidable pipeline latency (hop batching +
-        // the model's own lookahead), so its output is legitimately empty
-        // for the first several blocks after start, and can briefly starve
-        // again any time the inference thread falls behind real-time.
-        //
-        // The clean sample and its *aligned* dry counterpart (the exact
-        // input sample the worker fed the model to produce it) are always
-        // popped together — `cons_dry_aligned_*` is filled by the worker in
-        // the same loop iteration as `cons_from_worker_*` (see the worker
-        // above), so the two can never drift apart. Mixing against this
-        // aligned pair (instead of "whatever dry sample is at the front of
-        // the queue right now") is what keeps wet/dry blending in phase at
-        // any `mix` other than 0 or 1 — mixing a wet sample against a dry
-        // sample from a different point in time is audible as comb-filtering.
-        //
-        // When nothing aligned is ready yet (warmup/underrun), fall back to
-        // the immediate (near-zero-latency) `dry_l`/`dry_r` queue. Missing
-        // "clean" audio is silence, not dry, so it's treated as 0 in the mix
-        // — a starved block plays back at most the dry proportion the user
-        // dialed in (0 at the default mix=1.0, i.e. true silence instead of
-        // a raw noise leak).
-        self.trimmer.before_pop(&mut self.cons_from_worker, n);
+        // Underrun (the worker is late): play the dry continuation at the
+        // current latency, not silence. The late hop still plays when it
+        // arrives (latency grows by the gap), bounded by MAX_PIPELINE above.
+        let trimmed = self.trimmer.before_pop(&mut self.cons_from_worker, n).min(self.dry_l.len());
+        self.dry_l.drain(..trimmed);
+        self.dry_r.drain(..trimmed);
+        self.dry_ahead = self.dry_ahead.saturating_sub(trimmed);
         for i in 0..n {
-            let immediate_dry_l = self.dry_l.pop_front().unwrap_or(left[i]);
-            let immediate_dry_r = self.dry_r.pop_front().unwrap_or(right[i]);
-
-            let (dry_s_l, clean_l, dry_s_r, clean_r) = match self.cons_from_worker.try_pop() {
-                Some([wl, wr, dl, dr]) => (dl, wl, dr, wr),
-                None => (immediate_dry_l, 0.0, immediate_dry_r, 0.0),
-            };
-            left[i] = (dry_s_l * (1.0 - mix) + clean_l * mix) * gain;
-            right[i] = (dry_s_r * (1.0 - mix) + clean_r * mix) * gain;
+            match self.cons_from_worker.try_pop() {
+                Some([wl, wr, dl, dr]) => {
+                    self.started = true;
+                    self.dry_ahead = 0;
+                    self.dry_l.pop_front();
+                    self.dry_r.pop_front();
+                    left[i] = (dl * (1.0 - mix) + wl * mix) * gain;
+                    right[i] = (dr * (1.0 - mix) + wr * mix) * gain;
+                }
+                None if self.started => {
+                    // Past the end of the pipeline (worker stalled longer
+                    // than it holds): the live input, still not silence.
+                    let (dl, dr) = match (self.dry_l.get(self.dry_ahead), self.dry_r.get(self.dry_ahead)) {
+                        (Some(&l), Some(&r)) => {
+                            self.dry_ahead += 1;
+                            (l, r)
+                        }
+                        _ => (left[i], right[i]),
+                    };
+                    left[i] = dl * gain;
+                    right[i] = dr * gain;
+                }
+                None => {
+                    // Warmup (model still loading / first hop in flight).
+                    left[i] = 0.0;
+                    right[i] = 0.0;
+                }
+            }
         }
     }
 
@@ -304,6 +359,57 @@ mod tests {
 
         let vad = df.get_vad();
         assert!((0.0..=1.0).contains(&vad), "VAD must be in [0.0, 1.0]");
+    }
+
+    /// The RT side wired to rings the test drives by hand, in place of the
+    /// model thread, so the worker's speed is deterministic.
+    fn rt_only() -> (DeepFilterProcessor, HeapCons<[f32; 2]>, HeapProd<[f32; 4]>) {
+        let (prod_to_worker, to_worker) = HeapRb::<[f32; 2]>::new(RB_CAPACITY).split();
+        let (from_worker, cons_from_worker) = HeapRb::<[f32; 4]>::new(RB_CAPACITY).split();
+        let bits = |v: f32| Arc::new(AtomicU32::new(v.to_bits()));
+        let df = DeepFilterProcessor {
+            prod_to_worker,
+            cons_from_worker,
+            trimmer: crate::audio::mixer::BacklogTrimmer::new(48_000, HOP_SIZE / 2),
+            dry_l: primed_dry(),
+            dry_r: primed_dry(),
+            dry_ahead: 0,
+            drop_in: 0,
+            started: false,
+            atten_lim_bits: bits(24.0),
+            post_filter_bits: bits(0.2),
+            mix: 1.0,
+            output_gain: 1.0,
+            last_vad_bits: bits(0.0),
+            running: Arc::new(AtomicBool::new(true)),
+            worker: None,
+        };
+        (df, to_worker, from_worker)
+    }
+
+    /// Inference at ~60% of real time: underruns must play dry (never
+    /// silence at mix=1) and the pipeline must stay bounded, not ratchet.
+    #[test]
+    fn a_worker_slower_than_real_time_neither_gaps_nor_piles_up_latency() {
+        let (mut df, mut to_worker, mut from_worker) = rt_only();
+        let block = 256;
+        for k in 0..2000 {
+            let input: Vec<f32> = (0..block).map(|i| 0.5 + 0.1 * (((k * block + i) as f32) * 0.01).sin()).collect();
+            let (mut l, mut r) = (input.clone(), input);
+            df.process_stereo(&mut l, &mut r);
+            if df.started {
+                assert!(l.iter().all(|&s| s > 0.3), "block {k}: gap in the output");
+            }
+            assert!(df.dry_l.len() <= 2 * block + MAX_PIPELINE, "block {k}: latency piled up to {}", df.dry_l.len());
+            // Fake worker: one identity hop every third block (480 per 768 samples).
+            if k % 3 == 0 && to_worker.occupied_len() >= HOP_SIZE {
+                for _ in 0..HOP_SIZE {
+                    let [a, b] = to_worker.try_pop().unwrap();
+                    from_worker.try_push([a, b, a, b]).unwrap();
+                }
+            }
+        }
+        assert!(df.started);
     }
 }
 

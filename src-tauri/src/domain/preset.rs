@@ -122,14 +122,47 @@ impl Preset {
     }
 }
 
-/// Write to a temp file then rename over the target — rename is atomic on
-/// the same volume, so a crash/power-loss mid-write can never leave a
-/// truncated/corrupt file behind.
+/// Write to a temp file, flush it to disk, then rename over the target —
+/// rename is atomic on the same volume, so a crash mid-write can never leave
+/// a truncated/corrupt file behind. Without the `sync_all` a power cut can
+/// keep the rename but lose the data (an empty file).
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
     let tmp_path = path.with_extension("json.tmp");
-    fs::write(&tmp_path, bytes)?;
+    let mut tmp = fs::File::create(&tmp_path)?;
+    tmp.write_all(bytes)?;
+    tmp.sync_all()?;
+    drop(tmp);
     fs::rename(&tmp_path, path)?;
     Ok(())
+}
+
+/// Files that existed but didn't parse, moved aside this run — for the
+/// frontend's startup warning.
+static UNREADABLE_BACKUPS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+pub fn unreadable_backups() -> Vec<String> {
+    UNREADABLE_BACKUPS.lock().clone()
+}
+
+/// Parses `bytes` read from `path`. On a parse error the file is renamed to
+/// `<name>.bad-<timestamp>.json` before the caller falls back to defaults,
+/// so the next save can't overwrite the only copy.
+pub(crate) fn parse_or_back_up<T: serde::de::DeserializeOwned>(path: &Path, bytes: &[u8]) -> Option<T> {
+    let err = match serde_json::from_slice(bytes) {
+        Ok(v) => return Some(v),
+        Err(e) => e,
+    };
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let backup = path.with_file_name(format!("{stem}.bad-{}.json", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+    match fs::rename(path, &backup) {
+        Ok(()) => {
+            log::warn!("{} is unreadable ({err}); moved it to {} and using defaults", path.display(), backup.display());
+            UNREADABLE_BACKUPS.lock().push(backup.display().to_string());
+        }
+        Err(e) => log::error!("{} is unreadable ({err}) and could not be moved aside: {e}", path.display()),
+    }
+    None
 }
 
 pub struct PresetManager {
@@ -183,7 +216,9 @@ impl PresetManager {
                 let path = e.path();
                 (path.extension()? == "json").then_some(())?;
                 let stem = path.file_stem()?.to_str()?.to_string();
-                (!stem.eq_ignore_ascii_case(AUTO_SAVE_PRESET_NAME)).then(|| stem.replace('_', " "))
+                let autosave = stem.eq_ignore_ascii_case(AUTO_SAVE_PRESET_NAME)
+                    || stem.starts_with(&format!("{AUTO_SAVE_PRESET_NAME}.bad-"));
+                (!autosave).then(|| stem.replace('_', " "))
             })
             .collect();
         names.sort();
@@ -236,7 +271,9 @@ impl Default for PresetManager {
 impl PresetManager {
     /// Restore the last auto-saved session
     pub fn restore_auto_save(&self) -> Result<Preset> {
-        self.load_preset(AUTO_SAVE_PRESET_NAME)
+        let path = self.path_for(AUTO_SAVE_PRESET_NAME);
+        let bytes = fs::read(&path)?;
+        parse_or_back_up(&path, &bytes).ok_or_else(|| anyhow::anyhow!("autosave.json is unreadable"))
     }
 }
 
@@ -281,6 +318,23 @@ mod tests {
         assert_eq!(pm.list_user_presets(), vec!["Game".to_string(), "Vocal Chain".to_string()]);
         pm.delete_preset("Vocal Chain").unwrap();
         assert_eq!(pm.list_user_presets(), vec!["Game".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_autosave_is_moved_aside_not_lost() {
+        let dir = std::env::temp_dir().join(format!("rh-preset-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pm = PresetManager::with_dir(dir.clone());
+        std::fs::write(dir.join("autosave.json"), b"{\"plugin_chain\": [tr").unwrap();
+        assert!(pm.restore_auto_save().is_err());
+        assert!(!dir.join("autosave.json").exists());
+        let backups: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("autosave.bad-")).collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(backups[0].path()).unwrap(), b"{\"plugin_chain\": [tr");
+        assert!(pm.list_user_presets().is_empty(), "backup listed as a preset");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

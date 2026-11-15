@@ -9,6 +9,8 @@ export interface TranslationSchema {
     updateFailed: string;
     uncleanExitTitle: string;
     uncleanExitDesc: string;
+    unreadableFilesTitle: string;
+    unreadableFilesDesc: string;
   };
   common: {
     builtin: string;
@@ -87,6 +89,8 @@ export interface TranslationSchema {
     loadPresetConfirm: string;
     loadPresetConfirmDesc: string;
     deletePresetConfirm: string;
+    overwritePresetConfirm: string;
+    overwritePresetConfirmDesc: string;
     noPresets: string;
     pluginsSwapped: string;
     orderUpdated: string;
@@ -132,6 +136,7 @@ export interface TranslationSchema {
   library: {
     title: string;
     availableCount: string;
+    addFailed: string;
     scanSettingsTooltip: string;
     searchPlaceholder: string;
     tabAll: string;

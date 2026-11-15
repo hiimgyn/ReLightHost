@@ -2,7 +2,7 @@
 
 use windows::Win32::Media::Audio::{
     eCapture, eConsole, eRender, DEVICE_STATE_ACTIVE, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
     AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, IAudioClient, IAudioRenderClient,
     WAVEFORMATEX,
@@ -491,6 +491,14 @@ pub fn start_capture(
             // below).
             let wait = unsafe { WaitForSingleObject(event, 1000) };
             if wait != WAIT_OBJECT_0 {
+                // No period event for 1 s: an unplugged endpoint stops
+                // signalling instead of erroring, so probe it — otherwise
+                // the loss is never seen and auto-reconnect never runs.
+                if let Err(e) = unsafe { client.GetCurrentPadding() } {
+                    log::warn!("WASAPI capture device stopped signalling (device may be lost), stopping capture thread: {e}");
+                    failed.store(true, Ordering::Release);
+                    break 'outer;
+                }
                 continue;
             }
             mmcss_once.call_once(|| {
@@ -542,7 +550,13 @@ pub fn start_capture(
                 let samples = unsafe {
                     std::slice::from_raw_parts(data_ptr as *const f32, (num_frames * channels as u32) as usize)
                 };
-                if channels == 1 {
+                if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
+                    // The buffer's contents are undefined when flagged
+                    // silent (e.g. a privacy-muted mic) — push silence.
+                    for _ in 0..num_frames {
+                        let _ = producer.try_push([0.0, 0.0]);
+                    }
+                } else if channels == 1 {
                     // Mono device: duplicate the single decoded sample to
                     // both L/R (matches the old cpal `input_channels < 2`
                     // handling).
@@ -718,12 +732,15 @@ pub fn start_render(
             // SAFETY: `event` is a valid, still-open event handle for the
             // lifetime of this loop.
             let wait = unsafe { WaitForSingleObject(event, 1000) };
-            if wait != WAIT_OBJECT_0 {
-                continue;
+            // No event for 1 s: fall through to the `GetCurrentPadding`
+            // probe below so an unplugged endpoint (which stops signalling
+            // instead of erroring) is detected; a healthy one just has
+            // nothing to write.
+            if wait == WAIT_OBJECT_0 {
+                mmcss_once.call_once(|| {
+                    crate::audio::mmcss::boost_current_thread_to_pro_audio();
+                });
             }
-            mmcss_once.call_once(|| {
-                crate::audio::mmcss::boost_current_thread_to_pro_audio();
-            });
 
             // SAFETY: `client` is valid and started.
             let padding = match unsafe { client.GetCurrentPadding() } {

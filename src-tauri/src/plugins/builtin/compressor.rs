@@ -93,7 +93,8 @@ impl BuiltinProcessor for Compressor {
                 release_coeff * self.envelope + (1.0 - release_coeff) * peak
             };
             // Clamp to avoid log(0) or runaway on DC offsets.
-            self.envelope = self.envelope.clamp(0.0, 10.0);
+            // A NaN input sample would otherwise latch the envelope at NaN forever.
+            self.envelope = if self.envelope.is_finite() { self.envelope.clamp(0.0, 10.0) } else { 0.0 };
 
             // Convert envelope to dB; use a floor of -140 dBFS for silence.
             let env_db = if self.envelope > 1e-7 {

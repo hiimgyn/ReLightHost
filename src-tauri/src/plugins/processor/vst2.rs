@@ -233,6 +233,14 @@ pub struct Vst2Processor {
     in_r:  Vec<f32>,
     out_l: Vec<f32>,
     out_r: Vec<f32>,
+    /// Channels past the first two: inputs read `zeros`, outputs write
+    /// `discard`. One pointer per channel the plugin declares
+    /// (max(numInputs, numOutputs, 2)), filled per chunk — pre-allocated
+    /// so the audio thread never allocates.
+    zeros:   Vec<f32>,
+    discard: Vec<f32>,
+    in_ptrs:  Vec<*const f32>,
+    out_ptrs: Vec<*mut f32>,
     /// Block size negotiated via `effSetBlockSize` at load(). The real-time
     /// callback's actual block size can exceed this at runtime (see
     /// audio::manager's `BufferSize::Default`), so `process_stereo` chunks
@@ -240,6 +248,10 @@ pub struct Vst2Processor {
     /// already applied to vst3.rs for the identical host-contract issue.
     max_block: usize,
 }
+
+// SAFETY: the pointer vecs only ever point into this struct's own buffers
+// and are rewritten before each use; the plugin itself is behind `plugin`.
+unsafe impl Send for Vst2Processor {}
 
 impl Vst2Processor {
     /// Load a VST2 plugin, configure it, and start processing.
@@ -300,14 +312,23 @@ impl Vst2Processor {
         raw.dispatch(eff::SET_BLOCK_SIZE,  0, block_size as isize, ptr::null_mut(), 0.0);
         raw.dispatch(eff::MAINS_CHANGED,   0, 1,                  ptr::null_mut(), 0.0);
 
-        Ok(Self {
+        Ok(Self::new(raw, cap, block_size))
+    }
+
+    fn new(raw: RawPlugin, cap: usize, block_size: usize) -> Self {
+        let channels = raw.num_inputs().max(raw.num_outputs()).max(2) as usize;
+        Self {
             plugin: Arc::new(Mutex::new(raw)),
             in_l:  vec![0.0f32; cap],
             in_r:  vec![0.0f32; cap],
             out_l: vec![0.0f32; cap],
             out_r: vec![0.0f32; cap],
+            zeros:   vec![0.0f32; cap],
+            discard: vec![0.0f32; cap],
+            in_ptrs:  vec![ptr::null(); channels],
+            out_ptrs: vec![ptr::null_mut(); channels],
             max_block: block_size.max(1),
-        })
+        }
     }
 
     /// Process one stereo block in-place through the VST2 plugin.
@@ -332,6 +353,8 @@ impl Vst2Processor {
             self.in_r.resize(n, 0.0);
             self.out_l.resize(n, 0.0);
             self.out_r.resize(n, 0.0);
+            self.zeros.resize(n, 0.0);
+            self.discard.resize(n, 0.0);
         }
 
         self.in_l[..n].copy_from_slice(&left[..n]);
@@ -344,16 +367,24 @@ impl Vst2Processor {
         let Ok(plugin) = self.plugin.try_lock() else { return };
         {
             let out_ch = plugin.num_outputs().clamp(1, 2) as usize;
-            let in_ptrs:  [*const f32; 2] = [self.in_l.as_ptr(),      self.in_r.as_ptr()];
-            let out_ptrs: [*mut   f32; 2] = [self.out_l.as_mut_ptr(), self.out_r.as_mut_ptr()];
+            if self.in_ptrs.len() > 2 {
+                self.zeros[..n].fill(0.0); // a plugin may have written to it
+            }
+            for (i, p) in self.in_ptrs.iter_mut().enumerate() {
+                *p = match i { 0 => self.in_l.as_ptr(), 1 => self.in_r.as_ptr(), _ => self.zeros.as_ptr() };
+            }
+            for (i, p) in self.out_ptrs.iter_mut().enumerate() {
+                *p = match i { 0 => self.out_l.as_mut_ptr(), 1 => self.out_r.as_mut_ptr(), _ => self.discard.as_mut_ptr() };
+            }
 
-            // SAFETY: pointers valid for `n` samples; processReplacing is
-            // guaranteed non-null by the VST 2.4 API-version check in load().
+            // SAFETY: one pointer per declared channel, each valid for `n`
+            // samples; processReplacing is guaranteed non-null by the
+            // VST 2.4 API-version check in load().
             unsafe {
                 ((*plugin.effect).process_replacing)(
                     plugin.effect,
-                    in_ptrs.as_ptr(),
-                    out_ptrs.as_ptr() as *mut *mut f32,
+                    self.in_ptrs.as_ptr(),
+                    self.out_ptrs.as_mut_ptr(),
                     n as i32,
                 );
             }
@@ -427,6 +458,37 @@ mod idle_tests {
     unsafe extern "C" fn process_f64(_: *mut AEffect, _: *const *const f64, _: *mut *mut f64, _: i32) {}
     unsafe extern "C" fn set_param(_: *mut AEffect, _: i32, _: f32) {}
     unsafe extern "C" fn get_param(_: *mut AEffect, _: i32) -> f32 { 0.0 }
+
+    /// 4-in/4-out plugin: copies every input to its output, so it touches
+    /// all four pointers on both sides.
+    unsafe extern "C" fn quad_copy(_: *mut AEffect, ins: *const *const f32, outs: *mut *mut f32, n: i32) {
+        for ch in 0..4 {
+            std::ptr::copy_nonoverlapping(*ins.add(ch), *outs.add(ch), n as usize);
+        }
+    }
+
+    /// Doesn't touch LAST_OPCODE (the idle test runs in parallel).
+    unsafe extern "C" fn quiet(_: *mut AEffect, _: i32, _: i32, _: isize, _: *mut c_void, _: f32) -> isize { 0 }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn plugin_with_more_than_two_channels_gets_a_valid_pointer_for_each() {
+        let effect = Box::into_raw(Box::new(AEffect {
+            magic: VST_MAGIC, dispatcher: quiet, process, set_parameter: set_param, get_parameter: get_param,
+            num_programs: 0, num_params: 0, num_inputs: 4, num_outputs: 4, flags: 0,
+            resvd1: 0, resvd2: 0, initial_delay: 0, real_qualities: 0, off_qualities: 0, io_ratio: 1.0,
+            object: ptr::null_mut(), user: ptr::null_mut(), unique_id: 0, version: 0,
+            process_replacing: quad_copy, process_double_replacing: process_f64, future: [0; 56],
+        }));
+        let lib: libloading::Library = libloading::os::windows::Library::this().unwrap().into();
+        let mut proc = Vst2Processor::new(RawPlugin { effect, _lib: lib, editor_open: false }, 64, 64);
+        let (mut l, mut r) = (vec![0.5f32; 64], vec![-0.5f32; 64]);
+        proc.process_stereo(&mut l, &mut r);
+        assert_eq!((l[63], r[63]), (0.5, -0.5));
+        assert!(proc.zeros.iter().all(|&z| z == 0.0), "extra inputs read silence");
+        drop(proc); // effClose via the fake dispatcher
+        drop(unsafe { Box::from_raw(effect) });
+    }
 
     #[test]
     fn editor_idle_sends_eff_edit_idle() {

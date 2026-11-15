@@ -209,9 +209,15 @@ pub struct AudioManager {
     effective_rate: AtomicU32,
     /// Try WASAPI exclusive mode first (AppConfig::wasapi_exclusive).
     wasapi_exclusive: AtomicBool,
-    /// Set by a WASAPI capture/render thread when its device fails; picked
-    /// up (and monitoring stopped) by `get_status`, which the UI polls.
+    /// Set by the WASAPI capture thread when the input device fails; picked
+    /// up (and monitoring stopped) by `housekeeping`.
     stream_failed: Arc<AtomicBool>,
+    /// Set by a monitor/virtual output thread whose device failed. Not
+    /// fatal: `housekeeping` restarts without that leg.
+    output_failed: Arc<AtomicBool>,
+    /// A configured monitor/virtual WASAPI device was absent at the last
+    /// start; `housekeeping` restarts once it is back.
+    missing_leg: AtomicBool,
     /// Last automatic reconnect attempt after a device loss.
     last_reconnect: Mutex<Option<Instant>>,
 }
@@ -235,6 +241,8 @@ impl AudioManager {
             effective_rate:   AtomicU32::new(0),
             wasapi_exclusive: AtomicBool::new(false),
             stream_failed:    Arc::new(AtomicBool::new(false)),
+            output_failed:    Arc::new(AtomicBool::new(false)),
+            missing_leg:      AtomicBool::new(false),
             last_reconnect:   Mutex::new(None),
         }
     }
@@ -252,7 +260,8 @@ impl AudioManager {
             dsp_load_u32: Arc::clone(&self.dsp_load_u32),
             output_is_asio,
             underrun_count: Arc::clone(&self.underrun_count),
-            stream_failed: Arc::clone(&self.stream_failed),
+            // Only output legs run a mixer stage.
+            stream_failed: Arc::clone(&self.output_failed),
         }
     }
 
@@ -331,6 +340,10 @@ impl AudioManager {
             *self.exclusive_mode_active.write() = false;
             *self.wasapi_fallback_reason.write() = None;
             self.effective_rate.store(0, Ordering::Relaxed);
+            // A loss flagged before this stop must not auto-restart it.
+            self.stream_failed.store(false, Ordering::Relaxed);
+            self.output_failed.store(false, Ordering::Relaxed);
+            self.missing_leg.store(false, Ordering::Relaxed);
             {
                 let mut status = self.status.write();
                 status.is_monitoring = false;
@@ -339,7 +352,13 @@ impl AudioManager {
             log::info!("{} Input monitoring stopped", crate::core::threading::thread_prefix("audio/monitor"));
             return Ok(());
         }
+        self.start_monitoring(false)
+    }
 
+    /// Starts monitoring. `auto` (an automatic restart) never falls back to
+    /// the system default for a configured device that is gone — it would
+    /// silently move the user to another mic, or monitoring onto speakers.
+    fn start_monitoring(&self, auto: bool) -> Result<()> {
         // Hold the monitoring mutex for the entire setup so that a second call
         // (e.g. React StrictMode double-effect) cannot race and create duplicate
         // streams — which caused STATUS_ACCESS_VIOLATION when the first set of
@@ -352,6 +371,10 @@ impl AudioManager {
 
         let config = self.config.read().clone();
         let exclusive = self.wasapi_exclusive.load(Ordering::Relaxed);
+        // "None (No Input)" means no input, not the default mic.
+        if config.input_device_id.is_none() {
+            return Err(anyhow::anyhow!("No input device selected"));
+        }
 
         // -----------------------------------------------------------------
         // Same-ASIO-device (full-duplex insert, e.g. a Voicemeeter insert)
@@ -427,6 +450,8 @@ impl AudioManager {
 
         self.underrun_count.store(0, Ordering::Relaxed);
         self.stream_failed.store(false, Ordering::Relaxed);
+        self.output_failed.store(false, Ordering::Relaxed);
+        let mut missing_leg = false;
 
         // -----------------------------------------------------------------
         // Virtual/monitor output mirror (e.g. VB-Audio Virtual Cable).
@@ -454,6 +479,7 @@ impl AudioManager {
                 Some(resolved) => Some(resolved.strip_prefix("out_").unwrap_or(&resolved).to_string()),
                 None => {
                     log::warn!("{} Virtual output device '{}' not found; skipping", crate::core::threading::thread_prefix("audio/monitor"), id);
+                    missing_leg = true;
                     None
                 }
             }
@@ -481,6 +507,9 @@ impl AudioManager {
         // every other fallible/panicking setup step below has finished —
         // see `AsioGuard`'s doc comment for why.
         let mut asio_guard: Option<AsioGuard> = None;
+        // Set when no monitor leg runs: the virtual leg then drains the main
+        // ring itself, so the chain still runs (see below).
+        let mut direct_consumer: Option<ringbuf::HeapCons<StereoFrame>> = None;
 
         let pending: PendingBackend = if same_asio_device {
             // ---------------------------------------------------------
@@ -501,14 +530,14 @@ impl AudioManager {
             // Clamp the configured channel pair to what the device actually
             // has — an offset saved for a different (wider) interface must
             // not be requested against a narrower one.
-            let in_offset  = if in_channels  >= 2 { config.input_channel_offset.min(in_channels - 2) } else { 0 };
-            let out_offset = if out_channels >= 2 { config.output_channel_offset.min(out_channels - 2) } else { 0 };
+            let in_chans  = channel_span(config.input_channel_offset, in_channels);
+            let out_chans = channel_span(config.output_channel_offset, out_channels);
 
             let mixer_state = self.build_mixer_state(true);
             let stream = asio::start_duplex(
                 asio_name,
-                in_offset,
-                out_offset,
+                in_chans,
+                out_chans,
                 Some(config.buffer_size as i32),
                 rate as f64,
                 mixer_state,
@@ -523,57 +552,43 @@ impl AudioManager {
             // the `same_asio_device` branch instead). Input failing is
             // fatal (monitoring needs an input); output failing is
             // NOT fatal — matches the old cpal-based code's behavior of
-            // continuing monitoring without hardware output. This also
-            // means an ASIO leg is never left loaded-but-undiscarded on an
-            // `Err`-return path here: once an ASIO leg succeeds, nothing
-            // after it in this branch can return `Err` from
-            // `toggle_monitoring` — and `asio_guard` now covers the
-            // remaining panic-unwind case too (see its doc comment).
+            // continuing monitoring without hardware output. An ASIO leg
+            // that already started is stopped by `asio_guard`'s `Drop` if
+            // a later step here returns `Err` or panics.
+            //
+            // The output leg starts BEFORE the input leg: starting it hands
+            // over the ring's consumer even when it fails, and starting
+            // first means the input can still be given a fresh ring whose
+            // consumer feeds the virtual leg instead.
             // ---------------------------------------------------------
-            let rb = HeapRb::<StereoFrame>::new(buf_capacity);
-            let (producer, consumer) = rb.split();
+            let input_id = resolve_device(
+                config.input_device_id.as_deref(),
+                |id| AudioDevice::find_input_device(id, &asio_devices),
+                AudioDevice::default_input_device_id,
+                !auto,
+            ).ok_or_else(|| anyhow::anyhow!("No input device available"))?;
 
-            let input_id = config.input_device_id.as_deref()
-                .and_then(|id| AudioDevice::find_input_device(id, &asio_devices))
-                .or_else(AudioDevice::default_input_device_id)
-                .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
-
-            let input = if let Some(name) = input_id.strip_prefix("asio_") {
-                let in_channels = asio_devices.iter()
-                    .find(|d| d.name == name).map(|d| d.input_channels).unwrap_or(2);
-                let in_offset = if in_channels >= 2 { config.input_channel_offset.min(in_channels - 2) } else { 0 };
-                let stream = asio::start_input_only(name, in_offset, Some(config.buffer_size as i32), rate as f64, producer)
-                    .map_err(|e| anyhow::anyhow!("Failed to start ASIO input '{name}': {e}"))?;
-                asio_guard = Some(AsioGuard(Some(stream)));
-                PendingBridgedInput::Asio
-            } else {
-                let raw = input_id.strip_prefix("in_").unwrap_or(&input_id);
-                let (stream, result) = wasapi::start_capture(raw, config.buffer_size, rate, exclusive, producer, Arc::clone(&self.stream_failed))
-                    .map_err(|e| anyhow::anyhow!("Failed to start WASAPI input '{raw}': {e}"))?;
-                input_wasapi_result = Some(result);
-                PendingBridgedInput::Wasapi(stream)
-            };
-
-            // If the user explicitly set output_device_id to None, do NOT
-            // fall back to the system default — treat it as "no hardware
-            // out configured" (unchanged from the old cpal-based behavior).
-            let output_target: Option<String> = if config.output_device_id.is_some() {
-                config.output_device_id.as_deref()
-                    .and_then(|id| AudioDevice::find_output_device(id, &asio_devices))
-                    .or_else(AudioDevice::default_output_device_id)
-            } else {
-                None
-            };
+            // `None` = no monitor output configured (never the default).
+            let output_target = resolve_device(
+                config.output_device_id.as_deref(),
+                |id| AudioDevice::find_output_device(id, &asio_devices),
+                AudioDevice::default_output_device_id,
+                !auto,
+            );
+            if output_target.is_none() && config.output_device_id.as_deref().is_some_and(|id| !id.starts_with("asio_")) {
+                missing_leg = true;
+            }
             let output_leg_is_asio = output_target.as_deref().map(|id| id.starts_with("asio_")).unwrap_or(false);
             let mixer_state = self.build_mixer_state(output_leg_is_asio);
+            let (producer, consumer) = HeapRb::<StereoFrame>::new(buf_capacity).split();
 
             let output = match output_target {
                 Some(ref id) if id.starts_with("asio_") => {
                     let name = id.strip_prefix("asio_").unwrap_or(id.as_str());
                     let out_channels = asio_devices.iter()
                         .find(|d| d.name == name).map(|d| d.output_channels).unwrap_or(2);
-                    let out_offset = if out_channels >= 2 { config.output_channel_offset.min(out_channels - 2) } else { 0 };
-                    match asio::start_output_only(name, out_offset, Some(config.buffer_size as i32), rate as f64, consumer, mixer_state, virt_producer) {
+                    let out_chans = channel_span(config.output_channel_offset, out_channels);
+                    match asio::start_output_only(name, out_chans, Some(config.buffer_size as i32), rate as f64, consumer, mixer_state, virt_producer) {
                         Ok(stream) => {
                             asio_guard = Some(AsioGuard(Some(stream)));
                             Some(PendingBridgedOutput::Asio)
@@ -600,6 +615,32 @@ impl AudioManager {
                 None => None,
             };
 
+            let producer = if output.is_some() {
+                producer
+            } else {
+                let (p, c) = HeapRb::<StereoFrame>::new(buf_capacity).split();
+                direct_consumer = Some(c);
+                p
+            };
+
+            let input = if let Some(name) = input_id.strip_prefix("asio_") {
+                let in_channels = asio_devices.iter()
+                    .find(|d| d.name == name).map(|d| d.input_channels).unwrap_or(2);
+                let in_chans = channel_span(config.input_channel_offset, in_channels);
+                let stream = asio::start_input_only(name, in_chans, Some(config.buffer_size as i32), rate as f64, producer)
+                    .map_err(|e| anyhow::anyhow!("Failed to start ASIO input '{name}': {e}"))?;
+                asio_guard = Some(AsioGuard(Some(stream)));
+                PendingBridgedInput::Asio
+            } else {
+                let raw = input_id.strip_prefix("in_").unwrap_or(&input_id);
+                let (stream, result) = wasapi::start_capture(raw, config.buffer_size, rate, exclusive, producer, Arc::clone(&self.stream_failed))
+                    .map_err(|e| anyhow::anyhow!("Failed to start WASAPI input '{raw}': {e}"))?;
+                input_wasapi_result = Some(result);
+                PendingBridgedInput::Wasapi(stream)
+            };
+            // The output leg was pulling from an empty ring until now.
+            self.underrun_count.store(0, Ordering::Relaxed);
+
             PendingBackend::Bridged { input, output }
         };
 
@@ -608,8 +649,12 @@ impl AudioManager {
         // never fatal (matches the old cpal-based code's identical
         // "warn and continue without it" treatment of this device).
         // -----------------------------------------------------------------
-        let virtual_output = match (virt_wasapi_id, virt_consumer.take()) {
-            (Some(id), Some(consumer)) => {
+        let virtual_output = virt_wasapi_id.and_then(|id| {
+            let (consumer, mixer) = match direct_consumer {
+                // No monitor leg: this leg runs the chain itself, gated by
+                // mute like the mirror it replaces (`output_is_asio: true`
+                // selects the follow-mute polarity of `main_output_gate_open`).
+                Some(consumer) => (consumer, self.build_mixer_state(true)),
                 // A pass-through `MixerState`: no plugin chain (`process_fn`
                 // stays `None`, so `process_block` only relays the
                 // already-processed samples this consumer receives), and a
@@ -620,7 +665,7 @@ impl AudioManager {
                 // already decided to mirror to it, with no further gating
                 // or re-processing. Uses its own throwaway VU meter/DSP-load
                 // counter so this second pass doesn't smear the real ones.
-                let passthrough_mixer = MixerState {
+                None => (virt_consumer.take()?, MixerState {
                     process_fn: Arc::new(Mutex::new(None)),
                     vu_meter: Arc::new(VUMeter::new()),
                     muted: Arc::new(AtomicBool::new(false)),
@@ -631,19 +676,18 @@ impl AudioManager {
                     // fields above; this second pass's underruns shouldn't
                     // smear the real one's count.
                     underrun_count: Arc::new(AtomicU64::new(0)),
-                    // A lost mirror device shouldn't stop the main stream.
-                    stream_failed: Arc::new(AtomicBool::new(false)),
-                };
-                match wasapi::start_render(&id, config.buffer_size, rate, false, consumer, passthrough_mixer, None) {
-                    Ok((stream, _result)) => Some(stream),
-                    Err(e) => {
-                        log::warn!("{} Failed to start virtual output stream: {e}; continuing without it", crate::core::threading::thread_prefix("audio/monitor"));
-                        None
-                    }
+                    // A lost mirror device is a non-fatal leg loss.
+                    stream_failed: Arc::clone(&self.output_failed),
+                }),
+            };
+            match wasapi::start_render(&id, config.buffer_size, rate, false, consumer, mixer, None) {
+                Ok((stream, _result)) => Some(stream),
+                Err(e) => {
+                    log::warn!("{} Failed to start virtual output stream: {e}; continuing without it", crate::core::threading::thread_prefix("audio/monitor"));
+                    None
                 }
             }
-            _ => None,
-        };
+        });
 
         // -----------------------------------------------------------------
         // Final extraction: every other fallible/panicking setup step (the
@@ -691,6 +735,7 @@ impl AudioManager {
         *self.wasapi_fallback_reason.write() = resolved_fallback_reason;
 
         let has_virt = virtual_output.is_some();
+        self.missing_leg.store(missing_leg, Ordering::Relaxed);
         *monitoring_guard = Some(MonitoringStreams { backend, virtual_output });
         self.effective_rate.store(rate, Ordering::Relaxed);
         {
@@ -715,23 +760,25 @@ impl AudioManager {
         self.wasapi_exclusive.store(enabled, Ordering::Relaxed);
     }
 
-    /// Whether the devices the user configured are present again. A missing
-    /// configured device would make `toggle_monitoring` fall back to the
-    /// system default — right for a manual start, wrong for an automatic
-    /// reconnect (it would silently move the user to another mic/output).
-    /// ASIO legs never report a loss, so ASIO ids don't gate this.
-    fn configured_devices_present(&self) -> bool {
+    /// Whether the configured devices an automatic restart needs are back:
+    /// the input (after a loss) or, with `legs`, the monitor and virtual
+    /// outputs (after one was absent). An automatic restart never falls back
+    /// to the system default (see `start_monitoring`), so this only keeps it
+    /// from restarting before the device is back. ASIO legs never report a
+    /// loss, so ASIO ids don't gate this.
+    fn configured_devices_present(&self, legs: bool) -> bool {
         let config = self.config.read().clone();
-        let input_ok = match config.input_device_id.as_deref() {
-            Some(id) if !id.starts_with("asio_") => AudioDevice::find_input_device(id, &[]).is_some(),
-            Some(_) => true,
-            None => AudioDevice::default_input_device_id().is_some(),
-        };
-        let output_ok = match config.output_device_id.as_deref() {
-            Some(id) if !id.starts_with("asio_") => AudioDevice::find_output_device(id, &[]).is_some(),
+        let present = |id: Option<&str>, find: fn(&str, &[asio::AsioDeviceInfo]) -> Option<String>| match id {
+            Some(id) if !id.starts_with("asio_") => find(id, &[]).is_some(),
             _ => true,
         };
-        input_ok && output_ok
+        if legs {
+            present(config.output_device_id.as_deref(), AudioDevice::find_output_device)
+                && present(config.virtual_output_device_id.as_deref(), AudioDevice::find_output_device)
+        } else {
+            config.input_device_id.is_some()
+                && present(config.input_device_id.as_deref(), AudioDevice::find_input_device)
+        }
     }
 
     /// Set output mute state.
@@ -759,52 +806,90 @@ impl AudioManager {
         self.loopback_enabled.load(Ordering::Relaxed)
     }
 
-    /// Get current audio status
-    pub fn get_status(&self) -> AudioStatus {
+    /// Device-loss, reconnect and ASIO-reset handling. Called about once a
+    /// second on the plugin host thread (which owns the streams and has COM
+    /// set up) by a backend timer — `commands::audio::ensure_housekeeping` —
+    /// so it keeps running while the window is hidden and the UI stops
+    /// polling. Returns whether it (re)started the stream, so the caller can
+    /// bring the plugin chain to the new rate.
+    pub fn housekeeping(&self) -> bool {
+        let running = self.status.read().is_monitoring;
+        let prefix = crate::core::threading::thread_prefix("audio/monitor");
         // ASIO driver asked for a reset (buffer size / rate changed in its
         // own panel): rebuild the stream so audio recovers without a manual
-        // restart. Runs on the plugin host thread (the status command runs
-        // there), which owns the streams and has COM set up.
-        if asio::take_reset_request() && self.status.read().is_monitoring {
-            log::warn!("{} ASIO driver requested a reset — restarting the stream", crate::core::threading::thread_prefix("audio/monitor"));
-            let _ = self.toggle_monitoring(false);
-            if let Err(e) = self.toggle_monitoring(true) {
-                log::warn!("{} Restart after ASIO reset failed: {e}", crate::core::threading::thread_prefix("audio/monitor"));
-            }
+        // restart.
+        if running && asio::take_reset_request() {
+            log::warn!("{prefix} ASIO driver requested a reset — restarting the stream");
+            return self.restart();
         }
         if self.stream_failed.swap(false, Ordering::AcqRel) {
-            log::warn!("{} Audio device failed — stopping monitoring", crate::core::threading::thread_prefix("audio/monitor"));
+            log::warn!("{prefix} Input device failed — stopping monitoring");
             let _ = self.toggle_monitoring(false);
-            self.status.write().stream_error =
-                Some("The audio device stopped responding (unplugged or lost). Monitoring was stopped.".into());
-            // First reconnect attempt no sooner than 3 s from now.
-            *self.last_reconnect.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            self.mark_lost();
+            return false;
+        }
+        if self.output_failed.swap(false, Ordering::AcqRel) && running {
+            // Not fatal, the same as when that leg fails to open at start:
+            // keep the rest (virtual feed included) running without it.
+            log::warn!("{prefix} Output device failed — restarting without it");
+            return self.restart();
         }
 
-        // Device came back (re-plugged)? Try to resume — at most every 3 s,
-        // and only after a loss, never against a stop the user made.
-        let (lost, running) = {
-            let status = self.status.read();
-            (status.stream_error.is_some(), status.is_monitoring)
-        };
+        // Device came back (re-plugged)? At most every 3 s: resume after a
+        // loss (never against a stop the user made), or restart to bring
+        // back a monitor/virtual leg whose device was absent.
+        let lost = self.status.read().stream_error.is_some();
         let now = Instant::now();
         let mut last = self.last_reconnect.lock().unwrap_or_else(|e| e.into_inner());
-        if should_try_reconnect(lost, running, *last, now) && self.configured_devices_present() {
-            *last = Some(now);
-            drop(last);
-            match self.toggle_monitoring(true) {
-                Ok(()) => log::info!("{} Audio device reconnected — monitoring resumed", crate::core::threading::thread_prefix("audio/monitor")),
-                Err(_) => {
-                    // Still gone; toggle_monitoring(true) failing leaves nothing
-                    // running, keep reporting the loss.
-                    self.status.write().stream_error =
-                        Some("The audio device stopped responding (unplugged or lost). Monitoring was stopped.".into());
-                }
+        let resume = should_try_reconnect(lost, running, *last, now);
+        let restore = running && self.missing_leg.load(Ordering::Relaxed) && retry_due(*last, now);
+        if !resume && !restore {
+            return false;
+        }
+        *last = Some(now);
+        drop(last);
+        if !self.configured_devices_present(restore) {
+            return false;
+        }
+        if restore {
+            log::info!("{prefix} Output device is back — restarting with it");
+            return self.restart();
+        }
+        match self.start_monitoring(true) {
+            Ok(()) => {
+                log::info!("{prefix} Audio device reconnected — monitoring resumed");
+                true
+            }
+            // Still gone; nothing runs, keep reporting the loss.
+            Err(_) => false,
+        }
+    }
+
+    /// Stops and restarts the stream without default-device fallback. On
+    /// failure nothing runs; reported as a loss, which the reconnect retries.
+    fn restart(&self) -> bool {
+        let _ = self.toggle_monitoring(false);
+        match self.start_monitoring(true) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("{} Audio restart failed: {e}", crate::core::threading::thread_prefix("audio/monitor"));
+                self.mark_lost();
+                false
             }
         }
-        let dsp_load = f32::from_bits(self.dsp_load_u32.load(Ordering::Relaxed));
-        self.status.write().cpu_usage = dsp_load;
+    }
+
+    /// Reports a device loss; the first reconnect comes no sooner than 3 s.
+    fn mark_lost(&self) {
+        self.status.write().stream_error =
+            Some("The audio device stopped responding (unplugged or lost). Monitoring was stopped.".into());
+        *self.last_reconnect.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    /// Get current audio status. Only reads; `housekeeping` acts on losses.
+    pub fn get_status(&self) -> AudioStatus {
         let mut status = self.status.read().clone();
+        status.cpu_usage = f32::from_bits(self.dsp_load_u32.load(Ordering::Relaxed));
         status.is_muted = self.muted.load(Ordering::Relaxed);
         status.loopback_enabled = self.loopback_enabled.load(Ordering::Relaxed);
         status.underrun_count = self.underrun_count.load(Ordering::Relaxed);
@@ -940,7 +1025,31 @@ impl AudioManager {
 
 /// After a device loss (and only while nothing runs), retry at most every 3 s.
 fn should_try_reconnect(lost: bool, running: bool, last_attempt: Option<Instant>, now: Instant) -> bool {
-    lost && !running && last_attempt.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(3))
+    lost && !running && retry_due(last_attempt, now)
+}
+
+fn retry_due(last_attempt: Option<Instant>, now: Instant) -> bool {
+    last_attempt.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(3))
+}
+
+/// The device a leg opens: the configured one if present. A configured one
+/// that is gone falls back to the system default only with `fallback` (a
+/// manual start). `None` configured means none — never the default.
+fn resolve_device(
+    configured: Option<&str>,
+    find: impl FnOnce(&str) -> Option<String>,
+    default: impl FnOnce() -> Option<String>,
+    fallback: bool,
+) -> Option<String> {
+    configured.and_then(|id| find(id).or_else(|| if fallback { default() } else { None }))
+}
+
+/// Device channels a leg uses: the pair at `offset`, clamped to what the
+/// device has, or the only channel of a mono device (read as both sides).
+fn channel_span(offset: usize, device_channels: usize) -> std::ops::Range<usize> {
+    let width = device_channels.clamp(1, 2);
+    let start = offset.min(device_channels.saturating_sub(width));
+    start..start + width
 }
 
 impl Default for AudioManager {
@@ -985,9 +1094,39 @@ mod tests {
         am.status.write().is_monitoring = true;
         am.stream_failed.store(true, Ordering::Relaxed);
 
+        assert!(!am.housekeeping());
         let status = am.get_status();
         assert!(!status.is_monitoring);
         assert!(status.stream_error.is_some());
         assert!(!am.get_status().is_monitoring, "stays stopped");
+    }
+
+    #[test]
+    fn stopping_by_hand_clears_a_pending_device_failure() {
+        let am = AudioManager::new();
+        am.stream_failed.store(true, Ordering::Relaxed);
+        am.output_failed.store(true, Ordering::Relaxed);
+        am.toggle_monitoring(false).unwrap();
+        am.housekeeping();
+        assert!(am.get_status().stream_error.is_none(), "a stop by hand must not turn into a loss to reconnect");
+    }
+
+    #[test]
+    fn none_means_no_device_and_only_a_manual_start_falls_back() {
+        let found = |id: &str| (id == "here").then(|| "in_here".to_string());
+        let default = || Some("in_default".to_string());
+        assert_eq!(resolve_device(None, found, default, true), None, "None (No Input) is not the default mic");
+        assert_eq!(resolve_device(Some("here"), found, default, false), Some("in_here".into()));
+        assert_eq!(resolve_device(Some("gone"), found, default, true), Some("in_default".into()));
+        assert_eq!(resolve_device(Some("gone"), found, default, false), None, "auto restart never moves devices");
+    }
+
+    #[test]
+    fn channel_span_clamps_the_pair_and_handles_mono() {
+        assert_eq!(channel_span(0, 2), 0..2);
+        assert_eq!(channel_span(4, 8), 4..6);
+        assert_eq!(channel_span(6, 4), 2..4, "offset saved for a wider interface");
+        assert_eq!(channel_span(0, 1), 0..1, "mono device: one channel, not offset + 2");
+        assert_eq!(channel_span(3, 1), 0..1);
     }
 }

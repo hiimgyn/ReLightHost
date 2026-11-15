@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
-import { Drawer, Input, Button, Tabs, Space, Typography, Tooltip, Empty, Spin } from 'antd';
+import { Drawer, Input, Button, Tabs, Space, Typography, Tooltip, Empty, Spin, message } from 'antd';
 import {
   Search,
   RotateCw,
@@ -59,10 +59,11 @@ export default function PluginLibrary({ isOpen, onClose }: PluginLibraryProps) {
       await addToChain(plugin);
     } catch (error) {
       console.error('Failed to add plugin:', error);
+      message.error(t('library.addFailed', { name: plugin.name, error: String(error) }), 6);
     } finally {
       setAddingPluginId(null);
     }
-  }, [addLocked, addToChain]);
+  }, [addLocked, addToChain, t]);
 
   useEffect(() => {
     if (isOpen && availablePlugins.length === 0) {

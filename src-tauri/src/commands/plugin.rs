@@ -1,4 +1,4 @@
-use crate::plugins::{PluginFormat, PluginInfo, PluginInstanceInfo};
+use crate::plugins::{PluginInfo, PluginInstanceInfo};
 use crate::AppState;
 use crate::timing::GUI_CLOSE_TIMEOUT;
 use std::sync::atomic::Ordering;
@@ -148,30 +148,30 @@ pub fn get_plugin_parameters(
 /// Chain mutations all run on the plugin host thread, so they never wait on
 /// the chain lock from the UI thread while a reload holds it there.
 #[tauri::command]
-pub async fn reorder_plugin_chain(state: tauri::State<'_, AppState>, from_index: usize, to_index: usize) -> Result<(), String> {
+pub async fn reorder_plugin_chain(state: tauri::State<'_, AppState>, instance_id: String, to_index: usize) -> Result<(), String> {
     let state = state.inner().clone();
-    crate::core::host_thread::run(move || reorder_plugin_chain_on_host(&state, from_index, to_index)).await
+    crate::core::host_thread::run(move || reorder_plugin_chain_on_host(&state, &instance_id, to_index)).await
 }
 
-fn reorder_plugin_chain_on_host(state: &AppState, from_index: usize, to_index: usize) -> Result<(), String> {
+fn reorder_plugin_chain_on_host(state: &AppState, instance_id: &str, to_index: usize) -> Result<(), String> {
     state
         .plugin_manager
-        .reorder(from_index, to_index)
+        .reorder(instance_id, to_index)
         .map_err(|e| format!("Failed to reorder plugin chain: {}", e))?;
     crate::app_events::emit_plugin_chain_changed("reorder", None);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn swap_plugin_chain(state: tauri::State<'_, AppState>, first_index: usize, second_index: usize) -> Result<(), String> {
+pub async fn swap_plugin_chain(state: tauri::State<'_, AppState>, first_id: String, second_id: String) -> Result<(), String> {
     let state = state.inner().clone();
-    crate::core::host_thread::run(move || swap_plugin_chain_on_host(&state, first_index, second_index)).await
+    crate::core::host_thread::run(move || swap_plugin_chain_on_host(&state, &first_id, &second_id)).await
 }
 
-fn swap_plugin_chain_on_host(state: &AppState, first_index: usize, second_index: usize) -> Result<(), String> {
+fn swap_plugin_chain_on_host(state: &AppState, first_id: &str, second_id: &str) -> Result<(), String> {
     state
         .plugin_manager
-        .swap(first_index, second_index)
+        .swap(first_id, second_id)
         .map_err(|e| format!("Failed to swap plugin chain: {}", e))?;
     crate::app_events::emit_plugin_chain_changed("swap", None);
     Ok(())
@@ -180,6 +180,10 @@ fn swap_plugin_chain_on_host(state: &AppState, first_index: usize, second_index:
 #[tauri::command]
 pub async fn launch_plugin(state: tauri::State<'_, AppState>, instance_id: String) -> Result<(), String> {
     let state = state.inner().clone();
+    // Waited for off the host thread: the VST3 replay applies its state
+    // through jobs on that thread, which a wait there would hold up.
+    let waiter = state.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || wait_for_vst3_restore_ready(&waiter)).await;
     crate::core::host_thread::run(move || launch_plugin_on_host(&state, instance_id)).await
 }
 
@@ -190,9 +194,6 @@ fn launch_plugin_on_host(state: &AppState, instance_id: String) -> Result<(), St
     };
     if let Some(instance) = instance_opt {
         let info = instance.get_info();
-        if info.format == PluginFormat::VST3 {
-            wait_for_vst3_restore_ready(state);
-        }
         log::info!(
             "launch_plugin requested: id={}, name='{}', gui_open={} format={:?}",
             instance_id,
@@ -200,9 +201,10 @@ fn launch_plugin_on_host(state: &AppState, instance_id: String) -> Result<(), St
             info.gui_open,
             info.format
         );
-        instance
-            .open_gui()
-            .map_err(|e| format!("Failed to open plugin GUI: {}", e))?;
+        instance.open_gui().map_err(|e| {
+            log::warn!("launch_plugin '{}' failed: {}", info.name, e);
+            format!("Failed to open plugin GUI: {}", e)
+        })?;
         crate::app_events::emit_plugin_chain_changed("gui_open", Some(&instance_id));
         Ok(())
     } else {

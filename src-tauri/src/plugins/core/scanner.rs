@@ -8,7 +8,9 @@ use crate::plugins::types::{PluginInfo, PluginFormat};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 
-const SCAN_CACHE_VERSION: u32 = 4; // 4: one entry per sub-plugin
+// 4: one entry per sub-plugin. 5: bundle binaries named `<Name>.vst3`
+// resolved (v4 stored the bundle dir) + moduleinfo.json with trailing commas.
+const SCAN_CACHE_VERSION: u32 = 5;
 
 pub struct PluginScanner {
     scan_paths: Vec<PathBuf>,
@@ -61,6 +63,7 @@ impl PluginScanner {
             }
             
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                paths.push(PathBuf::from(&local_app_data).join("Programs\\Common\\VST3")); // per-user VST3 (SDK 3.7)
                 paths.push(PathBuf::from(&local_app_data).join("Programs\\Common\\CLAP"));
                 paths.push(PathBuf::from(&local_app_data).join("Programs\\Common\\VST2")); // VST2
             }
@@ -237,18 +240,17 @@ impl PluginScanner {
                 // Always allow loose DLLs at the top level of any scan root.
                 // The DLL-skipping logic only activates when recursing into
                 // non-bundle subdirectories of a VST3/CLAP path (see scan_directory).
+                let failures_before = PROBE_FAILURES.load(std::sync::atomic::Ordering::Relaxed);
                 if let Ok(found) = self.scan_directory(path, true) {
                     plugins.extend(found.clone());
                     cache_dirty = true;
-                    if let Some(entry) = cache.entries.iter_mut().find(|entry| entry.path == path_key) {
-                        entry.fingerprint = fingerprint;
-                        entry.plugins = found;
+                    cache.entries.retain(|entry| entry.path != path_key);
+                    // A crashed/hung probe left file-name metadata behind:
+                    // don't cache this root, so the next scan retries it.
+                    if PROBE_FAILURES.load(std::sync::atomic::Ordering::Relaxed) == failures_before {
+                        cache.entries.push(ScanCacheEntry { path: path_key, fingerprint, plugins: found });
                     } else {
-                        cache.entries.push(ScanCacheEntry {
-                            path: path_key,
-                            fingerprint,
-                            plugins: found,
-                        });
+                        log::info!("Not caching '{}': a plugin probe failed, next scan retries it", path.display());
                     }
                 }
             }
@@ -258,6 +260,7 @@ impl PluginScanner {
             self.save_cache(&cache);
         }
 
+        let plugins = dedupe_plugins(plugins);
         log::info!("Found {} plugins", plugins.len());
         Ok(plugins)
     }
@@ -360,29 +363,8 @@ impl PluginScanner {
         // On Windows, the DLL lives at Contents/x86_64-win/<PluginName>.dll
         // Fall back to scanning the arch dir for any DLL if the expected name isn't found
         #[cfg(target_os = "windows")]
-        let dll_path = {
-            let expected = bundle_path
-                .join("Contents")
-                .join("x86_64-win")
-                .join(format!("{}.dll", plugin_name));
-            if expected.exists() {
-                expected
-            } else {
-                // Try any .dll in the arch dir (bundle may use a different DLL name)
-                let arch_dir = bundle_path.join("Contents").join("x86_64-win");
-                let found = fs::read_dir(&arch_dir).ok().and_then(|mut entries| {
-                    entries.find_map(|e| {
-                        let p = e.ok()?.path();
-                        if p.extension().and_then(|x| x.to_str()) == Some("dll") {
-                            Some(p)
-                        } else {
-                            None
-                        }
-                    })
-                });
-                found.unwrap_or(expected)
-            }
-        };
+        let dll_path = vst3_bundle_binary(bundle_path)
+            .unwrap_or_else(|| bundle_path.join("Contents").join("x86_64-win").join(format!("{}.vst3", plugin_name)));
 
         #[cfg(target_os = "macos")]
         let dll_path = bundle_path.join("Contents").join("MacOS").join(plugin_name);
@@ -451,6 +433,14 @@ impl PluginScanner {
             }
         }
 
+        // A VST2 folder also holds 32-bit plugins and helper DLLs; list only
+        // x64 images that export a VST2 entry point (headers only, no load).
+        #[cfg(target_os = "windows")]
+        if matches!(format, PluginFormat::VST) && !is_x64_vst2_dll(path) {
+            log::debug!("Skipping non-x64 / non-VST2 DLL: {}", path.display());
+            return None;
+        }
+
         let filename = path.file_stem()?.to_str()?;
         let id = format!("{}::{}", format!("{:?}", format).to_lowercase(), filename);
 
@@ -486,6 +476,27 @@ impl PluginScanner {
 
         Some(sub_plugins(&id, path.to_string_lossy().to_string(), format, metas))
     }
+}
+
+/// Drops repeats of the same plugin (overlapping scan roots, e.g. a custom
+/// path inside Common Files\VST3) and makes ids unique when two different
+/// files share a name (`VST3\Clear.vst3` and `VST3\Supertone\Clear.vst3`
+/// would both be `vst3::Clear`). The first keeps its id; later ones get
+/// `@<path>` appended.
+fn dedupe_plugins(plugins: Vec<PluginInfo>) -> Vec<PluginInfo> {
+    let mut seen_files = HashSet::new();
+    let mut seen_ids = HashSet::new();
+    plugins
+        .into_iter()
+        .filter(|p| seen_files.insert((PluginScanner::scan_path_key(Path::new(&p.path)), p.sub_index)))
+        .map(|mut p| {
+            if !seen_ids.insert(p.id.clone()) {
+                p.id = format!("{}@{}", p.id, p.path);
+                seen_ids.insert(p.id.clone());
+            }
+            p
+        })
+        .collect()
 }
 
 /// True for a symlink/junction pointing at `dir` itself or one of its
@@ -588,17 +599,38 @@ fn parse_vst3_subcategory(subcats: &str) -> String {
         .to_string()
 }
 
-/// Try to read `(name, vendor, version, category)` from a VST3 bundle's
-/// `moduleInfo.json` (VST3 SDK ≥ 3.7). No DLL is loaded.
-/// Every "Audio Module Class" listed in the bundle's moduleInfo.json, in order.
+/// The Windows binary inside a VST3 bundle directory. SDK ≥ 3.6.10 bundles
+/// name it `Contents/x86_64-win/<Name>.vst3`; older ones used `<Name>.dll`.
+/// Prefers the bundle's own stem, then any `.vst3`/`.dll` in the arch dir.
+pub fn vst3_bundle_binary(bundle_path: &Path) -> Option<PathBuf> {
+    let arch_dir = bundle_path.join("Contents").join("x86_64-win");
+    let stem = bundle_path.file_stem()?.to_str()?;
+    for ext in ["vst3", "dll"] {
+        let p = arch_dir.join(format!("{stem}.{ext}"));
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    // Any `.vst3` before any `.dll`: a bundle can ship helper DLLs next to
+    // its real binary, and read_dir order is arbitrary.
+    let files: Vec<PathBuf> = fs::read_dir(&arch_dir).ok()?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()).collect();
+    ["vst3", "dll"].into_iter().find_map(|ext| {
+        files.iter().find(|p| p.extension().and_then(|x| x.to_str()).is_some_and(|x| x.eq_ignore_ascii_case(ext))).cloned()
+    })
+}
+
+/// `(name, vendor, version, category)` of every "Audio Module Class" in a
+/// VST3 bundle's `moduleinfo.json` (VST3 SDK ≥ 3.7), in order. No DLL is loaded.
 fn read_vst3_module_info(bundle_path: &Path) -> Option<Vec<(String, String, String, String)>> {
     let candidates = [
-        bundle_path.join("Contents").join("moduleInfo.json"),
-        bundle_path.join("Contents").join("Resources").join("moduleInfo.json"),
+        bundle_path.join("Contents").join("Resources").join("moduleinfo.json"),
+        bundle_path.join("Contents").join("moduleinfo.json"),
     ];
     let json_path = candidates.iter().find(|p| p.exists())?;
     let data = fs::read_to_string(json_path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&data).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&strip_trailing_commas(&data))
+        .inspect_err(|e| log::warn!("Unreadable {}: {e}", json_path.display()))
+        .ok()?;
 
     let factory_vendor = v
         .get("Factory Info")
@@ -651,6 +683,26 @@ fn read_vst3_module_info(bundle_path: &Path) -> Option<Vec<(String, String, Stri
         out.push((name, vendor, version, category));
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// The SDK's moduleinfo writer emits JSON5-style trailing commas
+/// (`"Fx", ],`), which serde_json rejects. Drops every `,` whose next
+/// non-whitespace char is `]` or `}`, outside string literals.
+fn strip_trailing_commas(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    let (mut in_str, mut escaped) = (false, false);
+    for (i, c) in json.char_indices() {
+        if in_str {
+            in_str = escaped || c != '"';
+            escaped = !escaped && c == '\\';
+        } else if c == '"' {
+            in_str = true;
+        } else if c == ',' && matches!(json[i + 1..].trim_start().chars().next(), Some(']' | '}')) {
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// One `PluginInfo` per plugin found in a file; ids of sub-plugins after the
@@ -741,6 +793,65 @@ fn read_vst3_pe_version_info(dll_path: &Path) -> Option<(String, String, String,
     }
     // Category cannot be derived from VERSIONINFO strings; default to "Effect".
     Some((name, vendor, version, "Effect".to_string()))
+}
+
+/// True when `path` is an x64 (AMD64) PE image whose export table names
+/// `VSTPluginMain` or `main`. Plain file reads of the headers and the export
+/// name table — the DLL is never loaded, so 32-bit plugins and helper DLLs
+/// are told apart without running any of their code.
+#[cfg(target_os = "windows")]
+fn is_x64_vst2_dll(path: &Path) -> bool {
+    pe_x64_exports_any(path, &[b"VSTPluginMain\0", b"main\0"])
+}
+
+/// `wanted` names include their trailing NUL and are at most 32 bytes.
+#[cfg(target_os = "windows")]
+fn pe_x64_exports_any(path: &Path, wanted: &[&[u8]]) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    fn rd<const N: usize>(f: &mut fs::File, off: u64) -> Option<[u8; N]> {
+        f.seek(SeekFrom::Start(off)).ok()?;
+        let mut b = [0u8; N];
+        f.read(&mut b).ok()?; // short read at EOF leaves zeros
+        Some(b)
+    }
+    let u16_at = |f: &mut fs::File, off| rd::<2>(f, off).map(u16::from_le_bytes);
+    let u32_at = |f: &mut fs::File, off| rd::<4>(f, off).map(u32::from_le_bytes);
+
+    let check = || -> Option<bool> {
+        let mut f = fs::File::open(path).ok()?;
+        if rd::<2>(&mut f, 0)? != *b"MZ" { return None; }
+        let pe = u32_at(&mut f, 0x3C)? as u64;
+        if rd::<4>(&mut f, pe)? != *b"PE\0\0" { return None; }
+        if u16_at(&mut f, pe + 4)? != 0x8664 { return Some(false); } // IMAGE_FILE_MACHINE_AMD64
+        let n_sections = u16_at(&mut f, pe + 6)? as u64;
+        let opt = pe + 24;
+        let opt_size = u16_at(&mut f, pe + 20)? as u64;
+        if u16_at(&mut f, opt)? != 0x20B { return Some(false); } // PE32+
+        let export_rva = u32_at(&mut f, opt + 112)?; // data directory 0
+        if export_rva == 0 { return Some(false); }
+        // (virtual address, virtual size, raw offset) per section, for RVA → file offset.
+        let sections: Vec<(u32, u32, u32)> = (0..n_sections.min(96))
+            .filter_map(|i| {
+                let s = opt + opt_size + i * 40;
+                Some((u32_at(&mut f, s + 12)?, u32_at(&mut f, s + 8)?.max(u32_at(&mut f, s + 16)?), u32_at(&mut f, s + 20)?))
+            })
+            .collect();
+        let to_off = |rva: u32| {
+            sections.iter().find(|&&(va, size, _)| rva >= va && rva - va < size).map(|&(va, _, raw)| (rva - va) as u64 + raw as u64)
+        };
+        let dir = to_off(export_rva)?;
+        let n_names = u32_at(&mut f, dir + 24)?.min(1 << 16) as u64;
+        let names = to_off(u32_at(&mut f, dir + 32)?)?;
+        for i in 0..n_names {
+            let name_off = to_off(u32_at(&mut f, names + i * 4)?)?;
+            let name = rd::<32>(&mut f, name_off)?;
+            if wanted.iter().any(|w| name.starts_with(w)) {
+                return Some(true);
+            }
+        }
+        Some(false)
+    };
+    check().unwrap_or(false)
 }
 
 // ── VS_VERSION_INFO binary parser (pure Rust; no platform dependencies) ───────
@@ -864,8 +975,6 @@ fn vi_parse(data: &[u8]) -> Option<(String, String, String)> {
     if name.is_empty() { None } else { Some((name, company, file_ver)) }
 }
 
-/// Briefly load a VST3 DLL and query `IPluginFactory2` for real metadata.
-/// Falls back to `IPluginFactory` (name + factory vendor only) if unavailable.
 /// A scan step that has to run plugin code to read metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeKind {
@@ -909,8 +1018,81 @@ fn parse_scan_one_args(args: &[String]) -> Option<(ProbeKind, String)> {
 pub fn scan_one_cli(args: &[String]) -> bool {
     let Some((kind, path)) = parse_scan_one_args(args) else { return false };
     let metas = probe_in_process(kind, Path::new(&path));
-    println!("{}", serde_json::to_string(&metas).unwrap_or_else(|_| "[]".into()));
+    // Plugins may print to stdout too; the result is the line behind the
+    // sentinel (leading newline in case the plugin left a partial line).
+    println!("\n{PROBE_SENTINEL}{}", serde_json::to_string(&metas).unwrap_or_else(|_| "[]".into()));
     true
+}
+
+/// Prefix of the `--scan-one` child's result line.
+const PROBE_SENTINEL: &str = "@@relighthost-scan-result@@";
+
+/// Probes that crashed, hung or returned nothing readable. `scan` compares
+/// it around each root and skips caching a root whose metadata is only the
+/// file-name fallback, so the next scan retries.
+static PROBE_FAILURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Reads the child's stdout line by line until the sentinel line, ignoring
+/// whatever the plugin printed. `None` when stdout closes without one.
+fn read_probe_result(out: impl std::io::Read) -> Option<Vec<Meta>> {
+    use std::io::BufRead;
+    std::io::BufReader::new(out)
+        .split(b'\n')
+        .map_while(Result::ok)
+        .find_map(|line| serde_json::from_slice(line.strip_prefix(PROBE_SENTINEL.as_bytes())?).ok())
+}
+
+/// Runs a `--scan-one` child and returns its result, or `None` when it
+/// crashed, hung past `timeout`, or exited without a result line. stdout is
+/// drained on a thread while waiting, so neither a chatty plugin (full
+/// pipe) nor a helper process that inherited the pipe can stall the scan.
+// ponytail: a helper that inherited the pipe outlives the kill and keeps
+// the reader thread parked until it exits; a kill-on-close Job object
+// (windows-sys feature Win32_System_JobObjects) would take it down too.
+fn run_probe(mut cmd: std::process::Command, timeout: std::time::Duration) -> Option<Vec<Meta>> {
+    use std::process::Stdio;
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::{Duration, Instant};
+
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
+        .inspect_err(|e| log::warn!("Could not start scan helper: {e}"))
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        if let Some(metas) = read_probe_result(stdout) {
+            let _ = tx.send(metas);
+        }
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut exited_at: Option<Instant> = None;
+    let result = loop {
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(metas) => break Some(metas),
+            Err(RecvTimeoutError::Disconnected) => break None, // stdout closed, no result
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if exited_at.is_none() && matches!(child.try_wait(), Ok(Some(_))) {
+            exited_at = Some(Instant::now());
+        }
+        // Exited but the pipe is still open (a helper inherited it): give
+        // the last bytes a moment, then stop waiting for a result.
+        if exited_at.is_some_and(|t| t.elapsed() > Duration::from_secs(1)) {
+            break None;
+        }
+        if Instant::now() >= deadline {
+            log::warn!("Scan helper hung (>{timeout:?})");
+            break None;
+        }
+    };
+    let _ = child.kill();
+    if let Ok(status) = child.wait() {
+        if result.is_none() && !status.success() {
+            log::warn!("Scan helper exited with {status}");
+        }
+    }
+    result
 }
 
 /// Runs a probe in this process (the `--scan-one` child, and tests).
@@ -950,58 +1132,28 @@ fn probe(kind: ProbeKind, path: &Path) -> Vec<Meta> {
 
 #[cfg(not(test))]
 fn probe_out_of_process(kind: ProbeKind, path: &Path) -> Vec<Meta> {
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-    const TIMEOUT: Duration = Duration::from_secs(20);
+    use std::process::Command;
+    use std::time::Duration;
+    // Generous: loader-style plugins (Supertone Clear: 260 KB stub + 25 MB
+    // model) take 6-30 s just to hand out their factory, longer while other
+    // probes run alongside. A failed probe falls back to file-name metadata
+    // and is not cached (PROBE_FAILURES), so the next scan retries it.
+    const TIMEOUT: Duration = Duration::from_secs(60);
 
     let Ok(exe) = std::env::current_exe() else { return probe_in_process(kind, path) };
     let mut cmd = Command::new(exe);
-    cmd.arg("--scan-one")
-        .arg(kind.arg())
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    cmd.arg("--scan-one").arg(kind.arg()).arg(path);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            log::warn!("Could not start scan helper for '{}': {e}", path.display());
-            return Vec::new();
-        }
-    };
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(status)) => {
-                log::warn!("Plugin crashed while being scanned ({status}), skipped its metadata: {}", path.display());
-                return Vec::new();
-            }
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                log::warn!("Plugin hung while being scanned (>{TIMEOUT:?}), skipped its metadata: {}", path.display());
-                return Vec::new();
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(e) => {
-                log::warn!("Scan helper wait failed for '{}': {e}", path.display());
-                return Vec::new();
-            }
-        }
-    }
-    let mut out = Vec::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        use std::io::Read;
-        let _ = stdout.read_to_end(&mut out);
-    }
-    serde_json::from_slice(&out).unwrap_or_default()
+    run_probe(cmd, TIMEOUT).unwrap_or_else(|| {
+        PROBE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        log::warn!("Plugin crashed or hung while being scanned, skipped its metadata: {}", path.display());
+        Vec::new()
+    })
 }
 
 /// Serializes every scan step that executes plugin code (DLL load +
@@ -1276,6 +1428,24 @@ mod multi_plugin_tests {
         assert_ne!(plugins[0].id, plugins[1].id, "ids must be unique per sub-plugin");
         assert_eq!(plugins[1].vendor, "Acme");
     }
+
+    #[test]
+    fn sdk_moduleinfo_with_trailing_commas_parses() {
+        let sdk = r#"{ "Name": "a, ]\" }", "Classes": [ { "Sub Categories": [ "Fx", ], }, ], }"#;
+        let v: serde_json::Value = serde_json::from_str(&strip_trailing_commas(sdk)).unwrap();
+        assert_eq!(v["Name"], "a, ]\" }", "commas inside strings are kept");
+        assert_eq!(v["Classes"][0]["Sub Categories"][0], "Fx");
+    }
+
+    #[test]
+    fn same_named_plugins_in_two_folders_get_distinct_ids_and_repeats_are_dropped() {
+        let p = |path: &str| sub_plugins("vst3::Clear", path.into(), PluginFormat::VST3, vec![("Clear".into(), String::new(), String::new(), "Effect".into())]);
+        let all = [p("C:/VST3/Clear.vst3"), p("C:/VST3/Supertone/Clear.vst3"), p("C:/VST3/Supertone/Clear.vst3")].concat();
+        let out = dedupe_plugins(all);
+        assert_eq!(out.len(), 2, "overlapping roots list a file once");
+        assert_eq!(out[0].id, "vst3::Clear");
+        assert_eq!(out[1].id, "vst3::Clear@C:/VST3/Supertone/Clear.vst3");
+    }
 }
 
 #[cfg(test)]
@@ -1299,6 +1469,69 @@ mod probe_tests {
     #[test]
     fn probing_a_missing_file_finds_nothing() {
         assert!(probe_in_process(ProbeKind::Vst2, Path::new("C:/does/not/exist.dll")).is_empty());
+    }
+
+    #[test]
+    fn probe_result_is_found_behind_plugin_noise() {
+        let out = format!("plugin says hi\n{{not json\n\n{PROBE_SENTINEL}[[\"N\",\"V\",\"1\",\"Effect\"]]\r\ntrailing");
+        let metas = read_probe_result(out.as_bytes()).unwrap();
+        assert_eq!(metas, vec![("N".into(), "V".into(), "1".into(), "Effect".into())]);
+        assert!(read_probe_result(&b"[[\"N\",\"V\",\"1\",\"Effect\"]]\n"[..]).is_none(), "no sentinel, no result");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn probe_child_that_hangs_or_leaves_a_helper_holding_the_pipe_does_not_stall() {
+        use std::os::windows::process::CommandExt;
+        use std::time::{Duration, Instant};
+        let cmd = |script: String| {
+            let mut c = std::process::Command::new("cmd");
+            c.raw_arg(script);
+            c
+        };
+
+        // Hangs: no result, and back within the timeout.
+        let t = Instant::now();
+        assert!(run_probe(cmd("/C ping -n 6 127.0.0.1".into()), Duration::from_millis(500)).is_none());
+        assert!(t.elapsed() < Duration::from_secs(3), "timeout not enforced: {:?}", t.elapsed());
+
+        // A background helper inherits stdout and outlives the child; the
+        // result line is still read straight away.
+        let t = Instant::now();
+        let script = format!(r#"/C start /b ping -n 6 127.0.0.1 & echo {PROBE_SENTINEL}[["N","V","1","Effect"]]"#);
+        let metas = run_probe(cmd(script), Duration::from_secs(20)).expect("result behind noise");
+        assert_eq!(metas[0].0, "N");
+        assert!(t.elapsed() < Duration::from_secs(3), "waited on the helper: {:?}", t.elapsed());
+
+        // Exits without a result line (a crash): None, not a parse of junk.
+        assert!(run_probe(cmd("/C echo [] & exit 3".into()), Duration::from_secs(20)).is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn only_x64_dlls_with_a_matching_export_pass_the_header_check() {
+        let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let k64 = Path::new(&sys).join(r"System32\kernel32.dll");
+        let k32 = Path::new(&sys).join(r"SysWOW64\kernel32.dll");
+        assert!(pe_x64_exports_any(&k64, &[b"Sleep\0"]), "x64 export table read");
+        assert!(!is_x64_vst2_dll(&k64), "helper DLL without a VST2 entry point");
+        if k32.exists() {
+            assert!(!pe_x64_exports_any(&k32, &[b"Sleep\0"]), "32-bit image rejected");
+        }
+        assert!(!is_x64_vst2_dll(Path::new("C:/does/not/exist.dll")));
+    }
+
+    #[test]
+    fn bundle_fallback_prefers_any_vst3_over_a_helper_dll() {
+        let bundle = std::env::temp_dir().join(format!("rh-bin-{}", std::process::id())).join("Odd.vst3");
+        let arch = bundle.join("Contents").join("x86_64-win");
+        std::fs::create_dir_all(&arch).unwrap();
+        for f in ["aaa_helper.dll", "zzz_real.vst3"] {
+            std::fs::write(arch.join(f), b"x").unwrap();
+        }
+        let bin = vst3_bundle_binary(&bundle);
+        let _ = std::fs::remove_dir_all(bundle.parent().unwrap());
+        assert_eq!(bin.unwrap().file_name().unwrap(), "zzz_real.vst3");
     }
 }
 

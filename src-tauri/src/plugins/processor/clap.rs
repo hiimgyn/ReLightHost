@@ -182,7 +182,22 @@ pub struct ClapPluginGui {
 
 // ── No-op host callbacks ─────────────────────────────────────────────────────
 
-unsafe extern "C" fn host_get_extension(_h: *const ClapHost, _id: *const c_char) -> *const c_void { std::ptr::null() }
+/// `clap_host_state`: the plugin reports state changes made in its own GUI.
+#[repr(C)]
+struct ClapHostState {
+    mark_dirty: Option<unsafe extern "C" fn(*const ClapHost)>,
+}
+unsafe extern "C" fn host_mark_dirty(_h: *const ClapHost) {
+    crate::core::autosave::request_plugin_chain_autosave(); // debounced
+}
+static HOST_STATE: ClapHostState = ClapHostState { mark_dirty: Some(host_mark_dirty) };
+
+unsafe extern "C" fn host_get_extension(_h: *const ClapHost, id: *const c_char) -> *const c_void {
+    if !id.is_null() && CStr::from_ptr(id).to_bytes_with_nul() == CLAP_EXT_STATE {
+        return &HOST_STATE as *const ClapHostState as *const c_void;
+    }
+    std::ptr::null()
+}
 unsafe extern "C" fn host_request_restart  (_h: *const ClapHost) {}
 unsafe extern "C" fn host_request_process  (_h: *const ClapHost) {}
 unsafe extern "C" fn host_request_callback(h: *const ClapHost) {
@@ -562,17 +577,23 @@ impl ClapProcessor {
             drop(load_guard);
 
             // init → activate → start_processing
+            // Detach before destroy: a queued on_main_thread callback must
+            // not run on the freed plugin.
+            let destroy = |why: &str| {
+                main_thread.detach();
+                if let Some(d) = (*plugin).destroy { d(plugin); }
+                anyhow!("plugin.{}() failed for '{}'", why, name_str)
+            };
             if let Some(f) = (*plugin).init {
                 if !f(plugin) {
-                    if let Some(d) = (*plugin).destroy { d(plugin); }
-                    return Err(anyhow!("plugin.init() failed for '{}'", name_str));
+                    return Err(destroy("init"));
                 }
             }
             let bs = block_size as u32;
             let max_frames = bs.max(4096);
             if let Some(f) = (*plugin).activate {
                 if !f(plugin, sample_rate, 1, max_frames) {
-                    log::warn!("CLAP activate() returned false for '{}'; continuing", name_str);
+                    return Err(destroy("activate"));
                 }
             }
 
@@ -644,28 +665,34 @@ impl ClapProcessor {
         }
     }
 
-    /// Serialise plugin state (CLAP state extension `save`).
-    pub fn get_state(&self) -> Vec<u8> {
-        let ext = match self.state_ext { Some(e) => e, None => return Vec::new() };
-        unsafe {
-            let save_fn = match (*ext).save { Some(f) => f, None => return Vec::new() };
-            let mut ctx = WriteCtx(Vec::new());
-            let stream  = ClapOStream { ctx: &mut ctx as *mut WriteCtx as *mut c_void, write: Some(state_write_cb) };
-            save_fn(self.plugin.0, &stream);
-            ctx.0
-        }
+    /// (plugin, state extension) pointers as integers, or `None` without a
+    /// state extension — so state can be saved/loaded on the main (host)
+    /// thread without holding the processor mutex, like [`Self::gui_handles`].
+    /// Valid while this processor lives.
+    pub fn state_handles(&self) -> Option<(usize, usize)> {
+        self.state_ext.map(|ext| (self.plugin.0 as usize, ext as usize))
     }
 
-    /// Restore plugin state (CLAP state extension `load`).
-    pub fn set_state(&self, data: &[u8]) {
+    /// Serialise plugin state (CLAP state extension `save`). Main thread.
+    /// SAFETY: `plugin`/`ext` from [`Self::state_handles`] of a live processor.
+    pub unsafe fn save_state(plugin: usize, ext: usize) -> Vec<u8> {
+        let ext = ext as *const ClapPluginState;
+        let save_fn = match (*ext).save { Some(f) => f, None => return Vec::new() };
+        let mut ctx = WriteCtx(Vec::new());
+        let stream  = ClapOStream { ctx: &mut ctx as *mut WriteCtx as *mut c_void, write: Some(state_write_cb) };
+        save_fn(plugin as *const ClapPlugin, &stream);
+        ctx.0
+    }
+
+    /// Restore plugin state (CLAP state extension `load`). Main thread.
+    /// SAFETY: as [`Self::save_state`].
+    pub unsafe fn load_state(plugin: usize, ext: usize, data: &[u8]) {
         if data.is_empty() { return; }
-        let ext = match self.state_ext { Some(e) => e, None => return };
-        unsafe {
-            let load_fn = match (*ext).load { Some(f) => f, None => return };
-            let mut ctx = ReadCtx { ptr: data.as_ptr(), len: data.len(), pos: 0 };
-            let stream  = ClapIStream { ctx: &mut ctx as *mut ReadCtx as *mut c_void, read: Some(state_read_cb) };
-            load_fn(self.plugin.0, &stream);
-        }
+        let ext = ext as *const ClapPluginState;
+        let load_fn = match (*ext).load { Some(f) => f, None => return };
+        let mut ctx = ReadCtx { ptr: data.as_ptr(), len: data.len(), pos: 0 };
+        let stream  = ClapIStream { ctx: &mut ctx as *mut ReadCtx as *mut c_void, read: Some(state_read_cb) };
+        load_fn(plugin as *const ClapPlugin, &stream);
     }
 
     /// (plugin, gui extension) pointers as integers for the GUI code, or

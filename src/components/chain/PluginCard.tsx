@@ -31,6 +31,7 @@ interface PluginCardProps {
   onCrashStatusChanged?: () => Promise<void> | void;
   onLaunch?: (instanceId: string) => Promise<void> | void;
   onDragHandlePointerDown?: (e: React.PointerEvent) => void;
+  onDragHandleKeyDown?: (e: React.KeyboardEvent) => void;
   isDragging?: boolean;
 }
 
@@ -43,6 +44,7 @@ function PluginCard({
   onCrashStatusChanged,
   onLaunch,
   onDragHandlePointerDown,
+  onDragHandleKeyDown,
   isDragging = false,
 }: PluginCardProps) {
   const { token } = theme.useToken();
@@ -255,8 +257,13 @@ function PluginCard({
               {onDragHandlePointerDown && (
                 <Tooltip title={t('card.dragToReorder')}>
                   <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={t('card.dragToReorder')}
                     onPointerDown={onDragHandlePointerDown}
+                    onKeyDown={onDragHandleKeyDown}
                     style={{
+                      touchAction: 'none',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',

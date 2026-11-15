@@ -63,7 +63,46 @@ impl BacklogTrimmer {
     }
 }
 
-pub type AudioProcessFn = Box<dyn Fn(&mut [f32], &mut [f32]) + Send + 'static>;
+/// Sets FTZ|DAZ in MXCSR for its lifetime and restores the caller's value
+/// on drop (JUCE's `ScopedNoDenormals`). Denormals reaching an IIR/reverb
+/// tail on silence cost 10–100× per op — a CPU spike exactly when the input
+/// goes quiet. Scoped per block, not set once per thread, because the ASIO
+/// callback runs on the driver's own thread, whose float mode isn't ours.
+struct NoDenormals(#[cfg(target_arch = "x86_64")] u32);
+
+impl NoDenormals {
+    #[inline]
+    fn new() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut old: u32 = 0;
+            // SAFETY: stmxcsr/ldmxcsr only read/write the 4-byte operand and
+            // this thread's MXCSR; FTZ (bit 15) | DAZ (bit 6) change float
+            // results only for subnormals.
+            unsafe {
+                std::arch::asm!("stmxcsr [{}]", in(reg) &mut old, options(nostack, preserves_flags));
+                let new = old | 0x8040;
+                std::arch::asm!("ldmxcsr [{}]", in(reg) &new, options(nostack, preserves_flags));
+            }
+            Self(old)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        Self()
+    }
+}
+
+impl Drop for NoDenormals {
+    #[inline]
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: restores the MXCSR value saved in `new`.
+        unsafe {
+            std::arch::asm!("ldmxcsr [{}]", in(reg) &self.0, options(nostack, preserves_flags));
+        }
+    }
+}
+
+pub type AudioProcessFn =Box<dyn Fn(&mut [f32], &mut [f32]) + Send + 'static>;
 
 pub struct MixerState {
     pub process_fn: Arc<Mutex<Option<AudioProcessFn>>>,
@@ -102,6 +141,7 @@ pub struct MixerBlockResult {
 /// output-stream closure so both the ASIO and WASAPI backends share one
 /// implementation instead of two hand-kept-in-sync copies.
 pub fn process_block(left: &mut [f32], right: &mut [f32], state: &MixerState, sample_rate_hz: f64) -> MixerBlockResult {
+    let _no_denormals = NoDenormals::new();
     let t0 = std::time::Instant::now();
     if let Ok(guard) = state.process_fn.try_lock() {
         if let Some(ref f) = *guard {
@@ -279,6 +319,21 @@ mod tests {
         assert!(result.mirror_to_virtual, "ASIO output: virtual mirror must follow loopback flag, not mute");
         assert!(result.is_muted);
         assert!(result.is_loopback);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn chain_runs_with_denormals_flushed_and_mode_is_restored_after() {
+        let s = state(false);
+        *s.process_fn.lock().unwrap() = Some(Box::new(|l: &mut [f32], _r: &mut [f32]| {
+            l[0] *= 0.5; // MIN_POSITIVE * 0.5 is subnormal unless FTZ is on
+        }));
+        let mut l = vec![f32::MIN_POSITIVE];
+        let mut r = vec![0.0f32];
+        process_block(&mut l, &mut r, &s, 48_000.0);
+        assert_eq!(l[0], 0.0, "subnormal result must be flushed inside the block");
+        let after = std::hint::black_box(f32::MIN_POSITIVE) * 0.5;
+        assert!(after > 0.0, "caller's float mode must be restored");
     }
 
     #[test]

@@ -163,3 +163,6 @@ assets = [
     "644",
   ],
 ]
+
+# Local vendor patch: keeps libDF out of the ReLightHost workspace.
+[workspace]

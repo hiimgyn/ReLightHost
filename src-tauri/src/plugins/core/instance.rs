@@ -1181,7 +1181,7 @@ mod state_tests {
             name: "Compressor".into(),
             vendor: String::new(),
             version: String::new(),
-            path: crate::plugins::builtin::compressor::ID.into(),
+            path: relight_addon_compressor::ID.into(),
             format: PluginFormat::Builtin,
             category: String::new(),
             sub_index: 0,
@@ -1192,7 +1192,7 @@ mod state_tests {
     #[test]
     fn builtin_that_cannot_run_at_this_rate_reports_error_and_passes_audio_through() {
         let info = PluginInfo {
-            path: crate::plugins::builtin::deep_filter::ID.into(),
+            path: relight_addon_deep_filter::ID.into(),
             format: PluginFormat::Builtin,
             ..compressor().plugin_info.clone()
         };
@@ -1243,7 +1243,7 @@ mod state_tests {
     fn chain_latency_sums_active_plugins_and_skips_bypassed_ones() {
         let manager = PluginInstanceManager::new();
         let ns = PluginInfo {
-            path: crate::plugins::builtin::noise_suppressor::ID.into(),
+            path: relight_addon_noise_suppressor::ID.into(),
             ..compressor().plugin_info.clone()
         };
         let ns_id = manager.load_plugin(ns, 48_000.0, 512).unwrap();

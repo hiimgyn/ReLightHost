@@ -12,14 +12,16 @@ dependencies = [
  "auto-launch",
  "base64 0.22.1",
  "chrono",
- "deep_filter",
  "dirs 7.0.0",
  "libloading 0.9.0",
  "log",
- "nnnoiseless",
  "parking_lot",
  "rayon",
  "relight-addon-api",
+ "relight-addon-compressor",
+ "relight-addon-deep-filter",
+ "relight-addon-noise-suppressor",
+ "relight-addon-voice",
  "ringbuf",
  "serde",
  "serde_json",
@@ -30,10 +32,6 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
- "tract-core",
- "tract-hir",
- "tract-onnx",
- "tract-pulse",
  "vst3",
  "webbrowser",
  "windows",
@@ -3903,6 +3901,43 @@ dependencies = [
  "log",
  "ringbuf",
  "windows",
+]
+
+[[package]]
+name = "relight-addon-compressor"
+version = "0.1.0"
+dependencies = [
+ "relight-addon-api",
+]
+
+[[package]]
+name = "relight-addon-deep-filter"
+version = "0.1.0"
+dependencies = [
+ "deep_filter",
+ "log",
+ "relight-addon-api",
+ "ringbuf",
+ "tract-core",
+ "tract-hir",
+ "tract-onnx",
+ "tract-pulse",
+]
+
+[[package]]
+name = "relight-addon-noise-suppressor"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "nnnoiseless",
+ "relight-addon-api",
+]
+
+[[package]]
+name = "relight-addon-voice"
+version = "0.1.0"
+dependencies = [
+ "relight-addon-api",
 ]
 
 [[package]]

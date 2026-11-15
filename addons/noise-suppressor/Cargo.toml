@@ -1,0 +1,12 @@
+[package]
+name = "relight-addon-noise-suppressor"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80.0"
+license = "GPL-3.0-or-later"
+workspace = "../../src-tauri"
+
+[dependencies]
+relight-addon-api = { path = "../api" }
+nnnoiseless = "0.5"
+log = "0.4"

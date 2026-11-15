@@ -387,7 +387,7 @@ mod tests {
             name: "Compressor".into(),
             vendor: String::new(),
             version: String::new(),
-            path: crate::plugins::builtin::compressor::ID.into(),
+            path: relight_addon_compressor::ID.into(),
             format: PluginFormat::Builtin,
             category: String::new(),
             sub_index: 0,

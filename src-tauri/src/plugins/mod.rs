@@ -5,7 +5,6 @@ pub use core::types;
 pub mod gui;
 pub mod processor;
 pub use core::crash_protection;
-pub mod builtin;
 pub mod addons;
 
 pub use scanner::PluginScanner;

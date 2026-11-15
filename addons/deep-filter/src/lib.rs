@@ -354,13 +354,16 @@ impl DeepFilterProcessor {
 }
 
 #[cfg(test)]
+mod golden_helpers;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     #[ignore]
     fn golden_deep_filter() {
-        use super::super::golden_tests::*;
+        use crate::golden_helpers::*;
         for (suffix, params) in [("default", &[][..]), ("custom", CUSTOM_DEEP)] {
             let mut df = DeepFilterProcessor::new(48000.0).unwrap();
             for &(id, v) in params {

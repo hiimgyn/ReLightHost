@@ -11,8 +11,13 @@ rust-version = "1.80.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [workspace]
-members = ["../addons/api"]
-exclude = ["vendor"]
+members = [
+    "../addons/api",
+    "../addons/noise-suppressor",
+    "../addons/deep-filter",
+    "../addons/compressor",
+    "../addons/voice",
+]
 
 [lib]
 name = "app_lib"
@@ -26,6 +31,10 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 relight-addon-api = { path = "../addons/api" }
+relight-addon-noise-suppressor = { path = "../addons/noise-suppressor" }
+relight-addon-deep-filter = { path = "../addons/deep-filter" }
+relight-addon-compressor = { path = "../addons/compressor" }
+relight-addon-voice = { path = "../addons/voice" }
 tauri = { version = "2.10.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
@@ -50,14 +59,6 @@ vst3 = "0.3"                                              # vst3-rs: VST3 plugin
 # VST2 hosting uses raw FFI (see plugins::processor::vst2) — no crate: the
 # `vst` crate (vst-rs) is deprecated upstream and VST2 licensing has been
 # discontinued since 2018, but the ABI itself is small and frozen.
-
-# Built-in DSP — noise suppression via RNNoise & DeepFilterNet (pure Rust)
-nnnoiseless = "0.5"
-deep_filter = { path = "vendor/DeepFilterNet/libDF", default-features = false, features = ["tract", "default-model-ll"] }
-tract-core = "=0.21.4"
-tract-onnx = "=0.21.4"
-tract-pulse = "=0.21.4"
-tract-hir = "=0.21.4"
 
 # Utilities
 anyhow = "1.0"

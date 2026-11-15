@@ -26,10 +26,12 @@ const DEFAULTS = { 0: 1.0, 1: 0.0, 2: 0.0, 3: 0.0 };
 export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
   const { t } = useTranslation();
   const sampleRate = useAudioStore(state => state.sampleRate);
-  // Add-ons that cannot run at the current rate report status Error.
-  const isSampleRateMismatch = usePluginStore(
-    (s) => s.crashStatusByInstanceId[plugin.instance_id]?.type === 'Error',
-  );
+  // Error text set by the host (instance.rs); only the rate one mentions 48000 Hz.
+  const errorText = usePluginStore((s) => {
+    const status = s.crashStatusByInstanceId[plugin.instance_id];
+    return status?.type === 'Error' ? status.data : null;
+  });
+  const isSampleRateMismatch = errorText?.includes('needs 48000 Hz') ?? false;
   const modalWidth = typeof window === 'undefined' ? 560 : 'clamp(520px, 52vw, 580px)';
 
 
@@ -78,15 +80,17 @@ export default function NoiseSuppressorGui({ plugin, isOpen, onClose }: Props) {
           icon={<Mic size={18} className="text-cyan-400" />}
         />
 
-        {/* 48kHz Warning if mismatched */}
-        {isSampleRateMismatch && (
+        {/* 48 kHz warning, or the host's error text for any other error */}
+        {errorText && (
           <Alert
             type="warning"
             showIcon
             icon={<AlertTriangle size={15} />}
             message={
               <span className="text-xs">
-                {t('noise.sampleRateMismatch')} ({t('noise.sampleRateRequired', { rate: sampleRate })})
+                {isSampleRateMismatch
+                  ? `${t('noise.sampleRateMismatch')} (${t('noise.sampleRateRequired', { rate: sampleRate })})`
+                  : errorText}
               </span>
             }
             className="py-1 px-3 border border-amber-500/30 bg-amber-500/10 rounded-lg text-amber-200"

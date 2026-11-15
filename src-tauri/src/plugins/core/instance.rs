@@ -173,6 +173,7 @@ impl PluginInstance {
 
         let crash_protection = crash_protection::create_shared();
         if plugin_info.format == PluginFormat::Builtin && addon_proc.is_none() {
+            // NoiseSuppressorGui keys its rate alert on "needs 48000 Hz".
             crash_protection.lock().status = crash_protection::PluginStatus::Error(format!(
                 "'{}' cannot run at {} Hz (needs 48000 Hz) — passing audio through",
                 plugin_info.name, sample_rate
@@ -1277,6 +1278,7 @@ mod state_tests {
             let inst = PluginInstance::new(info, 48_000.0, 480).unwrap();
             // Sentinel: only a published meter (always 0..=1) can replace it.
             inst.meter_values[0].store((-1.0f32).to_bits(), Ordering::Relaxed);
+            inst.meter_values[1].store(1.0f32.to_bits(), Ordering::Relaxed); // gate_db is always <= 0
             for _ in 0..200 {
                 let mut noise = || {
                     (0..480).map(|_| { s = s.wrapping_mul(1664525).wrapping_add(1013904223); (s >> 8) as f32 / 16_777_216.0 - 0.5 }).collect::<Vec<f32>>()
@@ -1291,7 +1293,13 @@ mod state_tests {
             };
             assert_eq!(inst.latency_samples(), want, "{}", d.id);
             match d.id {
-                "builtin::noise_suppressor" | "builtin::deep_filter" => {
+                "builtin::noise_suppressor" => {
+                    let meters = inst.addon_meters();
+                    assert_eq!(meters.len(), 2, "{}", d.id);
+                    assert!((0.0..=1.0).contains(&meters[0]), "{}: vad {} never published", d.id, meters[0]);
+                    assert!(meters[1].is_finite() && meters[1] <= 0.0, "{}: gate_db {}", d.id, meters[1]);
+                }
+                "builtin::deep_filter" => {
                     let meters = inst.addon_meters();
                     assert_eq!(meters.len(), 1, "{}", d.id);
                     assert!((0.0..=1.0).contains(&meters[0]), "{}: vad {} never published", d.id, meters[0]);
@@ -1346,7 +1354,7 @@ mod state_tests {
         let inst = noise_suppressor();
         let _guard = inst.addon_proc.lock();
         assert_eq!(inst.latency_samples(), 960);
-        assert_eq!(inst.addon_meters().len(), 1);
+        assert_eq!(inst.addon_meters().len(), 2);
     }
 
     #[test]

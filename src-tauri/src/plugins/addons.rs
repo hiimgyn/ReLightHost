@@ -94,7 +94,7 @@ mod golden_tests {
     fn render(p: &mut dyn AddonProcessor) -> Vec<f32> {
         let (mut l, mut r) = golden_input();
         for (cl, cr) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
-            p.process(cl, cr, &mut [0.0]);
+            p.process(cl, cr, &mut [0.0; 8]);
         }
         l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]).collect()
     }

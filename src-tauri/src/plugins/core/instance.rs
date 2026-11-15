@@ -2,14 +2,13 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
-use relight_addon_api::AddonStatus;
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, PluginFormat};
 use crate::plugins::processor::clap::ClapProcessor;
 use crate::plugins::processor::vst2::Vst2Processor;
 use crate::plugins::processor::vst3::Vst3Processor;
-use relight_addon_api::{AddonDescriptor, AddonProcessor};
+use relight_addon_api::{AddonDescriptor, AddonProcessor, AddonStatus};
 use crate::plugins::crash_protection::{self, SharedCrashProtection};
 use anyhow::{Error, Result};
 use rayon::prelude::*;
@@ -725,14 +724,10 @@ impl Drop for PluginInstance {
     }
 }
 
-/// Splits job indices into (sequential, parallel) groups. VST3 jobs go
-/// in `sequential` unless `parallel_vst3` is true, in which case every
-/// job (VST3 included) goes in `parallel` — this is the entire behavior
-/// difference the setting controls; everything downstream just iterates
-/// whichever group a job landed in.
 /// `AddonStatus` in one word so the audio thread publishes it without a lock
-/// or allocation: bits 62-63 kind, 48-61 message length, 0-47 message pointer
-/// (user-space addresses fit in 48 bits; anything else degrades to a fixed text).
+/// or allocation: bits 62-63 kind (0 Ok, 1 Loading, 2 Error, 3 fixed
+/// "add-on error" with no pointer), 48-61 message length, 0-47 message
+/// pointer. A message whose pointer or length doesn't fit becomes kind 3.
 fn pack_status(s: AddonStatus) -> u64 {
     match s {
         AddonStatus::Ok => 0,
@@ -740,7 +735,7 @@ fn pack_status(s: AddonStatus) -> u64 {
         AddonStatus::Error(m) => {
             let (ptr, len) = (m.as_ptr() as u64, m.len() as u64);
             if ptr >> 48 != 0 || len >> 14 != 0 {
-                return pack_status(AddonStatus::Error("add-on error"));
+                return 3 << 62;
             }
             (2 << 62) | (len << 48) | ptr
         }
@@ -752,13 +747,22 @@ fn unpack_status(v: u64) -> AddonStatus {
         1 => AddonStatus::Loading,
         2 => {
             let (ptr, len) = ((v & ((1 << 48) - 1)) as *const u8, ((v >> 48) & 0x3fff) as usize);
-            // SAFETY: only `pack_status` makes kind 2, from a `&'static str`.
+            // SAFETY: a kind-2 word is only ever written by `pack_status`, from a
+            // `&'static str` (pointer and length of a live, valid UTF-8 static),
+            // so rebuilding it is sound. The pointer goes through an integer and
+            // back with `as` casts, which relies on exposed provenance.
             AddonStatus::Error(unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) })
         }
+        3 => AddonStatus::Error("add-on error"),
         _ => AddonStatus::Ok,
     }
 }
 
+/// Splits job indices into (sequential, parallel) groups. VST3 jobs go
+/// in `sequential` unless `parallel_vst3` is true, in which case every
+/// job (VST3 included) goes in `parallel` — this is the entire behavior
+/// difference the setting controls; everything downstream just iterates
+/// whichever group a job landed in.
 fn split_load_groups(is_vst3: &[bool], parallel_vst3: bool) -> (Vec<usize>, Vec<usize>) {
     let mut sequential = Vec::new();
     let mut parallel = Vec::new();
@@ -1316,6 +1320,16 @@ mod state_tests {
                 _ => AddonStatus::Error("noise suppressor worker stopped unexpectedly"),
             }
         }
+    }
+
+    #[test]
+    fn status_packing_round_trips_without_recursing() {
+        for st in [AddonStatus::Ok, AddonStatus::Loading, AddonStatus::Error("model failed to load")] {
+            assert_eq!(unpack_status(pack_status(st)), st);
+        }
+        let long: &'static str = Box::leak("x".repeat(1 << 14).into_boxed_str());
+        assert_eq!(unpack_status(pack_status(AddonStatus::Error(long))), AddonStatus::Error("add-on error"));
+        assert_eq!(unpack_status(3 << 62), AddonStatus::Error("add-on error"));
     }
 
     #[test]

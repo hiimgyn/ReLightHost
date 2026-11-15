@@ -217,6 +217,9 @@ impl PluginInstance {
     /// audio queued before the bypass is not replayed.
     pub fn set_bypassed(&self, bypassed: bool) {
         if !bypassed && self.is_bypassed() {
+            // ponytail: a lock timeout un-bypasses without a reset (stale audio
+            // can replay once); upgrade: flag the reset and let the audio
+            // thread run it at its next lock.
             if let Some(mut guard) = self.addon_proc.try_lock_for(STATE_LOCK_TIMEOUT) {
                 if let Some(proc) = guard.as_mut() {
                     proc.reset();
@@ -1243,6 +1246,8 @@ mod state_tests {
         for d in crate::plugins::addons::ADDONS {
             let info = crate::plugins::addons::plugin_info(d);
             let inst = PluginInstance::new(info, 48_000.0, 480).unwrap();
+            // Sentinel: only a published meter (always 0..=1) can replace it.
+            inst.meter_values[0].store((-1.0f32).to_bits(), Ordering::Relaxed);
             for _ in 0..200 {
                 let mut noise = || {
                     (0..480).map(|_| { s = s.wrapping_mul(1664525).wrapping_add(1013904223); (s >> 8) as f32 / 16_777_216.0 - 0.5 }).collect::<Vec<f32>>()
@@ -1257,13 +1262,14 @@ mod state_tests {
             };
             assert_eq!(inst.latency_samples(), want, "{}", d.id);
             match d.id {
-                "builtin::noise_suppressor" => {
-                    let vad = inst.addon_meters()[0];
-                    assert!((0.0..=1.0).contains(&vad), "vad {vad}");
-                    assert_eq!(inst.get_builtin_vad(), vad, "get_noise_suppressor_vad path");
+                "builtin::noise_suppressor" | "builtin::deep_filter" => {
+                    let meters = inst.addon_meters();
+                    assert_eq!(meters.len(), 1, "{}", d.id);
+                    assert!((0.0..=1.0).contains(&meters[0]), "{}: vad {} never published", d.id, meters[0]);
+                    assert_eq!(inst.get_builtin_vad(), meters[0], "{}: get_noise_suppressor_vad path", d.id);
                 }
                 "builtin::compressor" | "builtin::voice" => assert!(inst.addon_meters().is_empty(), "{}", d.id),
-                _ => {}
+                other => panic!("no meter check for {other}"),
             }
         }
     }

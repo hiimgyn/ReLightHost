@@ -39,6 +39,15 @@ pub struct AddonDescriptor {
     pub migrate: Option<MigrateFn>,
 }
 
+/// What the host shows for an add-on besides its parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddonStatus {
+    Ok,
+    /// Still starting up (not an error; audio may pass through meanwhile).
+    Loading,
+    Error(&'static str),
+}
+
 pub trait AddonProcessor: Send {
     /// Must write every meter slot each call.
     fn process(&mut self, l: &mut [f32], r: &mut [f32], meters: &mut [f32]);
@@ -47,6 +56,10 @@ pub trait AddonProcessor: Send {
     fn reset(&mut self) {}
     fn latency_samples(&self) -> u32 {
         0
+    }
+    /// Polled by the host after each block on the audio thread: no allocation, no blocking.
+    fn status(&self) -> AddonStatus {
+        AddonStatus::Ok
     }
 }
 

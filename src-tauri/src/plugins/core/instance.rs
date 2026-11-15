@@ -2,6 +2,7 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
+use relight_addon_api::AddonStatus;
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 use crate::plugins::types::{PluginInfo, PluginInstanceInfo, PluginParameter, PluginFormat};
@@ -48,6 +49,8 @@ pub struct PluginInstance {
     /// Meter values (f32 bits) written by the audio thread after each block.
     meter_values: [AtomicU32; 8],
     addon_latency: AtomicU32,
+    /// `AddonStatus` packed by `pack_status`, published after each block.
+    addon_status: AtomicU64,
     /// Last state blob successfully read from (or written to) the plugin.
     /// Returned by `get_state_binary` when a live read isn't possible right
     /// now (processor busy) so an
@@ -170,6 +173,7 @@ impl PluginInstance {
             proc
         });
         let addon_latency = addon_proc.as_ref().map_or(0, |p| p.latency_samples());
+        let addon_status = addon_proc.as_ref().map_or(0, |p| pack_status(p.status()));
 
         let crash_protection = crash_protection::create_shared();
         if plugin_info.format == PluginFormat::Builtin && addon_proc.is_none() {
@@ -199,6 +203,7 @@ impl PluginInstance {
             param_dirty:       AtomicU64::new(0),
             meter_values:      std::array::from_fn(|_| AtomicU32::new(0)),
             addon_latency:     AtomicU32::new(addon_latency),
+            addon_status:      AtomicU64::new(addon_status),
             last_state:        RwLock::new(None),
             gui_open:          Arc::new(AtomicBool::new(false)),
             gui_hwnd:          Arc::new(AtomicIsize::new(0)),
@@ -377,6 +382,12 @@ impl PluginInstance {
             m.store(b.to_bits(), Ordering::Relaxed);
         }
         self.addon_latency.store(proc.latency_samples(), Ordering::Relaxed);
+        self.addon_status.store(pack_status(proc.status()), Ordering::Relaxed);
+    }
+
+    /// The add-on's last published status (Ok for anything but an add-on).
+    pub fn addon_status(&self) -> AddonStatus {
+        unpack_status(self.addon_status.load(Ordering::Relaxed))
     }
 
     /// Serialize plugin state as raw bytes (mirrors LightHost's `getStateInformation`).
@@ -668,7 +679,12 @@ impl PluginInstance {
     
     /// Get crash protection status
     pub fn get_crash_status(&self) -> crash_protection::PluginStatus {
-        self.crash_protection.lock().status.clone()
+        let status = self.crash_protection.lock().status.clone();
+        match (&status, self.addon_status()) {
+            // Loading is transient, not a failure: the chain shows it as Ok.
+            (crash_protection::PluginStatus::Ok, AddonStatus::Error(m)) => crash_protection::PluginStatus::Error(m.to_string()),
+            _ => status,
+        }
     }
     
     /// Reset crash protection status
@@ -714,6 +730,35 @@ impl Drop for PluginInstance {
 /// job (VST3 included) goes in `parallel` — this is the entire behavior
 /// difference the setting controls; everything downstream just iterates
 /// whichever group a job landed in.
+/// `AddonStatus` in one word so the audio thread publishes it without a lock
+/// or allocation: bits 62-63 kind, 48-61 message length, 0-47 message pointer
+/// (user-space addresses fit in 48 bits; anything else degrades to a fixed text).
+fn pack_status(s: AddonStatus) -> u64 {
+    match s {
+        AddonStatus::Ok => 0,
+        AddonStatus::Loading => 1 << 62,
+        AddonStatus::Error(m) => {
+            let (ptr, len) = (m.as_ptr() as u64, m.len() as u64);
+            if ptr >> 48 != 0 || len >> 14 != 0 {
+                return pack_status(AddonStatus::Error("add-on error"));
+            }
+            (2 << 62) | (len << 48) | ptr
+        }
+    }
+}
+
+fn unpack_status(v: u64) -> AddonStatus {
+    match v >> 62 {
+        1 => AddonStatus::Loading,
+        2 => {
+            let (ptr, len) = ((v & ((1 << 48) - 1)) as *const u8, ((v >> 48) & 0x3fff) as usize);
+            // SAFETY: only `pack_status` makes kind 2, from a `&'static str`.
+            AddonStatus::Error(unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) })
+        }
+        _ => AddonStatus::Ok,
+    }
+}
+
 fn split_load_groups(is_vst3: &[bool], parallel_vst3: bool) -> (Vec<usize>, Vec<usize>) {
     let mut sequential = Vec::new();
     let mut parallel = Vec::new();
@@ -1256,6 +1301,41 @@ mod state_tests {
         inst.process_stereo(&mut l, &mut r);
         assert_eq!((l[31], r[31]), (0.25, -0.25));
         assert!(matches!(inst.get_crash_status(), crash_protection::PluginStatus::Error(_)), "status must survive processing");
+    }
+
+    struct FakeAddon(Arc<AtomicU32>);
+    impl AddonProcessor for FakeAddon {
+        fn process(&mut self, _: &mut [f32], _: &mut [f32], m: &mut [f32]) {
+            m.fill(0.0);
+        }
+        fn set_parameter(&mut self, _: u32, _: f32) {}
+        fn status(&self) -> AddonStatus {
+            match self.0.load(Ordering::Relaxed) {
+                0 => AddonStatus::Loading,
+                1 => AddonStatus::Ok,
+                _ => AddonStatus::Error("noise suppressor worker stopped unexpectedly"),
+            }
+        }
+    }
+
+    #[test]
+    fn deep_filter_worker_panic_shows_error() {
+        let code = Arc::new(AtomicU32::new(0));
+        let inst = compressor();
+        *inst.addon_proc.lock() = Some(Box::new(FakeAddon(Arc::clone(&code))));
+        let (mut l, mut r) = (vec![0.0f32; 32], vec![0.0f32; 32]);
+        inst.process_stereo(&mut l, &mut r);
+        assert_eq!(inst.addon_status(), AddonStatus::Loading);
+        assert!(matches!(inst.get_crash_status(), crash_protection::PluginStatus::Ok), "loading is not a crash");
+        code.store(1, Ordering::Relaxed);
+        inst.process_stereo(&mut l, &mut r);
+        assert_eq!(inst.addon_status(), AddonStatus::Ok);
+        code.store(2, Ordering::Relaxed); // the worker panicked
+        inst.process_stereo(&mut l, &mut r);
+        match inst.get_crash_status() {
+            crash_protection::PluginStatus::Error(e) => assert_eq!(e, "noise suppressor worker stopped unexpectedly"),
+            s => panic!("status {s:?}"),
+        }
     }
 
     #[test]

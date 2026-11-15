@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -8,7 +8,7 @@ use ringbuf::{HeapRb, HeapProd, HeapCons, traits::{Producer, Consumer, Split, Ob
 use df::tract::{DfParams, DfTract, RuntimeParams};
 use tract_core::ndarray::{Array2, ArrayView2, ArrayViewMut2};
 
-use relight_addon_api::{AddonDescriptor, AddonProcessor, ParamSpec, Scale};
+use relight_addon_api::{AddonDescriptor, AddonProcessor, AddonStatus, ParamSpec, Scale};
 
 const fn p(id: u32, name: &'static str, min: f32, max: f32, default: f32, unit: &'static str, scale: Scale) -> ParamSpec {
     ParamSpec { id, name, min, max, default, unit, scale, step: 0.0, choices: &[] }
@@ -82,12 +82,21 @@ fn finite_or_zero(v: f32) -> f32 {
     if v.is_finite() { v } else { 0.0 }
 }
 
+/// Worker lifecycle as `status` reports it.
+const LOADING: u8 = 0;
+const READY: u8 = 1;
+const LOAD_FAILED: u8 = 2;
+const PANICKED: u8 = 3;
+
 /// Sets `running` to false when the worker thread ends, by return or panic,
-/// so `process` falls back to passing audio through.
-struct StopOnDrop(Arc<AtomicBool>);
+/// so `process` falls back to passing audio through. A panic is recorded in `state`.
+struct StopOnDrop(Arc<AtomicBool>, Arc<AtomicU8>);
 
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.1.store(PANICKED, Ordering::Relaxed);
+        }
         self.0.store(false, Ordering::Relaxed);
     }
 }
@@ -135,6 +144,8 @@ struct Worker {
     /// the queued input and restart the model, then clear it.
     flush: Arc<AtomicBool>,
     vad_bits: Arc<AtomicU32>,
+    /// LOADING until the first flush (the model is up), then READY.
+    state: Arc<AtomicU8>,
     noisy: Array2<f32>,
     enh: Array2<f32>,
     prev: Array2<f32>,
@@ -149,6 +160,7 @@ impl Worker {
             self.input.clear();
             self.prev.fill(0.0);
             model.restart();
+            let _ = self.state.compare_exchange(LOADING, READY, Ordering::Relaxed, Ordering::Relaxed);
             // Release: a hop pushed before this is visible to the audio
             // thread once it sees the flag clear, so its last drain gets it.
             self.flush.store(false, Ordering::Release);
@@ -219,6 +231,7 @@ pub struct DeepFilterProcessor {
     last_vad_bits: Arc<AtomicU32>,
 
     // Worker thread lifecycle
+    state: Arc<AtomicU8>,
     running: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -235,6 +248,7 @@ impl DeepFilterProcessor {
 
         let (mut this, mut w) = Self::unspawned();
         let running = Arc::clone(&this.running);
+        let state = Arc::clone(&this.state);
         let atten_lim = Arc::clone(&this.atten_lim_bits);
         let post_filter = Arc::clone(&this.post_filter_bits);
 
@@ -242,7 +256,7 @@ impl DeepFilterProcessor {
         let worker_handle = std::thread::Builder::new()
             .name("relight-deepfilter-worker".to_string())
             .spawn(move || {
-                let _stop = StopOnDrop(Arc::clone(&running));
+                let _stop = StopOnDrop(Arc::clone(&running), Arc::clone(&state));
                 // Boost thread priority on Windows
                 #[cfg(target_os = "windows")]
                 let _mmcss = relight_addon_api::mmcss::boost_current_thread_to_pro_audio();
@@ -259,6 +273,7 @@ impl DeepFilterProcessor {
                     Err(e) => {
                         // `_stop` makes process() pass audio through.
                         log::error!("Failed to initialize DeepFilterNet model in worker: {e}");
+                        state.store(LOAD_FAILED, Ordering::Relaxed);
                         return;
                     }
                 };
@@ -307,11 +322,13 @@ impl DeepFilterProcessor {
         let bits = |v: f32| Arc::new(AtomicU32::new(v.to_bits()));
         let flush = Arc::new(AtomicBool::new(true));
         let last_vad_bits = bits(0.0);
+        let state = Arc::new(AtomicU8::new(LOADING));
         let worker = Worker {
             input,
             output,
             flush: Arc::clone(&flush),
             vad_bits: Arc::clone(&last_vad_bits),
+            state: Arc::clone(&state),
             noisy: Array2::zeros((2, HOP_SIZE)),
             enh: Array2::zeros((2, HOP_SIZE)),
             prev: Array2::zeros((2, HOP_SIZE)),
@@ -338,6 +355,7 @@ impl DeepFilterProcessor {
             output_gain: 1.0,
 
             last_vad_bits,
+            state,
             running: Arc::new(AtomicBool::new(true)),
             worker: None,
         };
@@ -391,6 +409,15 @@ impl Drop for DeepFilterProcessor {
 }
 
 impl AddonProcessor for DeepFilterProcessor {
+    fn status(&self) -> AddonStatus {
+        match self.state.load(Ordering::Relaxed) {
+            LOADING => AddonStatus::Loading,
+            LOAD_FAILED => AddonStatus::Error("model failed to load"),
+            PANICKED => AddonStatus::Error("noise suppressor worker stopped unexpectedly"),
+            _ => AddonStatus::Ok,
+        }
+    }
+
     fn process(&mut self, left: &mut [f32], right: &mut [f32], meters: &mut [f32]) {
         meters[0] = self.get_vad();
         let n = left.len().min(right.len());
@@ -1011,8 +1038,10 @@ mod tests {
     fn worker_panic_falls_back_to_dry() {
         let mut h = Harness::new();
         let running = Arc::clone(&h.df.running);
+        let state = Arc::clone(&h.df.state);
+        assert_eq!(h.df.status(), AddonStatus::Ok);
         let _ = std::thread::spawn(move || {
-            let _stop = StopOnDrop(running);
+            let _stop = StopOnDrop(running, state);
             panic!("simulated worker panic");
         })
         .join();
@@ -1021,6 +1050,16 @@ mod tests {
         h.df.process(&mut l, &mut r, &mut [0.0]);
         assert_eq!(l, input, "passes audio through");
         assert_eq!(h.df.latency_samples(), 0);
+        assert!(matches!(h.df.status(), AddonStatus::Error(_)));
+    }
+
+    #[test]
+    fn loading_until_the_model_is_ready() {
+        let (df, mut w) = DeepFilterProcessor::unspawned();
+        assert_eq!(df.status(), AddonStatus::Loading);
+        let mut model = PrevHop { prev: Array2::zeros((2, HOP_SIZE)), mute: false };
+        while w.step(&mut model) {}
+        assert_eq!(df.status(), AddonStatus::Ok);
     }
 
     #[test]
